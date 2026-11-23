@@ -45,8 +45,10 @@ test('generateIslandWorld produces large deterministic 6-region bridge-free isla
     );
   }
 
-  assert.equal(w1.buildPads.length, 3);
+  assert.equal(w1.buildPads.length, 4);
+  assert.ok(w1.buildPads.some((p) => p.id === 'boat'));
   assert.equal(w1.landmarkSites.length, 5);
+  assert.equal(w1.secretSpots.length, 5);
   assert.ok(w1.props.length >= 520, `expected >= 520 dense props across huge island, got ${w1.props.length}`);
 });
 
@@ -96,18 +98,30 @@ test('stepPlayerPhysics traverses seamlessly from center to outer biomes without
   assert.equal(detectBiomeAt(nearSpring.x, nearSpring.z, world), 'spring');
 });
 
-test('stepPlayerPhysics allows shallow wading up to MIN_WADE_HEIGHT and blocks deep ocean', () => {
+test('stepPlayerPhysics allows ocean swimming up to MIN_SWIM_HEIGHT, reports isSwimming, and blocks ultra-deep abyss', () => {
   const world = generateIslandWorld('collision-test');
 
-  // Walk straight South off the coast until shoreline wading clamp holds
-  let pos = { x: 0, z: 45 };
-  for (let i = 0; i < 160; i += 1) {
+  // Walk straight South off the outer coast into swimmable ocean water until MIN_SWIM_HEIGHT clamp holds
+  let pos = { x: 0, z: 74 };
+  let lastSwim = false;
+  for (let i = 0; i < 200; i += 1) {
     const res = stepPlayerPhysics(pos, 0, 1, 0.05, world);
     pos = { x: res.x, z: res.z };
+    lastSwim = res.isSwimming;
   }
   const h = groundHeightAt(pos.x, pos.z, world);
-  assert.ok(h >= CONFIG.WORLD.MIN_WADE_HEIGHT - 0.02);
-  assert.ok(h <= 0.05, `expected player able to wade slightly into water, got h=${h}`);
+  assert.ok(h >= CONFIG.WORLD.MIN_SWIM_HEIGHT - 0.05, `expected swim clamp >= ${CONFIG.WORLD.MIN_SWIM_HEIGHT}, got ${h}`);
+  assert.ok(h < -0.35, `expected player able to swim out into ocean water, got h=${h}`);
+  assert.equal(lastSwim, true, 'expected isSwimming=true when wading/swimming in deep water');
+
+  // During low tide, water drops exposing shallower seabed
+  let lowTidePos = { ...pos };
+  for (let i = 0; i < 40; i += 1) {
+    const res = stepPlayerPhysics(lowTidePos, 0, 1, 0.05, world, 1, CONFIG.SURVIVAL.WORLD_EVENTS.LOW_TIDE_OFFSET);
+    lowTidePos = { x: res.x, z: res.z };
+  }
+  const hLow = groundHeightAt(lowTidePos.x, lowTidePos.z, world);
+  assert.ok(hLow <= h + 0.05, `expected low tide to allow equal or deeper exploration (normal=${h}, low=${hLow})`);
 
   // Caldera lava collider pushback
   const obs = world.obstacles[1]; // obs-caldera

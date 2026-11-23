@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { CONFIG } from './config';
 import {
   ANIMAL_SPECIES,
   createWildlifeState,
   getAnimalSpecies,
+  markAnimalHunted,
   stepWildlifeSystem,
 } from './wildlife';
 import { generateIslandWorld, groundHeightAt } from './world';
@@ -93,3 +95,66 @@ test('wildlife discovery records species when explorer approaches', () => {
   assert.ok(res.discoveredNew.includes(sampleActor.speciesId));
   assert.ok(wildlife.discoveredSpecies.includes(sampleActor.speciesId));
 });
+
+test('huntable species support KO topple animation and respawn cleanly after cooldown', () => {
+  const huntableSpecies = ANIMAL_SPECIES.filter((s) => s.huntable);
+  assert.ok(huntableSpecies.length >= 6, 'expected multiple huntable day, coastal & predator species');
+
+  const world = generateIslandWorld('wildlife-hunt-respawn');
+  const wildlife = createWildlifeState(world, world.seed);
+  const rabbit = wildlife.actors.find((a) => a.speciesId === 'rabbit');
+  assert.ok(rabbit);
+
+  rabbit.x = rabbit.homeX + 3;
+  rabbit.z = rabbit.homeZ + 3;
+  markAnimalHunted(rabbit);
+
+  assert.ok(rabbit.koTimer > 0);
+  assert.equal(rabbit.visible, true);
+  assert.equal(rabbit.respawnTimer, CONFIG.SURVIVAL.RESPAWN_HUNT_SEC);
+
+  // Mid KO topple remains visible briefly, then disappears during respawn cooldown
+  stepWildlifeSystem(wildlife, 0.25, false, 0, 0, false, 1, false, world);
+  assert.ok(rabbit.koTimer > 0);
+  assert.equal(rabbit.visible, true);
+
+  stepWildlifeSystem(wildlife, 0.5, false, 0, 0, false, 1, false, world);
+  assert.equal(rabbit.koTimer, 0);
+  assert.equal(rabbit.visible, false);
+
+  // Advance past respawn timer
+  stepWildlifeSystem(wildlife, CONFIG.SURVIVAL.RESPAWN_HUNT_SEC + 0.5, false, 0, 0, false, 1, false, world);
+  assert.equal(rabbit.respawnTimer, 0);
+  assert.equal(rabbit.visible, true);
+  assert.equal(rabbit.x, rabbit.homeX);
+  assert.equal(rabbit.z, rabbit.homeZ);
+});
+
+test('night predator stops to telegraph windup attack then strikes player with damage', () => {
+  const world = generateIslandWorld('wildlife-predator-strike');
+  const wildlife = createWildlifeState(world, world.seed);
+  const wolf = wildlife.actors.find((a) => a.speciesId === 'night_wolf');
+  assert.ok(wolf);
+
+  // Move wolf right next to player away from campfire at night
+  const px = 22;
+  const pz = 18;
+  wolf.x = px + 1.2;
+  wolf.z = pz;
+  wolf.attackCooldown = 0;
+  wolf.attackState = 'idle';
+
+  // Step 1: enters windup telegraph
+  const windupRes = stepWildlifeSystem(wildlife, 0.1, true, px, pz, false, 1, false, world);
+  assert.equal(wolf.attackState, 'windup');
+  assert.equal(windupRes.ambushEnergyLoss, 0);
+  assert.equal(windupRes.predatorStrikes.length, 0);
+
+  // Step 2: completes windup (0.45s) and triggers strike + real energy damage
+  const strikeRes = stepWildlifeSystem(wildlife, 0.5, true, px, pz, false, 1, false, world);
+  assert.equal(wolf.attackState, 'strike');
+  assert.ok(strikeRes.ambushEnergyLoss > 0, 'predator strike must deal energy damage');
+  assert.equal(strikeRes.predatorStrikes.length, 1);
+  assert.equal(strikeRes.predatorStrikes[0].speciesId, 'night_wolf');
+});
+

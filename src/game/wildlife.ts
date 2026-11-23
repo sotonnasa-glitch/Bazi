@@ -32,6 +32,10 @@ export interface AnimalSpeciesSpec {
   flying?: boolean;
   aquatic?: boolean;
   amphibious?: boolean;
+  huntable?: boolean;
+  meatYield?: number;
+  huntDuration?: number;
+  requiresSpear?: boolean;
 }
 
 export const ANIMAL_SPECIES: AnimalSpeciesSpec[] = [
@@ -48,6 +52,10 @@ export const ANIMAL_SPECIES: AnimalSpeciesSpec[] = [
     primaryColor: 0xf4ece1,
     secondaryColor: 0xffb3c1,
     accentColor: 0x3b2a20,
+    huntable: true,
+    meatYield: 1,
+    huntDuration: 0.65,
+    requiresSpear: false,
   },
   {
     id: 'deer',
@@ -61,6 +69,10 @@ export const ANIMAL_SPECIES: AnimalSpeciesSpec[] = [
     primaryColor: 0xc97b3e,
     secondaryColor: 0xfff0d4,
     accentColor: 0x543118,
+    huntable: true,
+    meatYield: 2,
+    huntDuration: 0.95,
+    requiresSpear: true,
   },
   {
     id: 'fox',
@@ -87,6 +99,10 @@ export const ANIMAL_SPECIES: AnimalSpeciesSpec[] = [
     primaryColor: 0x6b4b3e,
     secondaryColor: 0x997362,
     accentColor: 0xf5ecd8,
+    huntable: true,
+    meatYield: 2,
+    huntDuration: 1.0,
+    requiresSpear: true,
   },
   {
     id: 'monkey',
@@ -154,6 +170,10 @@ export const ANIMAL_SPECIES: AnimalSpeciesSpec[] = [
     primaryColor: 0xb85e28,
     secondaryColor: 0xf7dec2,
     accentColor: 0x3d2212,
+    huntable: true,
+    meatYield: 1,
+    huntDuration: 0.6,
+    requiresSpear: false,
   },
   {
     id: 'iguana',
@@ -167,6 +187,10 @@ export const ANIMAL_SPECIES: AnimalSpeciesSpec[] = [
     primaryColor: 0x45c44f,
     secondaryColor: 0xa6f056,
     accentColor: 0x1d5c28,
+    huntable: true,
+    meatYield: 1,
+    huntDuration: 0.72,
+    requiresSpear: true,
   },
   {
     id: 'flamingo',
@@ -210,6 +234,10 @@ export const ANIMAL_SPECIES: AnimalSpeciesSpec[] = [
     secondaryColor: 0xff8a61,
     accentColor: 0x1e293b,
     amphibious: true,
+    huntable: true,
+    meatYield: 1,
+    huntDuration: 0.6,
+    requiresSpear: false,
   },
   {
     id: 'hermit_crab',
@@ -294,6 +322,10 @@ export const ANIMAL_SPECIES: AnimalSpeciesSpec[] = [
     primaryColor: 0x3f4759,
     secondaryColor: 0x76839c,
     accentColor: 0xffb703,
+    huntable: true,
+    meatYield: 2,
+    huntDuration: 0.9,
+    requiresSpear: true,
   },
   {
     id: 'black_panther',
@@ -307,6 +339,10 @@ export const ANIMAL_SPECIES: AnimalSpeciesSpec[] = [
     primaryColor: 0x20222e,
     secondaryColor: 0x383c52,
     accentColor: 0x52ff96,
+    huntable: true,
+    meatYield: 2,
+    huntDuration: 0.95,
+    requiresSpear: true,
   },
   {
     id: 'hyena',
@@ -320,6 +356,10 @@ export const ANIMAL_SPECIES: AnimalSpeciesSpec[] = [
     primaryColor: 0x8a6d4b,
     secondaryColor: 0x3b2c1d,
     accentColor: 0xff5a36,
+    huntable: true,
+    meatYield: 2,
+    huntDuration: 0.9,
+    requiresSpear: true,
   },
   {
     id: 'night_viper',
@@ -333,6 +373,10 @@ export const ANIMAL_SPECIES: AnimalSpeciesSpec[] = [
     primaryColor: 0x432b5e,
     secondaryColor: 0xc74bff,
     accentColor: 0xffe047,
+    huntable: true,
+    meatYield: 1,
+    huntDuration: 0.75,
+    requiresSpear: true,
   },
   {
     id: 'giant_owl',
@@ -360,6 +404,10 @@ export const ANIMAL_SPECIES: AnimalSpeciesSpec[] = [
     primaryColor: 0x2b1d2e,
     secondaryColor: 0xa62639,
     accentColor: 0xff6e40,
+    huntable: true,
+    meatYield: 1,
+    huntDuration: 0.75,
+    requiresSpear: true,
   },
   {
     id: 'vampire_bat',
@@ -491,6 +539,23 @@ export interface AnimalActorState {
   sleeping: boolean;
   hidden: boolean;
   visible: boolean;
+  koTimer: number;
+  respawnTimer: number;
+  stunTimer: number;
+  attackState: 'idle' | 'windup' | 'strike';
+  attackTimer: number;
+  attackCooldown: number;
+  attackTargetX: number;
+  attackTargetZ: number;
+  enraged?: boolean;
+}
+
+export interface PredatorStrikeEvent {
+  actorId: string;
+  speciesId: string;
+  x: number;
+  z: number;
+  damage: number;
 }
 
 export interface WildlifeState {
@@ -503,6 +568,7 @@ export interface WildlifeStepResult {
   discoveredNew: string[];
   predatorNearby: boolean;
   ambushEnergyLoss: number;
+  predatorStrikes: PredatorStrikeEvent[];
 }
 
 export function createWildlifeState(world: IslandWorldData, seed: string): WildlifeState {
@@ -618,6 +684,15 @@ export function createWildlifeState(world: IslandWorldData, seed: string): Wildl
         sleeping: false,
         hidden: false,
         visible: true,
+        koTimer: 0,
+        respawnTimer: 0,
+        stunTimer: 0,
+        attackState: 'idle',
+        attackTimer: 0,
+        attackCooldown: 0,
+        attackTargetX: pt.x,
+        attackTargetZ: pt.z,
+        enraged: false,
       });
     }
   }
@@ -635,6 +710,23 @@ export function getAnimalSpecies(speciesId: string): AnimalSpeciesSpec | undefin
   return SPECIES_BY_ID.get(speciesId);
 }
 
+export function markAnimalHunted(actor: AnimalActorState): void {
+  actor.koTimer = 0.55;
+  actor.respawnTimer = CONFIG.SURVIVAL.RESPAWN_HUNT_SEC;
+  actor.vx = 0;
+  actor.vz = 0;
+  actor.sleeping = false;
+  actor.hidden = false;
+  actor.visible = true;
+  actor.attackState = 'idle';
+  actor.attackTimer = 0;
+  actor.enraged = false;
+}
+
+export function enrageAnimal(actor: AnimalActorState): void {
+  actor.enraged = true;
+}
+
 export function stepWildlifeSystem(
   state: WildlifeState,
   dt: number,
@@ -644,10 +736,11 @@ export function stepWildlifeSystem(
   nearCampfire: boolean,
   fireLevel: number,
   hasFireSpear: boolean,
-  world: IslandWorldData
+  world: IslandWorldData,
+  activeHuntActorId: string | null = null
 ): WildlifeStepResult {
   if (dt <= 0) {
-    return { discoveredNew: [], predatorNearby: false, ambushEnergyLoss: 0 };
+    return { discoveredNew: [], predatorNearby: false, ambushEnergyLoss: 0, predatorStrikes: [] };
   }
 
   if (state.ambushCooldown > 0) {
@@ -655,6 +748,7 @@ export function stepWildlifeSystem(
   }
 
   const discoveredNew: string[] = [];
+  const predatorStrikes: PredatorStrikeEvent[] = [];
   let predatorNearby = false;
   let ambushEnergyLoss = 0;
   const camp = CONFIG.ISLAND.CAMPFIRE;
@@ -663,6 +757,43 @@ export function stepWildlifeSystem(
   for (const actor of state.actors) {
     const spec = SPECIES_BY_ID.get(actor.speciesId);
     if (!spec) continue;
+
+    if (actor.stunTimer > 0) {
+      actor.stunTimer = Math.max(0, actor.stunTimer - dt);
+    }
+    if (actor.attackCooldown > 0) {
+      actor.attackCooldown = Math.max(0, actor.attackCooldown - dt);
+    }
+
+    // 0. Hunted KO topple & respawn lifecycle
+    if (actor.koTimer > 0) {
+      actor.koTimer = Math.max(0, actor.koTimer - dt);
+      actor.visible = actor.koTimer > 0;
+      actor.hidden = !actor.visible;
+      actor.vx = 0;
+      actor.vz = 0;
+      actor.attackState = 'idle';
+      continue;
+    }
+    if (actor.respawnTimer > 0) {
+      actor.respawnTimer = Math.max(0, actor.respawnTimer - dt);
+      if (actor.respawnTimer <= 0) {
+        actor.x = actor.homeX;
+        actor.z = actor.homeZ;
+        const hy = groundHeightAt(actor.homeX, actor.homeZ, world);
+        actor.y = spec.flying ? hy + 2.4 : spec.aquatic ? 0.02 : hy;
+        actor.hidden = false;
+        actor.visible = true;
+        actor.attackState = 'idle';
+        actor.attackTimer = 0;
+        actor.enraged = false;
+        continue;
+      } else {
+        actor.visible = false;
+        actor.hidden = true;
+        continue;
+      }
+    }
 
     // 1. Day/Night Activity Rules
     if (actor.category === 'day') {
@@ -709,25 +840,89 @@ export function stepWildlifeSystem(
     actor.decisionTimer -= dt;
     actor.phase += dt * (2.5 + spec.speed * 1.4);
 
-    if (actor.category === 'night_predator') {
+    if (actor.stunTimer > 0) {
+      actor.vx = 0;
+      actor.vz = 0;
+      actor.attackState = 'idle';
+      actor.attackTimer = 0;
+      continue;
+    }
+
+    const isAggressiveHostile =
+      actor.category === 'night_predator' ||
+      (Boolean(actor.enraged) && (actor.speciesId === 'boar' || actor.speciesId === 'pirate_crab'));
+
+    // Handle active melee windup -> strike sequence (predator stops, telegraphs, then lunges & damages!)
+    if (actor.attackState === 'windup') {
+      actor.attackTimer -= dt;
+      actor.vx = 0;
+      actor.vz = 0;
+      actor.yaw = Math.atan2(actor.attackTargetX - actor.x, actor.attackTargetZ - actor.z);
+      if (actor.attackTimer <= 0) {
+        actor.attackState = 'strike';
+        actor.attackTimer = 0.22;
+        const lungeAng = Math.atan2(playerZ - actor.z, playerX - actor.x);
+        actor.attackTargetX = playerX;
+        actor.attackTargetZ = playerZ;
+        actor.vx = Math.cos(lungeAng) * spec.speed * 1.45;
+        actor.vz = Math.sin(lungeAng) * spec.speed * 1.45;
+        actor.attackCooldown = 1.85;
+        if (distToPlayer <= 2.45) {
+          const strikeDamage = actor.speciesId === 'black_panther' || actor.speciesId === 'pirate_crab' ? 16 : 12;
+          ambushEnergyLoss += strikeDamage;
+          state.ambushCooldown = 1.4;
+          predatorStrikes.push({
+            actorId: actor.id,
+            speciesId: actor.speciesId,
+            x: playerX,
+            z: playerZ,
+            damage: strikeDamage,
+          });
+        }
+      }
+    } else if (actor.attackState === 'strike') {
+      actor.attackTimer -= dt;
+      if (actor.attackTimer <= 0) {
+        actor.attackState = 'idle';
+        actor.attackTimer = 0;
+        actor.vx = 0;
+        actor.vz = 0;
+      }
+    } else if (actor.id === activeHuntActorId) {
+      // Prey braces/slows slightly while actively locked in combat/hunt
+      actor.vx *= 0.25;
+      actor.vz *= 0.25;
+    } else if (isAggressiveHostile) {
       const distToCamp = Math.hypot(actor.x - camp.CX, actor.z - camp.CZ);
-      const playerSafe = nearCampfire || hasFireSpear;
-      if (distToCamp < wardRadius + 1.5) {
+      const playerSafe = actor.category === 'night_predator' && (nearCampfire || (hasFireSpear && fireLevel >= 3));
+      if (actor.category === 'night_predator' && distToCamp < wardRadius + 1.5) {
         // Campfire scares predators away from camp!
         const awayAngle = Math.atan2(actor.z - camp.CZ, actor.x - camp.CX);
         actor.vx = Math.cos(awayAngle) * spec.speed;
         actor.vz = Math.sin(awayAngle) * spec.speed;
-      } else if (distToPlayer < 13.5 && !playerSafe) {
+      } else if (distToPlayer < 14.5 && !playerSafe) {
         predatorNearby = true;
-        const chaseAngle = Math.atan2(playerZ - actor.z, playerX - actor.x);
-        actor.vx = Math.cos(chaseAngle) * spec.speed * 0.78;
-        actor.vz = Math.sin(chaseAngle) * spec.speed * 0.78;
-
-        if (distToPlayer < 1.35 && state.ambushCooldown <= 0) {
-          ambushEnergyLoss = 6;
-          state.ambushCooldown = 4.5;
+        if (distToPlayer <= 1.85 && actor.attackCooldown <= 0) {
+          // Stop in front of player and telegraph visible attack!
+          actor.attackState = 'windup';
+          actor.attackTimer = 0.45;
+          actor.attackTargetX = playerX;
+          actor.attackTargetZ = playerZ;
+          actor.vx = 0;
+          actor.vz = 0;
+          actor.yaw = Math.atan2(playerX - actor.x, playerZ - actor.z);
+        } else if (distToPlayer <= 1.85) {
+          // Hold menacing stance while cooldown ticks
+          actor.vx = 0;
+          actor.vz = 0;
+          actor.yaw = Math.atan2(playerX - actor.x, playerZ - actor.z);
+        } else {
+          const chaseAngle = Math.atan2(playerZ - actor.z, playerX - actor.x);
+          actor.vx = Math.cos(chaseAngle) * spec.speed * 0.84;
+          actor.vz = Math.sin(chaseAngle) * spec.speed * 0.84;
         }
       } else if (actor.decisionTimer <= 0) {
+        actor.enraged = false;
         actor.decisionTimer = 1.6 + Math.abs(Math.sin(actor.phase)) * 2.2;
         const toHome = Math.atan2(actor.homeZ - actor.z, actor.homeX - actor.x);
         const wobble = (Math.sin(actor.phase * 1.7) - 0.5) * 2.4;
@@ -786,5 +981,6 @@ export function stepWildlifeSystem(
     discoveredNew,
     predatorNearby,
     ambushEnergyLoss,
+    predatorStrikes,
   };
 }

@@ -27,6 +27,7 @@ export const CONFIG = {
     ISLAND_RX: 94,
     ISLAND_RZ: 80,
     MIN_WADE_HEIGHT: -0.46,
+    MIN_SWIM_HEIGHT: -2.2,
     MAX_CLIMB_SLOPE: 1.35,
     SPAWN_X: 0,
     SPAWN_Z: 6.5,
@@ -45,9 +46,13 @@ export const CONFIG = {
   WEATHER: {
     MIN_DURATION_SEC: 18,
     MAX_DURATION_SEC: 30,
-    RAIN_SPEED_SCALE: 0.88,
-    FOG_SPEED_SCALE: 0.91,
+    RAIN_SPEED_SCALE: 0.85,
+    STORM_SPEED_SCALE: 0.74,
+    FOG_SPEED_SCALE: 0.9,
     RAIN_REGROW_MULT: 1.85,
+    STORM_REGROW_MULT: 2.3,
+    RAIN_FISHING_SPEED_MULT: 1.55,
+    STORM_FISHING_SPEED_MULT: 1.85,
   },
 
   ISLAND: {
@@ -110,12 +115,20 @@ export const CONFIG = {
     ROCK_COUNT: 38,
     BUSH_COUNT: 130,
     SHELL_COUNT: 56,
-    GRASS_TUFT_COUNT: 3800,
-    FLOWER_COUNT: 1350,
-    FERN_TUFT_COUNT: 980,
-    REED_COUNT: 170,
-    PEBBLE_COUNT: 320,
-    CRYSTAL_COUNT: 24,
+    GRASS_TUFT_COUNT: 5400,
+    CLOVER_PATCH_COUNT: 1850,
+    PLUME_GRASS_COUNT: 920,
+    FLOWER_COUNT: 1550,
+    HIBISCUS_FLOWER_COUNT: 760,
+    BELLFLOWER_COUNT: 680,
+    SPORE_BLOOM_COUNT: 240,
+    LOTUS_COUNT: 26,
+    FERN_TUFT_COUNT: 1120,
+    REED_COUNT: 210,
+    PEBBLE_COUNT: 420,
+    DRIFTWOOD_COUNT: 32,
+    STARFISH_PROP_COUNT: 44,
+    CRYSTAL_COUNT: 26,
     GIANT_MUSHROOM_COUNT: 16,
     SEA_STACK_COUNT: 16,
     PALM_COLLIDER_RADIUS: 0.54,
@@ -134,6 +147,8 @@ export const CONFIG = {
     RADIUS: 0.52,
     MOVE_SPEED: 8.6,
     MAX_ENERGY: 100,
+    MAX_LEVEL: 10,
+    LEVEL_XP_THRESHOLDS: [0, 35, 85, 155, 245, 360, 500, 670, 870, 1100],
     BACKPACK_CAPACITY: 12,
     UPGRADED_BACKPACK_CAPACITY: 20,
     TURN_DAMP: 14,
@@ -141,47 +156,106 @@ export const CONFIG = {
   },
 
   SURVIVAL: {
-    HARVEST_RANGE_TREE: 2.55,
-    HARVEST_RANGE_BANANA: 2.45,
-    HARVEST_RANGE_BUSH: 2.2,
-    HARVEST_RANGE_SHELL: 2.05,
-    HARVEST_RANGE_FISHING: 3.9,
-    HARVEST_RANGE_BUILD: 2.45,
+    HARVEST_RANGE_TREE: 2.65,
+    HARVEST_RANGE_BANANA: 2.55,
+    HARVEST_RANGE_BUSH: 2.25,
+    HARVEST_RANGE_SHELL: 2.15,
+    HARVEST_RANGE_FISHING: 4.1,
+    HARVEST_RANGE_HUNT: 2.85,
+    HARVEST_RANGE_BOW: 10.5,
+    HAMMER_AOE_RANGE: 4.0,
+    HAMMER_STUN_SEC: 4.8,
+    HARVEST_RANGE_BUILD: 2.55,
     HARVEST_RANGE_LANDMARK: 4.8,
+    HARVEST_RANGE_SECRET: 2.5,
     HARVEST_DURATION_TREE: 0.85,
-    HARVEST_DURATION_BANANA: 1.05,
+    HARVEST_DURATION_BANANA: 1.0,
     HARVEST_DURATION_BUSH: 0.45,
     HARVEST_DURATION_SHELL: 0.35,
-    HARVEST_DURATION_FISHING: 1.05,
-    COOK_DURATION_SEC: 1.05,
-    BUILD_DURATION_SEC: 1.0,
+    HARVEST_DURATION_FISHING: 1.15,
+    HARVEST_DURATION_HUNT: 0.85,
+    COOK_DURATION_SEC: 1.0,
+    BUILD_DURATION_SEC: 1.05,
     REGROW_TREE_SEC: 16,
     REGROW_BANANA_SEC: 12,
     REGROW_BUSH_SEC: 9,
     REGROW_SHELL_SEC: 14,
-    REGROW_FISHING_SEC: 7,
+    REGROW_FISHING_SEC: 5.5,
+    RESPAWN_HUNT_SEC: 22,
     LANDMARK_COOLDOWN_SEC: 24,
-    WALK_ENERGY_DRAIN_PER_SEC: 0.42,
-    HARVEST_ENERGY_COST_TREE: 2.4,
+    LANDMARK_SPECIAL_COOLDOWN_SEC: 14,
+    WALK_ENERGY_DRAIN_PER_SEC: 0.44,
+    SWIM_ENERGY_DRAIN_PER_SEC: 0.95,
+    SWIM_SPEED_SCALE: 0.72,
+    HARVEST_ENERGY_COST_TREE: 2.5,
     HARVEST_ENERGY_COST_BANANA: 1.6,
     HARVEST_ENERGY_COST_FISHING: 1.8,
+    HARVEST_ENERGY_COST_HUNT: 2.2,
     HARVEST_ENERGY_COST_BUSH: 0.5,
     BERRY_ENERGY_RESTORE: 20,
     BANANA_ENERGY_RESTORE: 26,
     COOKED_FISH_ENERGY_RESTORE: 45,
     ROASTED_BANANA_ENERGY_RESTORE: 56,
+    COOKED_MEAT_ENERGY_RESTORE: 62,
     CAMPFIRE_ENERGY_REGEN_PER_SEC: 18,
     EXHAUSTED_SPEED_SCALE: 0.65,
     SPEAR_CRAFT_WOOD_COST: 2,
     FIRE_FUEL_WOOD_COST: 2,
-    MAX_FIRE_LEVEL: 4,
-    XP_PER_SKILL_POINT: 25,
+    MAX_FIRE_LEVEL: 10,
+    XP_PER_SKILL_POINT: 28,
+    WEAPON_UPGRADE_WOOD_COST: 3,
+    MAX_WEAPON_LEVEL: 5,
+    WEAPON_XP_PER_LEVEL: [0, 30, 75, 135, 220],
+    SECRETS_COUNT: 5,
+    VICTORY_MIN_LEVEL: 5,
     BUILD_COSTS: {
-      shelter: 6,
-      rack: 8,
-      pier: 10,
+      shelter: 7,
+      rack: 9,
+      pier: 11,
+      boat: 15,
+    },
+    WORLD_EVENTS: {
+      MIN_INTERVAL_SEC: 28,
+      MAX_INTERVAL_SEC: 44,
+      WARNING_SEC: 3.8,
+      LOW_TIDE_DURATION_SEC: 15,
+      TSUNAMI_DURATION_SEC: 13,
+      VOLCANO_DURATION_SEC: 14,
+      METEOR_DURATION_SEC: 15,
+      FISH_FRENZY_DURATION_SEC: 15,
+      AUTUMN_DURATION_SEC: 15,
+      WINTER_DURATION_SEC: 15,
+      LOW_TIDE_OFFSET: -0.55,
+      TSUNAMI_OFFSET: 1.42,
     },
   },
+
+  WEAPON_SPECS: [
+    {
+      id: 'axe',
+      nameFa: 'تبر جنگل',
+      descFa: 'قطع سریع درختان، ضربه دوتایی (س۲) و موج شوک چوب‌بری (س۳+)',
+      unlockFireLevel: 1,
+    },
+    {
+      id: 'spear',
+      nameFa: 'نیزه شکار',
+      descFa: 'شکار جانوران بزرگ و صید ماهی با نیزه (س۳ صید چندتایی، س۴ آتشین)',
+      unlockFireLevel: 1,
+    },
+    {
+      id: 'bow',
+      nameFa: 'کمان صیاد',
+      descFa: 'شکار از راه دور با تیر (س۳ دوتیر هم‌زمان، س۴+ تیر آتشین)',
+      unlockFireLevel: 3,
+    },
+    {
+      id: 'hammer',
+      nameFa: 'چکش توفان',
+      descFa: 'ضربه موجی، ساخت‌وساز سریع و صاعقه توفان روی دشمنان (س۳+)',
+      unlockFireLevel: 4,
+    },
+  ] as const,
 
   SKILL_TREE: [
     {
@@ -201,14 +275,14 @@ export const CONFIG = {
     {
       id: 'pathfinder',
       name: 'چابکی جزیره',
-      desc: 'سرعت حرکت بیشتر و کاهش اثر باران و مه (+۱۲٪)',
+      desc: 'سرعت حرکت بیشتر و کاهش اثر باران، توفان و مه (+۱۲٪)',
       maxLevel: 3,
       woodCost: 3,
     },
     {
       id: 'angler',
-      name: 'نیزه‌دار ماهر',
-      desc: 'سرعت ماهی‌گیری در آب و شانس صید دوتایی',
+      name: 'ماهی‌گیر چیره‌دست',
+      desc: 'سرعت ماهی‌گیری با قلاب و نیزه و شانس صید دوتایی',
       maxLevel: 3,
       woodCost: 4,
     },
@@ -269,9 +343,21 @@ export const CONFIG = {
 
 export type GameMode = 'normal' | 'daily';
 export type AppScreenState = 'loading' | 'title' | 'playing';
+export type GameOutcome = 'playing' | 'victory' | 'defeat';
+export type SeasonKind = 'summer' | 'autumn' | 'winter';
 export type BiomeId = 'center' | 'ruins' | 'volcano' | 'mushroom' | 'shipwreck' | 'spring';
 export type StrangeLandmarkId = 'ruins' | 'volcano' | 'mushroom' | 'shipwreck' | 'spring';
-export type CampUpgradeId = 'shelter' | 'rack' | 'pier';
+export type CampUpgradeId = 'shelter' | 'rack' | 'pier' | 'boat';
 export type DayPhase = 'dawn' | 'day' | 'dusk' | 'night';
-export type WeatherKind = 'clear' | 'rain' | 'fog';
+export type WeatherKind = 'clear' | 'rain' | 'storm' | 'fog';
+export type WeaponId = 'axe' | 'spear' | 'bow' | 'hammer';
+export type WorldEventKind =
+  | 'none'
+  | 'low_tide'
+  | 'tsunami'
+  | 'volcano_eruption'
+  | 'meteor_shower'
+  | 'fish_frenzy'
+  | 'autumn_breeze'
+  | 'winter_frost';
 export type SkillId = 'lumberjack' | 'backpacker' | 'pathfinder' | 'angler' | 'pyromancer';

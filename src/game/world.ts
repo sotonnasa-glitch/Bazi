@@ -52,6 +52,23 @@ export interface LandmarkActionSite {
   z: number;
 }
 
+export type SecretSpotId =
+  | 'waterfall_grotto'
+  | 'volcano_alcove'
+  | 'pirate_vault'
+  | 'ruins_crypt'
+  | 'mushroom_hollow';
+
+export interface SecretSpot {
+  id: SecretSpotId;
+  nameFa: string;
+  x: number;
+  y: number;
+  z: number;
+  rotationY: number;
+  biome: BiomeId;
+}
+
 export interface IslandWorldData {
   seed: string;
   lobePhaseA: number;
@@ -62,6 +79,7 @@ export interface IslandWorldData {
   fishingSpots: FishingSpot[];
   buildPads: BuildPadSite[];
   landmarkSites: LandmarkActionSite[];
+  secretSpots: SecretSpot[];
 }
 
 export interface Vector2 {
@@ -216,19 +234,34 @@ export function computeTerrainVertexColor(
 ): SurfaceRGB {
   const { RUINS, VOLCANO, MUSHROOM, SHIPWRECK, SPRING } = CONFIG.ISLAND;
 
-  const wetSand: [number, number, number] = [0.78, 0.64, 0.38];
-  const warmSand: [number, number, number] = [0.97, 0.86, 0.56];
+  const deepSeaSand: [number, number, number] = [0.62, 0.58, 0.44];
+  const wetSand: [number, number, number] = [0.75, 0.61, 0.36];
+  const warmSand: [number, number, number] = [0.98, 0.87, 0.58];
+  const brightDuneSand: [number, number, number] = [1.0, 0.93, 0.72];
   const grassRich: [number, number, number] = [0.27, 0.64, 0.21];
   const grassSunny: [number, number, number] = [0.46, 0.78, 0.24];
 
-  const sandToGrass = smoothstep(1.08, 1.62, y);
-  const wetToDry = smoothstep(-0.18, 0.42, y);
+  const sandToGrass = smoothstep(1.12, 1.66, y);
+  const seaFloorToSurf = smoothstep(-0.85, -0.05, y);
+  const wetToDry = smoothstep(0.02, 0.52, y);
+  const dryToDune = smoothstep(0.58, 1.06, y);
   const macroNoise =
     0.5 + 0.5 * Math.sin(x * 0.13 + world.lobePhaseA) * Math.cos(z * 0.13 - world.lobePhaseB);
+  const beachSparkle = 0.5 + 0.5 * Math.sin(x * 0.42 - z * 0.37);
 
-  let r = lerp(lerp(wetSand[0], warmSand[0], wetToDry), lerp(grassRich[0], grassSunny[0], macroNoise), sandToGrass);
-  let g = lerp(lerp(wetSand[1], warmSand[1], wetToDry), lerp(grassRich[1], grassSunny[1], macroNoise), sandToGrass);
-  let b = lerp(lerp(wetSand[2], warmSand[2], wetToDry), lerp(grassRich[2], grassSunny[2], macroNoise), sandToGrass);
+  let sr = lerp(deepSeaSand[0], wetSand[0], seaFloorToSurf);
+  let sg = lerp(deepSeaSand[1], wetSand[1], seaFloorToSurf);
+  let sb = lerp(deepSeaSand[2], wetSand[2], seaFloorToSurf);
+  sr = lerp(sr, warmSand[0], wetToDry);
+  sg = lerp(sg, warmSand[1], wetToDry);
+  sb = lerp(sb, warmSand[2], wetToDry);
+  sr = lerp(sr, brightDuneSand[0], dryToDune * (0.45 + 0.35 * beachSparkle));
+  sg = lerp(sg, brightDuneSand[1], dryToDune * (0.45 + 0.35 * beachSparkle));
+  sb = lerp(sb, brightDuneSand[2], dryToDune * (0.45 + 0.35 * beachSparkle));
+
+  let r = lerp(sr, lerp(grassRich[0], grassSunny[0], macroNoise), sandToGrass);
+  let g = lerp(sg, lerp(grassRich[1], grassSunny[1], macroNoise), sandToGrass);
+  let b = lerp(sb, lerp(grassRich[2], grassSunny[2], macroNoise), sandToGrass);
 
   if (y > 1.25 && y < 3.6) {
     const wiggle = Math.sin((x + z) * 0.17 + world.lobePhaseC) * 1.4;
@@ -378,7 +411,7 @@ export function generateIslandWorld(seed: string): IslandWorldData {
     },
   ];
 
-  // 3 Interactive Camp Build Pads (Shelter, Backpack Rack, South Fishing Pier)
+  // 4 Interactive Camp Build Pads (Shelter, Backpack Rack, South Fishing Pier, Campfire Wooden Boat)
   const southSpot = fishingSpots[0];
   const buildPads: BuildPadSite[] = [
     {
@@ -406,7 +439,94 @@ export function generateIslandWorld(seed: string): IslandWorldData {
       z: southSpot.z - Math.sin(southSpot.waterAngle) * 2.8 - Math.cos(southSpot.waterAngle) * 0.6,
       rotationY: southSpot.waterAngle,
     },
+    {
+      id: 'boat',
+      x: 6.2,
+      y: groundHeightAt(6.2, 7.2, meta),
+      z: 7.2,
+      rotationY: 0.48,
+    },
   ];
+
+  // 5 Hidden Secret Places across the island's outer alcoves & biomes
+  const secretDefs: Array<{
+    id: SecretSpotId;
+    nameFa: string;
+    x: number;
+    z: number;
+    rot: number;
+    biome: BiomeId;
+  }> = [
+    {
+      id: 'waterfall_grotto',
+      nameFa: 'غار پنهان آبشار',
+      x: SPRING.CX - 11.5,
+      z: SPRING.CZ - 8.5,
+      rot: 0.72,
+      biome: 'spring',
+    },
+    {
+      id: 'volcano_alcove',
+      nameFa: 'گنجینه خاکستر آتشفشان',
+      x: VOLCANO.CX + 13.5,
+      z: VOLCANO.CZ - 11.5,
+      rot: -2.2,
+      biome: 'volcano',
+    },
+    {
+      id: 'pirate_vault',
+      nameFa: 'صندوق مخفی دزدان دریایی',
+      x: SHIPWRECK.HEADLAND_CX + 6.5,
+      z: SHIPWRECK.HEADLAND_CZ + 7.5,
+      rot: -1.4,
+      biome: 'shipwreck',
+    },
+    {
+      id: 'ruins_crypt',
+      nameFa: 'سرداب فراموش‌شده خرابه‌ها',
+      x: RUINS.CX - 13.5,
+      z: RUINS.CZ - 10.5,
+      rot: 0.65,
+      biome: 'ruins',
+    },
+    {
+      id: 'mushroom_hollow',
+      nameFa: 'خلوتگاه اسپورهای طلایی',
+      x: MUSHROOM.CX - 14.5,
+      z: MUSHROOM.CZ + 12.0,
+      rot: 0.95,
+      biome: 'mushroom',
+    },
+  ];
+
+  const secretSpots: SecretSpot[] = secretDefs.map((s) => {
+    // Ensure secret spot lands on dry walkable terrain near its target coordinate
+    let bestX = s.x;
+    let bestZ = s.z;
+    let bestY = groundHeightAt(bestX, bestZ, meta);
+    if (bestY < 0.45) {
+      for (let step = 1; step <= 8; step += 1) {
+        const tx = s.x * (1 - step * 0.06);
+        const tz = s.z * (1 - step * 0.06);
+        const ty = groundHeightAt(tx, tz, meta);
+        if (ty >= 0.45) {
+          bestX = tx;
+          bestZ = tz;
+          bestY = ty;
+          break;
+        }
+      }
+    }
+    return {
+      id: s.id,
+      nameFa: s.nameFa,
+      x: bestX,
+      y: bestY,
+      z: bestZ,
+      rotationY: s.rot,
+      biome: s.biome,
+    };
+  });
 
   // Spatial Hash Grid for ultra-fast O(1) prop placement checks across 650+ props!
   const cellSize = 4.0;
@@ -480,12 +600,17 @@ export function generateIslandWorld(seed: string): IslandWorldData {
     const distSpawn = Math.hypot(x - CONFIG.WORLD.SPAWN_X, z - CONFIG.WORLD.SPAWN_Z);
     if (distSpawn < CONFIG.WORLD.SPAWN_CLEAR_RADIUS + radius) return false;
 
-    // Keep central Campfire clearing & build pads clear of trees/rocks
+    // Keep central Campfire clearing, Crystal Spring pool, & build pads clear of trees/rocks
     const distCamp = Math.hypot(x - CAMPFIRE.CX, z - CAMPFIRE.CZ);
     if (distCamp < 4.6 + radius) return false;
+    const distSpring = Math.hypot(x - SPRING.CX, z - SPRING.CZ);
+    if (distSpring < 6.4 + radius) return false;
 
     for (const pad of buildPads) {
       if (Math.hypot(x - pad.x, z - pad.z) < 2.6 + radius) return false;
+    }
+    for (const secret of secretSpots) {
+      if (Math.hypot(x - secret.x, z - secret.z) < 3.0 + radius) return false;
     }
     for (const spot of fishingSpots) {
       if (Math.hypot(x - spot.x, z - spot.z) < 2.8 + radius) return false;
@@ -621,6 +746,7 @@ export function generateIslandWorld(seed: string): IslandWorldData {
     fishingSpots,
     buildPads,
     landmarkSites,
+    secretSpots,
   };
 }
 
@@ -630,15 +756,18 @@ export function stepPlayerPhysics(
   inputDz: number,
   dt: number,
   world: IslandWorldData,
-  speedScale = 1
-): { x: number; y: number; z: number; moved: boolean } {
+  speedScale = 1,
+  seaLevelOffset = 0
+): { x: number; y: number; z: number; moved: boolean; isSwimming: boolean } {
   const len = Math.hypot(inputDx, inputDz);
   if (len <= 1e-4 || dt <= 0) {
+    const currH = groundHeightAt(pos.x, pos.z, world);
     return {
       x: pos.x,
-      y: groundHeightAt(pos.x, pos.z, world),
+      y: currH,
       z: pos.z,
       moved: false,
+      isSwimming: currH < seaLevelOffset - 0.32,
     };
   }
 
@@ -677,11 +806,12 @@ export function stepPlayerPhysics(
     }
   }
 
+  const minWalkableY = CONFIG.WORLD.MIN_SWIM_HEIGHT + Math.min(0.45, seaLevelOffset * 0.7);
   const isTerrainBlocked = (tx: number, tz: number): boolean => {
     const halfSpan = CONFIG.WORLD.TERRAIN_SIZE * 0.47;
     if (Math.abs(tx) > halfSpan || Math.abs(tz) > halfSpan) return true;
     const targetY = groundHeightAt(tx, tz, world);
-    if (targetY < CONFIG.WORLD.MIN_WADE_HEIGHT) return true;
+    if (targetY < minWalkableY) return true;
     const stepDist = Math.max(0.05, Math.hypot(tx - pos.x, tz - pos.z));
     const slope = (targetY - currY) / stepDist;
     if (slope > CONFIG.WORLD.MAX_CLIMB_SLOPE) return true;
@@ -703,12 +833,14 @@ export function stepPlayerPhysics(
 
   const finalY = groundHeightAt(nextX, nextZ, world);
   const moved = Math.hypot(nextX - pos.x, nextZ - pos.z) > 1e-4;
+  const isSwimming = finalY < seaLevelOffset - 0.32;
 
   return {
     x: nextX,
     y: finalY,
     z: nextZ,
     moved,
+    isSwimming,
   };
 }
 

@@ -1,5 +1,6 @@
 import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { VirtualJoystick } from './components/VirtualJoystick';
+import { soundEngine } from './game/audio';
 import {
   CONFIG,
   type AppScreenState,
@@ -7,9 +8,12 @@ import {
   type CampUpgradeId,
   type DayPhase,
   type GameMode,
+  type GameOutcome,
   type SkillId,
   type StrangeLandmarkId,
+  type WeaponId,
   type WeatherKind,
+  type WorldEventKind,
 } from './game/config';
 import {
   createThreeIslandGame,
@@ -34,6 +38,7 @@ const PAD_LABELS: Record<CampUpgradeId, string> = {
   shelter: 'پناهگاه چوبی',
   rack: 'ارتقای کوله',
   pier: 'اسکله ماهیگیری',
+  boat: 'قایق چوبی',
 };
 
 const PHASE_LABELS: Record<DayPhase, string> = {
@@ -46,7 +51,46 @@ const PHASE_LABELS: Record<DayPhase, string> = {
 const WEATHER_LABELS: Record<WeatherKind, string> = {
   clear: 'آفتابی',
   rain: 'بارانی',
+  storm: 'توفانی',
   fog: 'مه‌آلود',
+};
+
+const WORLD_EVENT_LABELS: Record<Exclude<WorldEventKind, 'none'>, { title: string; detail: string; tone: 'danger' | 'magic' | 'gold' }> = {
+  low_tide: {
+    title: 'جزر بزرگ دریا',
+    detail: 'آب عقب رفت؛ صدف‌ها و کف دریا آشکار شدند!',
+    tone: 'magic',
+  },
+  tsunami: {
+    title: 'هشدار سونامی!',
+    detail: 'موج بلند اقیانوس بالا می‌آید — به بلندی پناه ببر!',
+    tone: 'danger',
+  },
+  volcano_eruption: {
+    title: 'فوران آتشفشان!',
+    detail: 'گدازه و سنگ‌های داغ از دهانه قله می‌بارند!',
+    tone: 'danger',
+  },
+  meteor_shower: {
+    title: 'بارش شهاب‌سنگ',
+    detail: 'شهاب‌های آسمان سکه و گنج به جزیره آوردند!',
+    tone: 'magic',
+  },
+  fish_frenzy: {
+    title: 'جشن ماهی‌ها در خلیج',
+    detail: 'صید در خلیج بسیار سریع و پربرکت شد!',
+    tone: 'gold',
+  },
+  autumn_breeze: {
+    title: 'نسیم طلایی پاییز',
+    detail: 'برگ‌های نارنجی جزیره را پوشاندند و رشد گیاهان سریع‌تر شد!',
+    tone: 'gold',
+  },
+  winter_frost: {
+    title: 'یخبندان زمستانی',
+    detail: 'برف سفید قله آتشفشان و دامنه‌ها را پوشاند!',
+    tone: 'magic',
+  },
 };
 
 const LANDMARK_ACTION_LABELS: Record<StrangeLandmarkId, string> = {
@@ -57,11 +101,25 @@ const LANDMARK_ACTION_LABELS: Record<StrangeLandmarkId, string> = {
   spring: 'نوشیدن از چشمه بلورین',
 };
 
+const LANDMARK_SPECIAL_LABELS: Record<StrangeLandmarkId, string> = {
+  ruins: 'پیشکش آفتاب (۲ صدف←۱۰ سکه)',
+  volcano: 'کوره مذاب (۲ چوب←۷ سکه)',
+  mushroom: 'شهد اسپور (توت و موز)',
+  shipwreck: 'معامله کشتی (۱ صید←۹ سکه)',
+  spring: 'آرزوی چشمه (+۲ صدف و ۵ سکه)',
+};
+
 const FIRE_UNLOCK_HINTS: Record<number, string> = {
   1: 'سطح ۲: موز کبابی در کمپ',
-  2: 'سطح ۳: دفع شکارچی شب + سرعت بیشتر',
-  3: 'سطح ۴: شعله ابدی + ۱.۵ برابر تجربه',
-  4: 'شعله به حداکثر قدرت رسید',
+  2: 'سطح ۳: کمان صیاد + دفع شکارچی + سرعت بیشتر',
+  3: 'سطح ۴: چکش توفان + ۱.۵ برابر تجربه',
+  4: 'سطح ۵: شعله ابدی + باز شدن ساخت قایق چوبی',
+  5: 'سطح ۶: گرمای برتر کمپ و مقاومت سونامی',
+  6: 'سطح ۷: هاله طلایی و احیای سریع‌تر انرژی',
+  7: 'سطح ۸: شعله فیروزه‌ای و ۱.۶ برابر تجربه',
+  8: 'سطح ۹: نگهبان باستانی جزیره',
+  9: 'سطح ۱۰: اوج شعله جاودان',
+  10: 'شعله جاودان به حداکثر سطح ۱۰ رسید!',
 };
 
 const CATEGORY_LABELS: Record<AnimalCategory | 'all', string> = {
@@ -79,6 +137,9 @@ const INITIAL_HUD: HudSnapshot = {
   cookedFish: 0,
   banana: 0,
   roastedBanana: 0,
+  meat: 0,
+  cookedMeat: 0,
+  huntedCount: 0,
   berries: 0,
   shells: 0,
   energy: CONFIG.PLAYER.MAX_ENERGY,
@@ -91,12 +152,32 @@ const INITIAL_HUD: HudSnapshot = {
   phase: 'day',
   isNight: false,
   weather: 'clear',
+  groundWetness: 0,
+  season: 'summer',
+  seasonMix: 0,
+  isSwimming: false,
+  activeEvent: 'none',
+  eventPhase: 'idle',
+  eventTimer: 0,
   hasSpear: false,
   hasFireSpear: false,
   canCraftSpear: false,
+  equippedWeapon: 'axe',
+  unlockedWeapons: { axe: true, spear: false, bow: false, hammer: false },
+  weaponLevels: { axe: 1, spear: 1, bow: 1, hammer: 1 },
+  weaponXp: { axe: 0, spear: 0, bow: 0, hammer: 0 },
+  weaponXpToNext: {
+    axe: CONFIG.SURVIVAL.WEAPON_XP_PER_LEVEL[1],
+    spear: CONFIG.SURVIVAL.WEAPON_XP_PER_LEVEL[1],
+    bow: CONFIG.SURVIVAL.WEAPON_XP_PER_LEVEL[1],
+    hammer: CONFIG.SURVIVAL.WEAPON_XP_PER_LEVEL[1],
+  },
   fireLevel: 1,
   canStokeFire: false,
   xp: 0,
+  playerLevel: 1,
+  playerXp: 0,
+  playerXpToNext: CONFIG.PLAYER.LEVEL_XP_THRESHOLDS[1],
   skillPoints: 1,
   skills: {
     lumberjack: 0,
@@ -106,15 +187,21 @@ const INITIAL_HUD: HudSnapshot = {
     pyromancer: 0,
   },
   discoveredAnimals: [],
+  secretsFound: 0,
+  secretsTotal: CONFIG.SURVIVAL.SECRETS_COUNT,
+  canVictoryVoyage: false,
+  gameOutcome: 'playing',
   nearCampfire: false,
   backpackFullBlocked: false,
   lowEnergyBlocked: false,
   needSpearBlocked: false,
+  needSpearHuntBlocked: false,
   predatorAlert: false,
   canEatFood: false,
   bestFoodKind: null,
   activeAction: 'idle',
-  buildings: { shelter: false, rack: false, pier: false },
+  focusedTarget: null,
+  buildings: { shelter: false, rack: false, pier: false, boat: false },
   nearbyPad: null,
   nearbyLandmark: null,
 };
@@ -137,7 +224,16 @@ export default function App() {
 
   const counterRefs = useRef<
     Record<
-      'coin' | 'wood' | 'fish' | 'cookedFish' | 'banana' | 'roastedBanana' | 'berries' | 'shell',
+      | 'coin'
+      | 'wood'
+      | 'fish'
+      | 'cookedFish'
+      | 'banana'
+      | 'roastedBanana'
+      | 'meat'
+      | 'cookedMeat'
+      | 'berries'
+      | 'shell',
       HTMLDivElement | null
     >
   >({
@@ -147,23 +243,33 @@ export default function App() {
     cookedFish: null,
     banana: null,
     roastedBanana: null,
+    meat: null,
+    cookedMeat: null,
     berries: null,
     shell: null,
   });
 
   const [screen, setScreen] = useState<AppScreenState>('loading');
+  const [outcome, setOutcome] = useState<GameOutcome>('playing');
   const [activeRun, setActiveRun] = useState<ActiveRunInfo | null>(null);
   const [hud, setHud] = useState<HudSnapshot>(INITIAL_HUD);
   const [flyingIcons, setFlyingIcons] = useState<FlyingIconAnim[]>([]);
   const [toastText, setToastText] = useState<string | null>(null);
   const [activeModal, setActiveModal] = useState<'skills' | 'wildlife' | null>(null);
   const [wildlifeFilter, setWildlifeFilter] = useState<AnimalCategory | 'all'>('all');
+  const [muted, setMuted] = useState(false);
+  const [damageFlash, setDamageFlash] = useState(false);
+  const [damageNumbers, setDamageNumbers] = useState<
+    Array<{ id: number; amount: number; x: number; y: number }>
+  >([]);
+  const damageIdRef = useRef(0);
+  const damageFlashTimerRef = useRef<number | null>(null);
 
   const dailyLabel = useMemo(() => formatDailyLabel(), []);
 
   useEffect(() => {
-    document.body.dataset.state = screen;
-  }, [screen]);
+    document.body.dataset.state = outcome !== 'playing' ? 'gameover' : screen;
+  }, [screen, outcome]);
 
   const showToast = useCallback((text: string) => {
     setToastText(text);
@@ -178,7 +284,7 @@ export default function App() {
 
   const triggerFlyIcon = useCallback((evt: FlyingResourceEvent) => {
     const frameEl = frameRef.current;
-    const targetEl = counterRefs.current[evt.kind];
+    const targetEl = counterRefs.current[evt.kind] ?? counterRefs.current.coin;
     if (!frameEl || !targetEl) return;
 
     const frameRect = frameEl.getBoundingClientRect();
@@ -224,6 +330,9 @@ export default function App() {
         onScreenChange: (nextScreen, runInfo) => {
           setScreen(nextScreen);
           setActiveModal(null);
+          if (nextScreen === 'title') {
+            setOutcome('playing');
+          }
           if (runInfo) {
             setActiveRun(runInfo);
           } else if (nextScreen === 'title') {
@@ -232,12 +341,39 @@ export default function App() {
         },
         onHudUpdate: (snapshot) => {
           setHud(snapshot);
+          if (snapshot.gameOutcome !== 'playing') {
+            setOutcome(snapshot.gameOutcome);
+          }
         },
         onResourceFly: (evt) => {
           triggerFlyIcon(evt);
         },
         onNotice: (text) => {
           showToast(text);
+        },
+        onDamageTaken: (damage, screenX, screenY) => {
+          setDamageFlash(true);
+          if (damageFlashTimerRef.current !== null) {
+            window.clearTimeout(damageFlashTimerRef.current);
+          }
+          damageFlashTimerRef.current = window.setTimeout(() => {
+            setDamageFlash(false);
+            damageFlashTimerRef.current = null;
+          }, 340);
+          const id = (damageIdRef.current += 1);
+          setDamageNumbers((prev) => [
+            ...prev.slice(-6),
+            { id, amount: Math.max(1, Math.round(damage)), x: screenX, y: screenY },
+          ]);
+          window.setTimeout(() => {
+            setDamageNumbers((prev) => prev.filter((item) => item.id !== id));
+          }, 880);
+        },
+        onOutcomeChange: (nextOutcome) => {
+          setOutcome(nextOutcome);
+          if (nextOutcome !== 'playing') {
+            setActiveModal(null);
+          }
         },
       },
       'normal',
@@ -250,23 +386,30 @@ export default function App() {
       if (toastTimerRef.current !== null) {
         window.clearTimeout(toastTimerRef.current);
       }
+      if (damageFlashTimerRef.current !== null) {
+        window.clearTimeout(damageFlashTimerRef.current);
+      }
       controller.destroy();
       controllerRef.current = null;
     };
   }, [triggerFlyIcon, showToast]);
 
   const handleStartMode = useCallback((mode: GameMode, forceNewIsland = false) => {
+    soundEngine.playClick();
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
     }
+    setOutcome('playing');
     controllerRef.current?.startRun(mode, forceNewIsland);
   }, []);
 
   const handleReturnToMenu = useCallback(() => {
+    soundEngine.playClick();
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
     }
     setActiveModal(null);
+    setOutcome('playing');
     controllerRef.current?.returnToMenu();
   }, []);
 
@@ -274,24 +417,54 @@ export default function App() {
     controllerRef.current?.setJoystickInput(dx, dy);
   }, []);
 
+  const handleVictoryVoyage = useCallback(() => {
+    soundEngine.playClick();
+    controllerRef.current?.triggerVictoryVoyage();
+  }, []);
+
   const handleEatFood = useCallback(() => {
+    soundEngine.playClick();
     controllerRef.current?.eatFood();
   }, []);
 
   const handleCraftSpear = useCallback(() => {
+    soundEngine.playClick();
     controllerRef.current?.craftSpear();
   }, []);
 
+  const handleSelectWeapon = useCallback((id: WeaponId) => {
+    soundEngine.playClick();
+    controllerRef.current?.selectWeapon(id);
+  }, []);
+
+  const handleUpgradeWeapon = useCallback((id: WeaponId) => {
+    soundEngine.playClick();
+    controllerRef.current?.upgradeWeapon(id);
+  }, []);
+
   const handleStokeFire = useCallback(() => {
+    soundEngine.playClick();
     controllerRef.current?.stokeFire();
   }, []);
 
   const handleUpgradeSkill = useCallback((skillId: SkillId) => {
+    soundEngine.playClick();
     controllerRef.current?.upgradeSkill(skillId);
   }, []);
 
   const handleTriggerLandmark = useCallback((id: StrangeLandmarkId) => {
+    soundEngine.playClick();
     controllerRef.current?.triggerLandmark(id);
+  }, []);
+
+  const handleTriggerLandmarkSpecial = useCallback((id: StrangeLandmarkId) => {
+    soundEngine.playClick();
+    controllerRef.current?.triggerLandmarkSpecial(id);
+  }, []);
+
+  const handleToggleMute = useCallback(() => {
+    const nextMuted = controllerRef.current?.toggleMute() ?? false;
+    setMuted(nextMuted);
   }, []);
 
   useEffect(() => {
@@ -306,7 +479,7 @@ export default function App() {
         } else {
           handleReturnToMenu();
         }
-      } else if (screen === 'playing' && !activeModal && (event.code === 'KeyE' || event.code === 'Space')) {
+      } else if (screen === 'playing' && !activeModal && event.code === 'KeyE') {
         handleEatFood();
       }
     };
@@ -339,6 +512,11 @@ export default function App() {
       text: 'برای ماهی‌گیری در آب، اول نیزه بساز (۲ چوب)',
       tone: 'warn',
     };
+  } else if (hud.needSpearHuntBlocked) {
+    survivalNotice = {
+      text: 'برای شکار این جانور اول نیزه بساز (۲ چوب)',
+      tone: 'warn',
+    };
   } else if (hud.backpackFullBlocked) {
     survivalNotice = { text: 'کوله پر شد! کنار آتش کمپ خالی کن', tone: 'warn' };
   } else if (hud.lowEnergyBlocked) {
@@ -347,10 +525,20 @@ export default function App() {
     survivalNotice = { text: 'در حال قطع درخت با تبر...', tone: 'warm' };
   } else if (hud.activeAction === 'climb') {
     survivalNotice = { text: 'در حال بالا رفتن از درخت موز...', tone: 'warm' };
+  } else if (hud.activeAction === 'cast_fish') {
+    survivalNotice = { text: 'در حال ماهی‌گیری با قلاب...', tone: 'warm' };
   } else if (hud.activeAction === 'spear_fish') {
     survivalNotice = { text: 'در حال شکار ماهی با نیزه در آب...', tone: 'warm' };
+  } else if (hud.activeAction === 'hunt') {
+    survivalNotice = { text: 'در حال شکار و تعقیب جانور...', tone: 'warm' };
+  } else if (hud.activeAction === 'bow_hunt') {
+    survivalNotice = { text: 'شلیک تیر با کمان صیاد!', tone: 'warm' };
+  } else if (hud.activeAction === 'hammer_slam') {
+    survivalNotice = { text: 'موج ضربه چکش توفان!', tone: 'warm' };
   } else if (hud.activeAction === 'forage') {
     survivalNotice = { text: 'در حال جمع‌آوری از طبیعت...', tone: 'warm' };
+  } else if (hud.activeAction === 'secret_open') {
+    survivalNotice = { text: 'گنجینه مخفی جزیره گشوده شد!', tone: 'warm' };
   } else if (hud.activeAction === 'build' && hud.nearbyPad) {
     survivalNotice = { text: `در حال ساخت ${PAD_LABELS[hud.nearbyPad.id]}...`, tone: 'warm' };
   } else if (hud.nearbyPad && hud.nearbyPad.totalWood < hud.nearbyPad.cost) {
@@ -365,7 +553,20 @@ export default function App() {
       text: `آتش کمپ سطح ${toPersianDigits(hud.fireLevel)} · ${FIRE_UNLOCK_HINTS[hud.fireLevel] ?? ''}`,
       tone: 'warm',
     };
+  } else if (hud.focusedTarget && !hud.focusedTarget.blockedReason) {
+    survivalNotice = {
+      text: `${hud.focusedTarget.labelFa} (روی هدف ضربه بزن یا F)`,
+      tone: 'warm',
+    };
   }
+
+  const activeEventInfo =
+    hud.activeEvent !== 'none' ? WORLD_EVENT_LABELS[hud.activeEvent] : null;
+  const isWetWeather = hud.weather === 'rain' || hud.weather === 'storm';
+  const playerXpRatio =
+    hud.playerLevel >= CONFIG.PLAYER.MAX_LEVEL
+      ? 1
+      : Math.max(0, Math.min(1, hud.playerXp / Math.max(1, hud.playerXpToNext)));
 
   return (
     <main className="game-stage-shell" dir="rtl" lang="fa">
@@ -378,7 +579,34 @@ export default function App() {
         />
 
         {/* Lower-Half Virtual Joystick Overlay */}
-        <VirtualJoystick enabled={screen === 'playing' && !activeModal} onChange={handleJoystickChange} />
+        <VirtualJoystick enabled={screen === 'playing' && outcome === 'playing' && !activeModal} onChange={handleJoystickChange} />
+
+        {/* Damage Screen Red Vignette & Floating Damage Numbers */}
+        {screen === 'playing' && (
+          <div
+            className="pointer-events-none absolute inset-0 z-25 transition-opacity duration-200"
+            style={{
+              opacity: damageFlash ? 1 : 0,
+              boxShadow: 'inset 0 0 84px rgba(214, 34, 34, 0.78)',
+            }}
+            aria-hidden="true"
+          />
+        )}
+        {screen === 'playing' &&
+          damageNumbers.map((dmg) => (
+            <div
+              key={dmg.id}
+              data-testid="damage-popup"
+              className="pointer-events-none fixed sm:absolute z-30 text-lg font-black text-[#ff3b30] damage-float-anim tabular-nums"
+              style={{
+                left: `${dmg.x}px`,
+                top: `${dmg.y}px`,
+                textShadow: '0 2px 0 #590a06, 0 0 8px rgba(255, 255, 255, 0.9)',
+              }}
+            >
+              -{toPersianDigits(dmg.amount)}
+            </div>
+          ))}
 
         {/* Flying Resource Icons into HUD Counters */}
         {screen === 'playing' &&
@@ -402,6 +630,8 @@ export default function App() {
               {item.kind === 'cookedFish' && <CookedFishSvg />}
               {item.kind === 'banana' && <BananaSvg />}
               {item.kind === 'roastedBanana' && <RoastedBananaSvg />}
+              {item.kind === 'meat' && <MeatSvg />}
+              {item.kind === 'cookedMeat' && <CookedMeatSvg />}
               {item.kind === 'berries' && <BerrySvg />}
               {item.kind === 'shell' && <ShellSvg />}
             </div>
@@ -420,7 +650,7 @@ export default function App() {
                 {CONFIG.GAME_TITLE}
               </h1>
               <p className="mt-2 px-3.5 py-1 rounded-full bg-[#fef7e4]/95 border border-white/80 shadow-sm text-[11px] font-extrabold text-[#114f78]">
-                چرخه شب‌وروز، باران و مه، درخت مهارت و ۳۲ جانور جزیره
+                فصل‌های نادر، ۴ سلاح ارتقاپذیر، رازهای مخفی، شنا، قایق و ۳۲ جانور
               </p>
             </div>
 
@@ -524,6 +754,28 @@ export default function App() {
                     accentClass="text-[#9e3f08]"
                   />
                 )}
+                {hud.meat > 0 && (
+                  <HudCounterPill
+                    ref={(el) => {
+                      counterRefs.current.meat = el;
+                    }}
+                    label="گوشت خام"
+                    value={hud.meat}
+                    icon={<MeatSvg />}
+                    accentClass="text-[#9b2c1a]"
+                  />
+                )}
+                {(hud.cookedMeat > 0 || hud.huntedCount > 0) && (
+                  <HudCounterPill
+                    ref={(el) => {
+                      counterRefs.current.cookedMeat = el;
+                    }}
+                    label="گوشت کبابی"
+                    value={hud.cookedMeat}
+                    icon={<CookedMeatSvg />}
+                    accentClass="text-[#9e3f08]"
+                  />
+                )}
                 <HudCounterPill
                   ref={(el) => {
                     counterRefs.current.berries = el;
@@ -542,16 +794,69 @@ export default function App() {
                 />
               </div>
 
-              <div className="flex items-center gap-1.5 flex-wrap">
+              <div className="flex items-center gap-1.5 flex-wrap max-w-[205px] sm:max-w-[460px]">
                 <div
                   className={`hud-card rounded-xl px-2 py-1 flex items-center gap-1.5 text-[10px] font-extrabold ${
-                    hud.isNight ? 'text-[#1c2b59]' : 'text-[#4b3010]'
+                    hud.weather === 'storm'
+                      ? 'text-[#1c355e]'
+                      : hud.isNight
+                        ? 'text-[#1c2b59]'
+                        : 'text-[#4b3010]'
                   }`}
                   data-testid="hud-day-weather"
                 >
                   <PhaseWeatherIcon phase={hud.phase} weather={hud.weather} />
                   <span>
-                    روز {toPersianDigits(hud.dayCount)} · {PHASE_LABELS[hud.phase]} · {WEATHER_LABELS[hud.weather]}
+                    روز {toPersianDigits(hud.dayCount)} · {PHASE_LABELS[hud.phase]} ·{' '}
+                    {WEATHER_LABELS[hud.weather]}
+                  </span>
+                </div>
+
+                {(isWetWeather || hud.groundWetness >= 0.35) && (
+                  <div
+                    className="hud-card rounded-xl px-2 py-1 flex items-center gap-1 text-[9.5px] font-extrabold text-[#0f5b82]"
+                    data-testid="hud-weather-effect"
+                  >
+                    <RainDropMiniSvg />
+                    <span>
+                      {hud.weather === 'storm'
+                        ? 'توفان: حرکت کندتر • صید ۲ برابر'
+                        : hud.weather === 'rain'
+                          ? 'زمین خیس • صید و رشد بیشتر'
+                          : 'زمین خیس'}
+                    </span>
+                  </div>
+                )}
+
+                {hud.season !== 'summer' && (
+                  <div
+                    className={`hud-card rounded-xl px-2 py-1 flex items-center gap-1 text-[10px] font-extrabold ${
+                      hud.season === 'autumn' ? 'text-[#b54d0c]' : 'text-[#0e5e8a]'
+                    }`}
+                    data-testid="hud-season-badge"
+                  >
+                    <SeasonMiniSvg season={hud.season} />
+                    <span>{hud.season === 'autumn' ? 'فصل پاییز' : 'فصل زمستان'}</span>
+                  </div>
+                )}
+
+                {hud.isSwimming && (
+                  <div
+                    className="hud-card rounded-xl px-2 py-1 flex items-center gap-1 text-[10px] font-extrabold text-[#0c668f]"
+                    data-testid="hud-swim-badge"
+                  >
+                    <RainDropMiniSvg />
+                    <span>در حال شنا</span>
+                  </div>
+                )}
+
+                <div
+                  className="hud-card rounded-xl px-2 py-1 flex items-center gap-1 text-[10px] font-extrabold text-[#7d4910]"
+                  data-testid="hud-secrets-badge"
+                >
+                  <SecretChestMiniSvg />
+                  <span className="tabular-nums">
+                    اسرار {toPersianDigits(hud.secretsFound)}/{toPersianDigits(hud.secretsTotal)}
                   </span>
                 </div>
 
@@ -566,32 +871,80 @@ export default function App() {
                     <span>{hud.hasFireSpear ? 'نیزه آتشین' : 'نیزه'}</span>
                   </div>
                 )}
+
+                {hud.buildings.boat && (
+                  <div
+                    className="hud-card rounded-xl px-2 py-1 flex items-center gap-1 text-[10px] font-extrabold text-[#165e8a]"
+                    data-testid="hud-boat-badge"
+                  >
+                    <BoatMiniSvg />
+                    <span>
+                      {hud.playerLevel >= CONFIG.SURVIVAL.VICTORY_MIN_LEVEL
+                        ? 'قایق آماده بازگشت'
+                        : `قایق (سطح ${toPersianDigits(CONFIG.SURVIVAL.VICTORY_MIN_LEVEL)} برای پیروزی)`}
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
 
-            {/* Top-Left: Energy Bar + Skills + Wildlife Guide + Biome + Menu */}
+            {/* Top-Left: Player Level + Energy Bar + Audio + Skills + Wildlife Guide + Biome + Menu */}
             <div
               className="absolute top-2.5 left-2.5 flex flex-col items-end gap-1.5"
               data-testid="hud-top-left"
             >
-              <div className="hud-card rounded-2xl px-2.5 py-1.5 flex items-center gap-2 min-w-[136px]">
-                <EnergyBoltSvg />
-                <div className="flex-1 flex flex-col gap-0.5">
-                  <div className="flex items-center justify-between text-[10px] font-extrabold text-[#5a3b14]">
-                    <span>انرژی</span>
-                    <span className="tabular-nums">
-                      {toPersianDigits(hud.energy)} / {toPersianDigits(hud.maxEnergy)}
+              <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                <button
+                  type="button"
+                  data-testid="toggle-mute-btn"
+                  onClick={handleToggleMute}
+                  aria-label={muted ? 'وصل صدا' : 'قطع صدا'}
+                  title={muted ? 'وصل صدا' : 'قطع صدا'}
+                  className="pointer-events-auto wood-btn p-2 rounded-2xl text-[#fff8eb] text-[10px] font-extrabold cursor-pointer flex items-center justify-center"
+                  style={{ textShadow: '0 1px 0 rgba(94, 41, 10, 0.7)' }}
+                >
+                  <VolumeIcon muted={muted} />
+                </button>
+
+                <div
+                  className="hud-card rounded-2xl px-2.5 py-1.5 flex flex-col gap-0.5 min-w-[90px]"
+                  data-testid="hud-player-level"
+                >
+                  <div className="flex items-center justify-between gap-2 text-[10px] font-extrabold text-[#5a3b14]">
+                    <span>سطح {toPersianDigits(hud.playerLevel)}</span>
+                    <span className="tabular-nums text-[9px] text-[#8a5d1f]">
+                      {hud.playerLevel >= CONFIG.PLAYER.MAX_LEVEL
+                        ? 'اوج'
+                        : `${toPersianDigits(hud.playerXp)}/${toPersianDigits(hud.playerXpToNext)}`}
                     </span>
                   </div>
-                  <div className="w-24 h-2.5 rounded-full wood-well p-0.5 overflow-hidden">
+                  <div className="w-20 h-2 rounded-full wood-well p-0.5 overflow-hidden">
                     <div
-                      className={`h-full rounded-full transition-transform duration-200 origin-right ${
-                        energyRatio < 0.28
-                          ? 'bg-gradient-to-l from-[#ff5e3a] to-[#ffb703]'
-                          : 'bg-gradient-to-l from-[#74e344] to-[#ffd233]'
-                      }`}
-                      style={{ transform: `scaleX(${Math.max(0.04, energyRatio)})` }}
+                      className="h-full rounded-full bg-gradient-to-l from-[#3bc9db] to-[#ffd233] transition-transform duration-200 origin-right"
+                      style={{ transform: `scaleX(${Math.max(0.05, playerXpRatio)})` }}
                     />
+                  </div>
+                </div>
+
+                <div className="hud-card rounded-2xl px-2.5 py-1.5 flex items-center gap-2 min-w-[126px]">
+                  <EnergyBoltSvg />
+                  <div className="flex-1 flex flex-col gap-0.5">
+                    <div className="flex items-center justify-between text-[10px] font-extrabold text-[#5a3b14]">
+                      <span>انرژی</span>
+                      <span className="tabular-nums">
+                        {toPersianDigits(hud.energy)} / {toPersianDigits(hud.maxEnergy)}
+                      </span>
+                    </div>
+                    <div className="w-22 sm:w-24 h-2.5 rounded-full wood-well p-0.5 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-transform duration-200 origin-right ${
+                          energyRatio < 0.28
+                            ? 'bg-gradient-to-l from-[#ff5e3a] to-[#ffb703]'
+                            : 'bg-gradient-to-l from-[#74e344] to-[#ffd233]'
+                        }`}
+                        style={{ transform: `scaleX(${Math.max(0.04, energyRatio)})` }}
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -600,7 +953,10 @@ export default function App() {
                 <button
                   type="button"
                   data-testid="open-skills-btn"
-                  onClick={() => setActiveModal((m) => (m === 'skills' ? null : 'skills'))}
+                  onClick={() => {
+                    soundEngine.playClick();
+                    setActiveModal((m) => (m === 'skills' ? null : 'skills'));
+                  }}
                   className="pointer-events-auto wood-btn px-2 py-1 rounded-xl text-[#fff8eb] text-[10px] font-extrabold cursor-pointer flex items-center justify-center gap-1"
                   style={{ textShadow: '0 1px 0 rgba(94, 41, 10, 0.7)' }}
                 >
@@ -616,7 +972,10 @@ export default function App() {
                 <button
                   type="button"
                   data-testid="open-wildlife-btn"
-                  onClick={() => setActiveModal((m) => (m === 'wildlife' ? null : 'wildlife'))}
+                  onClick={() => {
+                    soundEngine.playClick();
+                    setActiveModal((m) => (m === 'wildlife' ? null : 'wildlife'));
+                  }}
                   className="pointer-events-auto wood-btn px-2 py-1 rounded-xl text-[#fff8eb] text-[10px] font-extrabold cursor-pointer flex items-center justify-center gap-1"
                   style={{ textShadow: '0 1px 0 rgba(94, 41, 10, 0.7)' }}
                 >
@@ -647,24 +1006,156 @@ export default function App() {
               </div>
             </div>
 
-            {/* Contextual Survival Status Pill */}
-            {survivalNotice && !activeModal && (
-              <div className="absolute top-[118px] sm:top-[76px] left-1/2 -translate-x-1/2 max-w-[92%] pointer-events-none">
-                <div
-                  data-testid="survival-notice"
-                  className={`px-3.5 py-1 rounded-full text-[11px] font-extrabold shadow-md text-center whitespace-nowrap overflow-hidden text-ellipsis ${
-                    survivalNotice.tone === 'warn'
-                      ? 'bg-[#fff0e0]/95 text-[#b5380d] border border-[#ffb370]'
-                      : 'bg-[#fff7dc]/95 text-[#8a4f0a] border border-[#ffd670]'
-                  }`}
-                >
-                  {survivalNotice.text}
-                </div>
+            {/* Top-Center Stack: World Event Banner + Contextual Survival Notice */}
+            {(activeEventInfo || survivalNotice) && !activeModal && (
+              <div className="absolute top-[138px] sm:top-[70px] left-1/2 -translate-x-1/2 max-w-[92%] flex flex-col items-center gap-1 pointer-events-none">
+                {activeEventInfo && (
+                  <div
+                    data-testid="world-event-banner"
+                    className={`px-3.5 py-1.5 rounded-2xl shadow-md flex items-center gap-2 text-center border ${
+                      activeEventInfo.tone === 'danger'
+                        ? 'bg-[#fff0ec]/95 text-[#a1220c] border-[#ff7c61]'
+                        : activeEventInfo.tone === 'magic'
+                          ? 'bg-[#ecf8ff]/95 text-[#0e5682] border-[#66c2f5]'
+                          : 'bg-[#fff6dc]/95 text-[#8a4f0a] border-[#ffc44d]'
+                    }`}
+                  >
+                    <SparkMiniSvg />
+                    <div className="flex items-center gap-1.5 text-[11px] font-extrabold whitespace-nowrap">
+                      <span>{activeEventInfo.title}</span>
+                      <span className="px-1.5 py-0.5 rounded-lg bg-white/75 text-[9.5px] font-black tabular-nums">
+                        {hud.eventPhase === 'warning' ? 'هشدار' : 'در جریان'} ·{' '}
+                        {toPersianDigits(hud.eventTimer)} ث
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {survivalNotice && (
+                  <div
+                    data-testid="survival-notice"
+                    className={`px-3.5 py-1 rounded-full text-[11px] font-extrabold shadow-md text-center whitespace-nowrap overflow-hidden text-ellipsis max-w-full ${
+                      survivalNotice.tone === 'warn'
+                        ? 'bg-[#fff0e0]/95 text-[#b5380d] border border-[#ffb370]'
+                        : 'bg-[#fff7dc]/95 text-[#8a4f0a] border border-[#ffd670]'
+                    }`}
+                  >
+                    {survivalNotice.text}
+                  </div>
+                )}
               </div>
             )}
 
-            {/* Bottom-Left: Backpack Capacity */}
-            <div className="absolute bottom-3.5 left-3" data-testid="hud-bottom-left">
+            {/* Bottom-Left: Weapon Bar + Backpack Capacity */}
+            <div
+              className="absolute bottom-3.5 left-3 flex flex-col items-end gap-1.5"
+              data-testid="hud-bottom-left"
+            >
+              {/* Upgradable 4-Weapon Bar */}
+              <div
+                className="pointer-events-auto hud-card rounded-2xl p-1 grid grid-cols-2 sm:flex sm:items-center gap-1"
+                data-testid="weapon-bar"
+              >
+                {CONFIG.WEAPON_SPECS.map((spec) => {
+                  const unlocked = hud.unlockedWeapons[spec.id];
+                  const lvl = hud.weaponLevels[spec.id];
+                  const wXp = hud.weaponXp[spec.id];
+                  const wXpMax = Math.max(1, hud.weaponXpToNext[spec.id]);
+                  const wXpRatio =
+                    lvl >= CONFIG.SURVIVAL.MAX_WEAPON_LEVEL
+                      ? 1
+                      : Math.max(0, Math.min(1, wXp / wXpMax));
+                  const active = hud.equippedWeapon === spec.id;
+                  const canUpgrade =
+                    unlocked &&
+                    lvl < CONFIG.SURVIVAL.MAX_WEAPON_LEVEL &&
+                    (hud.skillPoints > 0 || hud.wood >= CONFIG.SURVIVAL.WEAPON_UPGRADE_WOOD_COST);
+                  const lockHint =
+                    spec.id === 'spear'
+                      ? '۲ چوب'
+                      : `آتش ${toPersianDigits(spec.unlockFireLevel)}`;
+
+                  return (
+                    <div key={spec.id} className="flex items-center gap-0.5">
+                      <button
+                        type="button"
+                        data-testid={`weapon-btn-${spec.id}`}
+                        title={spec.descFa}
+                        onClick={() => {
+                          if (unlocked) {
+                            handleSelectWeapon(spec.id);
+                          } else if (spec.id === 'spear' && hud.canCraftSpear) {
+                            handleCraftSpear();
+                          } else {
+                            soundEngine.playClick();
+                            showToast(
+                              spec.id === 'spear'
+                                ? 'برای ساخت نیزه ۲ چوب لازم است'
+                                : `برای باز کردن ${spec.nameFa}، آتش کمپ را به سطح ${toPersianDigits(spec.unlockFireLevel)} برسان`
+                            );
+                          }
+                        }}
+                        className={`px-1.5 py-1 rounded-xl flex flex-col gap-0.5 text-[10px] font-extrabold transition-all cursor-pointer ${
+                          active
+                            ? 'wood-btn-primary text-white'
+                            : unlocked
+                              ? 'bg-[#fff9e8] text-[#4b3010] hover:bg-[#ffefc9]'
+                              : 'bg-[#ead9bc]/75 text-[#8b6f47]'
+                        }`}
+                      >
+                        <div className="flex items-center gap-1">
+                          <WeaponMiniSvg id={spec.id} fireSpear={hud.hasFireSpear} />
+                          <span className="hidden sm:inline">{spec.nameFa}</span>
+                          <span
+                            className={`text-[9px] tabular-nums px-1 rounded-md ${
+                              active
+                                ? 'bg-white/25 text-white'
+                                : unlocked
+                                  ? 'bg-[#f1dfba] text-[#6d4515]'
+                                  : 'bg-[#dfd0b0] text-[#7c613c]'
+                            }`}
+                          >
+                            {unlocked ? `س${toPersianDigits(lvl)}` : lockHint}
+                          </span>
+                        </div>
+
+                        {unlocked && (
+                          <div
+                            data-testid={`weapon-xp-${spec.id}`}
+                            className={`w-full h-1 rounded-full overflow-hidden ${
+                              active ? 'bg-black/25' : 'bg-[#e3cfa8]'
+                            }`}
+                          >
+                            <div
+                              className={`h-full rounded-full origin-right transition-transform duration-200 ${
+                                lvl >= 4
+                                  ? 'bg-gradient-to-l from-[#3ef0ff] to-[#ffe066]'
+                                  : active
+                                    ? 'bg-[#fff3a6]'
+                                    : 'bg-[#e8871e]'
+                              }`}
+                              style={{ transform: `scaleX(${Math.max(0.05, wXpRatio)})` }}
+                            />
+                          </div>
+                        )}
+                      </button>
+
+                      {canUpgrade && (
+                        <button
+                          type="button"
+                          data-testid={`upgrade-weapon-${spec.id}`}
+                          onClick={() => handleUpgradeWeapon(spec.id)}
+                          title={`ارتقای ${spec.nameFa} (۱ امتیاز یا ${toPersianDigits(CONFIG.SURVIVAL.WEAPON_UPGRADE_WOOD_COST)} چوب)`}
+                          className="w-5 h-5 rounded-lg bg-[#27a347] hover:bg-[#2eb852] text-white text-xs font-black flex items-center justify-center cursor-pointer shadow-sm"
+                        >
+                          +
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
               <div
                 className={`hud-card rounded-2xl px-2.5 py-1.5 flex items-center gap-2 ${
                   backpackFull ? 'ring-2 ring-[#ff7b29]' : ''
@@ -687,11 +1178,24 @@ export default function App() {
               </div>
             </div>
 
-            {/* Bottom-Right: Contextual Interactive Survival Actions */}
+            {/* Bottom-Right: Contextual Survival Actions (Direct 3D Tap replaces interact button) */}
             <div
-              className="absolute bottom-3.5 right-3 flex flex-col items-start gap-1.5 max-w-[175px] sm:max-w-[260px]"
+              className="absolute bottom-3.5 right-3 flex flex-col items-start gap-1.5 max-w-[228px] sm:max-w-[300px]"
               data-testid="hud-bottom-right"
             >
+              {hud.canVictoryVoyage && (
+                <button
+                  type="button"
+                  data-testid="victory-voyage-btn"
+                  onClick={handleVictoryVoyage}
+                  className="pointer-events-auto wood-btn-primary px-3 py-2 rounded-2xl text-white text-[11.5px] font-extrabold cursor-pointer flex items-center gap-2"
+                  style={{ textShadow: '0 1px 0 rgba(153, 62, 6, 0.75)' }}
+                >
+                  <BoatMiniSvg />
+                  <span>سفر پیروزمندانه به خانه</span>
+                </button>
+              )}
+
               {hud.canEatFood && hud.bestFoodKind && (
                 <button
                   type="button"
@@ -700,18 +1204,21 @@ export default function App() {
                   className="pointer-events-auto wood-btn-primary px-2.5 py-1.5 rounded-xl text-white text-[11px] font-extrabold cursor-pointer flex items-center gap-1.5"
                   style={{ textShadow: '0 1px 0 rgba(153, 62, 6, 0.7)' }}
                 >
+                  {hud.bestFoodKind === 'cookedMeat' && <CookedMeatSvg />}
                   {hud.bestFoodKind === 'roastedBanana' && <RoastedBananaSvg />}
                   {hud.bestFoodKind === 'cookedFish' && <CookedFishSvg />}
                   {hud.bestFoodKind === 'banana' && <BananaSvg />}
                   {hud.bestFoodKind === 'berries' && <BerrySvg />}
                   <span>
-                    {hud.bestFoodKind === 'roastedBanana'
-                      ? `موز کبابی (+${toPersianDigits(CONFIG.SURVIVAL.ROASTED_BANANA_ENERGY_RESTORE)})`
-                      : hud.bestFoodKind === 'cookedFish'
-                        ? `ماهی کبابی (+${toPersianDigits(CONFIG.SURVIVAL.COOKED_FISH_ENERGY_RESTORE)})`
-                        : hud.bestFoodKind === 'banana'
-                          ? `خوردن موز (+${toPersianDigits(CONFIG.SURVIVAL.BANANA_ENERGY_RESTORE)})`
-                          : `خوردن توت (+${toPersianDigits(CONFIG.SURVIVAL.BERRY_ENERGY_RESTORE)})`}
+                    {hud.bestFoodKind === 'cookedMeat'
+                      ? `گوشت کبابی (+${toPersianDigits(CONFIG.SURVIVAL.COOKED_MEAT_ENERGY_RESTORE)})`
+                      : hud.bestFoodKind === 'roastedBanana'
+                        ? `موز کبابی (+${toPersianDigits(CONFIG.SURVIVAL.ROASTED_BANANA_ENERGY_RESTORE)})`
+                        : hud.bestFoodKind === 'cookedFish'
+                          ? `ماهی کبابی (+${toPersianDigits(CONFIG.SURVIVAL.COOKED_FISH_ENERGY_RESTORE)})`
+                          : hud.bestFoodKind === 'banana'
+                            ? `خوردن موز (+${toPersianDigits(CONFIG.SURVIVAL.BANANA_ENERGY_RESTORE)})`
+                            : `خوردن توت (+${toPersianDigits(CONFIG.SURVIVAL.BERRY_ENERGY_RESTORE)})`}
                   </span>
                 </button>
               )}
@@ -756,24 +1263,45 @@ export default function App() {
               )}
 
               {hud.nearbyLandmark && (
-                <button
-                  type="button"
-                  data-testid="landmark-power-btn"
-                  disabled={hud.nearbyLandmark.cooldown > 0}
-                  onClick={() => handleTriggerLandmark(hud.nearbyLandmark!.id)}
-                  className={`pointer-events-auto px-2.5 py-1.5 rounded-xl text-[11px] font-extrabold flex items-center gap-1.5 transition-all ${
-                    hud.nearbyLandmark.cooldown <= 0
-                      ? 'wood-btn-primary text-white cursor-pointer'
-                      : 'hud-card text-[#7a5a32] opacity-85 cursor-not-allowed'
-                  }`}
-                >
-                  <SparkMiniSvg />
-                  <span>
-                    {hud.nearbyLandmark.cooldown <= 0
-                      ? LANDMARK_ACTION_LABELS[hud.nearbyLandmark.id]
-                      : `آماده‌سازی آیین (${toPersianDigits(hud.nearbyLandmark.cooldown)} ث)`}
-                  </span>
-                </button>
+                <div className="flex flex-col items-start gap-1">
+                  <button
+                    type="button"
+                    data-testid="landmark-power-btn"
+                    disabled={hud.nearbyLandmark.cooldown > 0}
+                    onClick={() => handleTriggerLandmark(hud.nearbyLandmark!.id)}
+                    className={`pointer-events-auto px-2.5 py-1.5 rounded-xl text-[11px] font-extrabold flex items-center gap-1.5 transition-all ${
+                      hud.nearbyLandmark.cooldown <= 0
+                        ? 'wood-btn-primary text-white cursor-pointer'
+                        : 'hud-card text-[#7a5a32] opacity-85 cursor-not-allowed'
+                    }`}
+                  >
+                    <SparkMiniSvg />
+                    <span>
+                      {hud.nearbyLandmark.cooldown <= 0
+                        ? LANDMARK_ACTION_LABELS[hud.nearbyLandmark.id]
+                        : `آماده‌سازی آیین (${toPersianDigits(hud.nearbyLandmark.cooldown)} ث)`}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    data-testid="landmark-special-btn"
+                    disabled={hud.nearbyLandmark.specialCooldown > 0}
+                    onClick={() => handleTriggerLandmarkSpecial(hud.nearbyLandmark!.id)}
+                    className={`pointer-events-auto px-2.5 py-1.5 rounded-xl text-[10.5px] font-extrabold flex items-center gap-1.5 transition-all ${
+                      hud.nearbyLandmark.specialCooldown <= 0
+                        ? 'wood-btn text-[#fff8eb] cursor-pointer'
+                        : 'hud-card text-[#7a5a32] opacity-85 cursor-not-allowed'
+                    }`}
+                  >
+                    <CompassMiniSvg />
+                    <span>
+                      {hud.nearbyLandmark.specialCooldown <= 0
+                        ? LANDMARK_SPECIAL_LABELS[hud.nearbyLandmark.id]
+                        : `آماده‌سازی کار ویژه (${toPersianDigits(hud.nearbyLandmark.specialCooldown)} ث)`}
+                    </span>
+                  </button>
+                </div>
               )}
             </div>
           </div>
@@ -801,7 +1329,10 @@ export default function App() {
                 <button
                   type="button"
                   data-testid="close-modal-btn"
-                  onClick={() => setActiveModal(null)}
+                  onClick={() => {
+                    soundEngine.playClick();
+                    setActiveModal(null);
+                  }}
                   className="wood-btn px-3 py-1.5 rounded-xl text-[#fff8eb] text-xs font-extrabold cursor-pointer"
                 >
                   بستن
@@ -886,7 +1417,10 @@ export default function App() {
                 <button
                   type="button"
                   data-testid="close-modal-btn"
-                  onClick={() => setActiveModal(null)}
+                  onClick={() => {
+                    soundEngine.playClick();
+                    setActiveModal(null);
+                  }}
                   className="wood-btn px-3 py-1.5 rounded-xl text-[#fff8eb] text-xs font-extrabold cursor-pointer"
                 >
                   بستن
@@ -898,7 +1432,10 @@ export default function App() {
                   <button
                     key={cat}
                     type="button"
-                    onClick={() => setWildlifeFilter(cat)}
+                    onClick={() => {
+                      soundEngine.playClick();
+                      setWildlifeFilter(cat);
+                    }}
                     className={`px-2.5 py-1 rounded-xl text-[10px] font-extrabold cursor-pointer transition-all ${
                       wildlifeFilter === cat
                         ? 'wood-btn-primary text-white'
@@ -932,7 +1469,12 @@ export default function App() {
                           }}
                           aria-hidden="true"
                         />
-                        <span className="text-[11px] font-extrabold truncate">{spec.nameFa}</span>
+                        <span className="text-[11px] font-extrabold truncate flex-1">{spec.nameFa}</span>
+                        {spec.huntable && (
+                          <span className="px-1.5 py-0.5 rounded-md bg-[#ffe4db] text-[#9b2c1a] text-[8.5px] font-extrabold shrink-0">
+                            شکارپذیر
+                          </span>
+                        )}
                       </div>
                       <div className="flex items-center justify-between text-[9px] font-bold text-[#755326]">
                         <span className="truncate">{spec.habitatFa}</span>
@@ -943,6 +1485,100 @@ export default function App() {
                     </div>
                   );
                 })}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Victory / Defeat Game Over Modal */}
+        {screen === 'playing' && outcome !== 'playing' && (
+          <div
+            className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-[#071f36]/68"
+            data-testid="gameover-modal"
+            data-outcome={outcome}
+          >
+            <div className="hud-card w-full max-w-[380px] rounded-3xl p-5 flex flex-col items-center text-center gap-3.5 text-[#3d2508]">
+              <div
+                className={`w-16 h-16 rounded-2xl flex items-center justify-center shadow-md ${
+                  outcome === 'victory'
+                    ? 'bg-gradient-to-b from-[#ffe066] to-[#f59f00]'
+                    : 'bg-gradient-to-b from-[#ff7a6b] to-[#d93829]'
+                }`}
+              >
+                {outcome === 'victory' ? <TrophyVictorySvg /> : <DefeatSkullSvg />}
+              </div>
+
+              <div>
+                <h2 className="text-xl font-black">
+                  {outcome === 'victory' ? 'پیروزی! جزیره را فتح کردی' : 'انرژی تمام شد!'}
+                </h2>
+                <p className="mt-1 text-xs font-bold text-[#6e4e24]">
+                  {outcome === 'victory'
+                    ? 'با قایق دست‌ساز خود پیروزمندانه به خانه بازگشتی!'
+                    : 'در نبرد با بلایای جزیره و شکارچیان انرژی‌ات پایان یافت. دوباره تلاش کن!'}
+                </p>
+              </div>
+
+              <div className="w-full grid grid-cols-3 gap-2 text-center">
+                <div className="rounded-2xl bg-white/85 border border-[#e6cda1] p-2">
+                  <div className="text-[10px] font-bold text-[#755326]">روز بقا</div>
+                  <div className="text-sm font-black tabular-nums">{toPersianDigits(hud.dayCount)}</div>
+                </div>
+                <div className="rounded-2xl bg-white/85 border border-[#e6cda1] p-2">
+                  <div className="text-[10px] font-bold text-[#755326]">سطح</div>
+                  <div className="text-sm font-black tabular-nums">{toPersianDigits(hud.playerLevel)}</div>
+                </div>
+                <div className="rounded-2xl bg-white/85 border border-[#e6cda1] p-2">
+                  <div className="text-[10px] font-bold text-[#755326]">سکه</div>
+                  <div className="text-sm font-black tabular-nums text-[#a15c07]">{toPersianDigits(hud.coins)}</div>
+                </div>
+                <div className="rounded-2xl bg-white/85 border border-[#e6cda1] p-2">
+                  <div className="text-[10px] font-bold text-[#755326]">اسرار</div>
+                  <div className="text-sm font-black tabular-nums">
+                    {toPersianDigits(hud.secretsFound)}/{toPersianDigits(hud.secretsTotal)}
+                  </div>
+                </div>
+                <div className="rounded-2xl bg-white/85 border border-[#e6cda1] p-2">
+                  <div className="text-[10px] font-bold text-[#755326]">جانوران</div>
+                  <div className="text-sm font-black tabular-nums">
+                    {toPersianDigits(hud.discoveredAnimals.length)}/{toPersianDigits(ANIMAL_SPECIES.length)}
+                  </div>
+                </div>
+                <div className="rounded-2xl bg-white/85 border border-[#e6cda1] p-2">
+                  <div className="text-[10px] font-bold text-[#755326]">شکار</div>
+                  <div className="text-sm font-black tabular-nums">{toPersianDigits(hud.huntedCount)}</div>
+                </div>
+              </div>
+
+              <div className="w-full flex flex-col gap-2">
+                <button
+                  type="button"
+                  data-start="true"
+                  data-testid="restart-game-btn"
+                  onClick={() => handleStartMode(activeRun?.mode ?? 'normal', false)}
+                  className="wood-btn-primary w-full py-2.5 rounded-2xl text-white font-extrabold text-sm cursor-pointer"
+                  style={{ textShadow: '0 1px 0 rgba(153, 62, 6, 0.7)' }}
+                >
+                  بازی دوباره
+                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    data-testid="new-island-btn"
+                    onClick={() => handleStartMode('normal', true)}
+                    className="wood-btn flex-1 py-2 rounded-xl text-[#fff8eb] font-bold text-xs cursor-pointer"
+                  >
+                    جزیره جدید
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="gameover-menu-btn"
+                    onClick={handleReturnToMenu}
+                    className="wood-btn flex-1 py-2 rounded-xl text-[#fff8eb] font-bold text-xs cursor-pointer"
+                  >
+                    منوی اصلی
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -976,6 +1612,14 @@ const HudCounterPill = forwardRef<
 });
 
 function PhaseWeatherIcon({ phase, weather }: { phase: DayPhase; weather: WeatherKind }) {
+  if (weather === 'storm') {
+    return (
+      <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
+        <path d="M5 13a4 4 0 0 1 1-7.8A5 5 0 0 1 16.5 6a3.5 3.5 0 0 1 1 6.8H5Z" fill="#4f6d8a" />
+        <path d="M12.5 13.5 L9.5 18 H12 L10.8 22 L15 16.8 H12.4 Z" fill="#ffd233" />
+      </svg>
+    );
+  }
   if (weather === 'rain') {
     return (
       <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
@@ -1068,6 +1712,28 @@ function RoastedBananaSvg() {
         fill="#e07a16"
       />
       <path d="M10 5 C9.6 3.8, 11 3.4, 10.5 2.2 M14 5 C13.6 3.8, 15 3.4, 14.5 2.2" stroke="#ff9d42" strokeWidth="1.4" strokeLinecap="round" fill="none" />
+    </svg>
+  );
+}
+
+function MeatSvg() {
+  return (
+    <svg viewBox="0 0 24 24" className="w-4 h-4" aria-hidden="true">
+      <ellipse cx="11.5" cy="12.5" rx="7" ry="5.5" fill="#d9483b" />
+      <ellipse cx="10.5" cy="12" rx="4.2" ry="3.1" fill="#f27d72" />
+      <circle cx="17.5" cy="8.5" r="2.2" fill="#f7ebd9" />
+      <rect x="13" y="10" width="4.5" height="2.4" rx="1.2" transform="rotate(-32 13 10)" fill="#f7ebd9" />
+    </svg>
+  );
+}
+
+function CookedMeatSvg() {
+  return (
+    <svg viewBox="0 0 24 24" className="w-4 h-4" aria-hidden="true">
+      <ellipse cx="11.5" cy="13.2" rx="7" ry="5.2" fill="#9c4218" />
+      <ellipse cx="10.8" cy="12.8" rx="4.4" ry="2.8" fill="#c9652c" />
+      <circle cx="17.5" cy="9.2" r="2.1" fill="#f5e3c6" />
+      <path d="M9 6 C8.5 4.5, 10 4, 9.5 2.5 M13 6 C12.5 4.5, 14 4, 13.5 2.5" stroke="#ff9d42" strokeWidth="1.5" strokeLinecap="round" fill="none" />
     </svg>
   );
 }
@@ -1212,6 +1878,120 @@ function CompassMiniSvg() {
       <circle cx="12" cy="12" r="9.5" fill="#d99a3a" />
       <circle cx="12" cy="12" r="7" fill="#fff6e0" />
       <path d="M14.8 9.2L13 13.4L9.2 14.8L11 10.6L14.8 9.2Z" fill="#d94426" />
+    </svg>
+  );
+}
+
+function RainDropMiniSvg() {
+  return (
+    <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
+      <path d="M12 3 C9 8, 6.5 11.5, 6.5 14.8 A5.5 5.5 0 0 0 17.5 14.8 C17.5 11.5, 15 8, 12 3 Z" fill="#2c92df" />
+      <circle cx="10.2" cy="15.5" r="1.4" fill="#a8e1ff" />
+    </svg>
+  );
+}
+
+function BoatMiniSvg() {
+  return (
+    <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
+      <path d="M12 4 V14 L18 13 Z" fill="#fff3d1" />
+      <path d="M4 15 H20 L17.5 19.5 H6.5 Z" fill="#9c5b2b" />
+    </svg>
+  );
+}
+
+function VolumeIcon({ muted }: { muted: boolean }) {
+  return muted ? (
+    <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
+      <path d="M4 9.5 H8 L13 5.5 V18.5 L8 14.5 H4 Z" fill="currentColor" />
+      <path d="M16 9 L20 15 M20 9 L16 15" stroke="#ffd466" strokeWidth="2.2" strokeLinecap="round" />
+    </svg>
+  ) : (
+    <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
+      <path d="M4 9.5 H8 L13 5.5 V18.5 L8 14.5 H4 Z" fill="currentColor" />
+      <path d="M16 9 A4.5 4.5 0 0 1 16 15 M18.5 6.8 A7.5 7.5 0 0 1 18.5 17.2" stroke="#ffe066" strokeWidth="2" strokeLinecap="round" fill="none" />
+    </svg>
+  );
+}
+
+function WeaponMiniSvg({ id, fireSpear }: { id: WeaponId; fireSpear: boolean }) {
+  if (id === 'spear') {
+    return <SpearMiniSvg fire={fireSpear} />;
+  }
+  if (id === 'bow') {
+    return (
+      <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
+        <path d="M6 19 C13 18, 18 13, 19 6" stroke="#8f4e1c" strokeWidth="2.4" strokeLinecap="round" fill="none" />
+        <path d="M6 19 L19 6" stroke="#e8e2d0" strokeWidth="1.2" />
+        <path d="M7 10 L17 4 L14 14" stroke="#d9532b" strokeWidth="1.8" strokeLinecap="round" fill="none" />
+      </svg>
+    );
+  }
+  if (id === 'hammer') {
+    return (
+      <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
+        <path d="M5 19 L14 10" stroke="#78421a" strokeWidth="2.4" strokeLinecap="round" />
+        <rect x="11" y="4" width="8.5" height="6" rx="1.5" transform="rotate(42 15 7)" fill="#6a7f91" />
+        <circle cx="17" cy="6" r="1.4" fill="#ffe066" />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
+      <path d="M5 19 L15 9" stroke="#8f4e1c" strokeWidth="2.4" strokeLinecap="round" />
+      <path d="M12 6 L19 4 L18 11 L13 10 Z" fill="#9fb2c2" />
+    </svg>
+  );
+}
+
+function SeasonMiniSvg({ season }: { season: 'autumn' | 'winter' }) {
+  if (season === 'autumn') {
+    return (
+      <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
+        <path
+          d="M12 3 L14 8 L19 7 L16 12 L20 15 L14 16 L13 21 L11 21 L10 16 L4 15 L8 12 L5 7 L10 8 Z"
+          fill="#e6681c"
+        />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
+      <path
+        d="M12 3V21M3 12H21M5.6 5.6L18.4 18.4M18.4 5.6L5.6 18.4"
+        stroke="#2795d9"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function SecretChestMiniSvg() {
+  return (
+    <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
+      <rect x="4" y="9" width="16" height="10" rx="2" fill="#9c5b2b" />
+      <path d="M4 10 C4 6.5, 20 6.5, 20 10 Z" fill="#c77a3b" />
+      <rect x="10.2" y="10.5" width="3.6" height="3.8" rx="0.8" fill="#ffd43b" />
+    </svg>
+  );
+}
+
+function TrophyVictorySvg() {
+  return (
+    <svg viewBox="0 0 24 24" className="w-9 h-9" aria-hidden="true">
+      <path d="M7 5 H17 V11 C17 14, 14.8 16, 12 16 C9.2 16, 7 14, 7 11 Z" fill="#fff7d1" />
+      <path d="M7 7 H4.5 C4.5 10, 5.5 11.5, 7 11.5 M17 7 H19.5 C19.5 10, 18.5 11.5, 17 11.5" stroke="#fff7d1" strokeWidth="2" fill="none" />
+      <rect x="10.5" y="16" width="3" height="3" fill="#fff7d1" />
+      <rect x="8" y="19" width="8" height="2" rx="1" fill="#fff7d1" />
+    </svg>
+  );
+}
+
+function DefeatSkullSvg() {
+  return (
+    <svg viewBox="0 0 24 24" className="w-9 h-9" aria-hidden="true">
+      <path d="M13 4 L7 13 H12 L11 20 L17 11 H12 Z" fill="#fff5f5" />
     </svg>
   );
 }

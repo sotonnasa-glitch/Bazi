@@ -6,15 +6,21 @@ import {
   type BiomeId,
   type CampUpgradeId,
   type GameMode,
+  type GameOutcome,
   type SkillId,
   type StrangeLandmarkId,
+  type WeaponId,
 } from './config';
+import { soundEngine } from './audio';
 import {
   buildSculptedAnimalRig,
   createAnimalGeometryLibrary,
   type AnimalVisualRig,
 } from './animalModels';
 import {
+  buildAnchorGeometry,
+  buildAnvilGeometry,
+  buildArrowGeometry,
   buildAxeToolGeometry,
   buildBananaBunchGeometry,
   buildBananaCanopyGeometry,
@@ -22,36 +28,55 @@ import {
   buildBananaTrunkGeometry,
   buildBanyanCanopyGeometry,
   buildBanyanTrunkGeometry,
+  buildBeachStarfishGeometry,
+  buildBellflowerSpikeGeometry,
+  buildBoatCradleGeometry,
+  buildBowToolGeometry,
+  buildBrazierGeometry,
   buildCampShelterGeometry,
   buildCampfireLogsGeometry,
   buildCanopyBlossomsGeometry,
+  buildClawSlashGeometry,
+  buildCloverPatchGeometry,
   buildCoastalReedGeometry,
   buildCoconutClusterGeometry,
   buildCrystalClusterGeometry,
   buildCurvedBoatHullGeometry,
   buildCurvedGullWingGeometry,
   buildCurvedPalmTrunkGeometry,
+  buildDriftwoodLogGeometry,
   buildFernTuftGeometry,
   buildFishGeometry,
   buildFishingPierGeometry,
   buildFishingRodPoleGeometry,
   buildFlameTongueGeometry,
   buildGrassClumpGeometry,
+  buildHammerToolGeometry,
   buildJungleCanopyGeometry,
+  buildJungleCanopyVariantBGeometry,
   buildJungleTrunkGeometry,
+  buildLeafSnowQuadGeometry,
+  buildLightningBoltGeometry,
+  buildLotusBloomGeometry,
+  buildMeatCutGeometry,
   buildOrganicBasaltCragGeometry,
   buildPalmCanopyGeometry,
   buildPineCanopyGeometry,
   buildPineTrunkGeometry,
   buildRoundedChestGeometry,
+  buildSavannaPlumeGrassGeometry,
   buildSculptedBoulderGeometry,
   buildSculptedStoneSlabGeometry,
   buildSculptedSunCrystalGeometry,
   buildSeashellGeometry,
+  buildSecretChestBaseGeometry,
+  buildSecretChestLidGeometry,
   buildSpearToolGeometry,
+  buildSporeBloomGeometry,
   buildStorageRackGeometry,
   buildTinyMushroomGeometry,
   buildTreeStumpGeometry,
+  buildTropicalHibiscusGeometry,
   buildWeatheredBarrelGeometry,
   buildWeatheredRuinsPillarGeometry,
   buildWildflowerGeometry,
@@ -61,21 +86,31 @@ import {
 } from './sculptGeometry';
 import {
   activateLandmarkPower,
+  activateLandmarkSpecial,
   craftSpear,
   createSurvivalState,
   eatBestFoodFromInventory,
   getPlayerSpeedScale,
   getSurvivalHudView,
+  requestBowShotAt,
+  requestPlayerInteract,
+  requestTargetInteract,
+  selectWeapon,
   stepSurvivalSystem,
   stokeCampfire,
+  triggerSeasonEvent,
+  triggerVictoryVoyage,
+  triggerWorldEvent,
   upgradeSkill,
+  upgradeWeapon,
+  type FocusedTargetKind,
   type ResourceKind,
   type SurvivalHudView,
   type SurvivalState,
 } from './survival';
 import { getAnimalSpecies } from './wildlife';
 import { createProceduralTextureSet } from './textures';
-import { createSeededRandom, getSeedForMode, resetNormalSeed } from './utils';
+import { createSeededRandom, getSeedForMode, resetNormalSeed, toPersianDigits } from './utils';
 import {
   computeTerrainVertexColor,
   detectBiomeAt,
@@ -95,7 +130,7 @@ export type HudSnapshot = SurvivalHudView;
 
 export interface FlyingResourceEvent {
   id: number;
-  kind: ResourceKind | 'cookedFish' | 'roastedBanana' | 'coin';
+  kind: ResourceKind | 'cookedFish' | 'roastedBanana' | 'cookedMeat' | 'coin';
   startX: number;
   startY: number;
 }
@@ -105,17 +140,26 @@ export interface ThreeSceneCallbacks {
   onHudUpdate: (hud: HudSnapshot) => void;
   onResourceFly?: (event: FlyingResourceEvent) => void;
   onNotice?: (text: string) => void;
+  onDamageTaken?: (damage: number, screenX: number, screenY: number) => void;
+  onOutcomeChange?: (outcome: GameOutcome) => void;
 }
 
 export interface ThreeIslandController {
   startRun: (mode: GameMode, forceNewIsland?: boolean) => void;
   returnToMenu: () => void;
   setJoystickInput: (dx: number, dy: number) => void;
+  interact: () => void;
   eatFood: () => boolean;
   craftSpear: () => boolean;
+  selectWeapon: (id: WeaponId) => boolean;
+  upgradeWeapon: (id: WeaponId) => boolean;
   stokeFire: () => boolean;
   upgradeSkill: (skillId: SkillId) => boolean;
   triggerLandmark: (id: StrangeLandmarkId) => { triggered: boolean; label: string };
+  triggerLandmarkSpecial: (id: StrangeLandmarkId) => { triggered: boolean; label: string };
+  triggerVictoryVoyage: () => boolean;
+  toggleMute: () => boolean;
+  isMuted: () => boolean;
   destroy: () => void;
 }
 
@@ -220,6 +264,7 @@ interface BackStackSlot {
   berries: THREE.Mesh;
   shell: THREE.Mesh;
   banana: THREE.Mesh;
+  meat: THREE.Mesh;
 }
 
 interface SurvivorRig {
@@ -233,7 +278,15 @@ interface SurvivorRig {
   axeMesh: THREE.Mesh;
   spearMesh: THREE.Mesh;
   fireSpearMesh: THREE.Mesh;
+  bowMesh: THREE.Mesh;
+  hammerMesh: THREE.Mesh;
   rodGroup: THREE.Group;
+  toolMats: {
+    axe: THREE.MeshStandardMaterial;
+    spear: THREE.MeshStandardMaterial;
+    bow: THREE.MeshStandardMaterial;
+    hammer: THREE.MeshStandardMaterial;
+  };
   rodTipLocal: THREE.Vector3;
   backStackSlots: BackStackSlot[];
   dispose: () => void;
@@ -248,6 +301,7 @@ function buildCartoonSurvivor(
     berryGeo: THREE.BufferGeometry;
     shellGeo: THREE.BufferGeometry;
     bananaGeo: THREE.BufferGeometry;
+    meatGeo: THREE.BufferGeometry;
     stackMat: THREE.MeshStandardMaterial;
     berryMat: THREE.MeshStandardMaterial;
   }
@@ -368,9 +422,13 @@ function buildCartoonSurvivor(
     banana.scale.setScalar(1.1);
     banana.visible = false;
 
-    slotGroup.add(wood, fish, berries, shell, banana);
+    const meat = new THREE.Mesh(stackGeos.meatGeo, stackGeos.stackMat);
+    meat.scale.setScalar(0.95);
+    meat.visible = false;
+
+    slotGroup.add(wood, fish, berries, shell, banana, meat);
     backStackGroup.add(slotGroup);
-    backStackSlots.push({ group: slotGroup, wood, fish, berries, shell, banana });
+    backStackSlots.push({ group: slotGroup, wood, fish, berries, shell, banana, meat });
   }
 
   const buildArm = (xOffset: number): THREE.Group => {
@@ -394,45 +452,80 @@ function buildCartoonSurvivor(
   const rightArm = buildArm(0.32);
   bodyPivot.add(leftArm, rightArm);
 
-  // Equipable 3D Chopping Axe, Fishing Spear, Fire Spear & Fishing Rod attached to right hand
-  const toolMat = new THREE.MeshStandardMaterial({
-    color: 0xffffff,
-    roughness: 0.45,
-    metalness: 0.12,
-    vertexColors: true,
-  });
+  // Equipable 3D Chopping Axe, Fishing Spear, Fire Spear, Hunting Bow, Storm Hammer & Fishing Rod
+  const makeToolMat = () =>
+    new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.45,
+      metalness: 0.14,
+      vertexColors: true,
+    });
+  const axeMat = makeToolMat();
+  const spearMat = makeToolMat();
+  const bowMat = makeToolMat();
+  const hammerMat = makeToolMat();
+  const rodMat = makeToolMat();
   const axeGeo = buildAxeToolGeometry();
   const spearGeo = buildSpearToolGeometry(false);
   const fireSpearGeo = buildSpearToolGeometry(true);
+  const bowGeo = buildBowToolGeometry();
+  const hammerGeo = buildHammerToolGeometry();
   const rodGeo = buildFishingRodPoleGeometry();
-  rigDisposables.push(toolMat, axeGeo, spearGeo, fireSpearGeo, rodGeo, packGeo);
+  rigDisposables.push(
+    axeMat,
+    spearMat,
+    bowMat,
+    hammerMat,
+    rodMat,
+    axeGeo,
+    spearGeo,
+    fireSpearGeo,
+    bowGeo,
+    hammerGeo,
+    rodGeo,
+    packGeo
+  );
 
-  const axeMesh = new THREE.Mesh(axeGeo, toolMat);
+  const axeMesh = new THREE.Mesh(axeGeo, axeMat);
   axeMesh.position.set(0, -0.24, 0.05);
   axeMesh.rotation.x = Math.PI * 0.42;
   axeMesh.castShadow = true;
   axeMesh.visible = false;
   rightArm.add(axeMesh);
 
-  const spearMesh = new THREE.Mesh(spearGeo, toolMat);
+  const spearMesh = new THREE.Mesh(spearGeo, spearMat);
   spearMesh.position.set(0, -0.24, 0.05);
   spearMesh.rotation.x = Math.PI * 0.48;
   spearMesh.castShadow = true;
   spearMesh.visible = false;
   rightArm.add(spearMesh);
 
-  const fireSpearMesh = new THREE.Mesh(fireSpearGeo, toolMat);
+  const fireSpearMesh = new THREE.Mesh(fireSpearGeo, spearMat);
   fireSpearMesh.position.set(0, -0.24, 0.05);
   fireSpearMesh.rotation.x = Math.PI * 0.48;
   fireSpearMesh.castShadow = true;
   fireSpearMesh.visible = false;
   rightArm.add(fireSpearMesh);
 
+  const bowMesh = new THREE.Mesh(bowGeo, bowMat);
+  bowMesh.position.set(0, -0.24, 0.08);
+  bowMesh.rotation.z = 0.15;
+  bowMesh.castShadow = true;
+  bowMesh.visible = false;
+  leftArm.add(bowMesh);
+
+  const hammerMesh = new THREE.Mesh(hammerGeo, hammerMat);
+  hammerMesh.position.set(0, -0.24, 0.05);
+  hammerMesh.rotation.x = Math.PI * 0.42;
+  hammerMesh.castShadow = true;
+  hammerMesh.visible = false;
+  rightArm.add(hammerMesh);
+
   const rodGroup = new THREE.Group();
   rodGroup.position.set(0, -0.24, 0.05);
   rodGroup.rotation.x = Math.PI * 0.28;
   rodGroup.visible = false;
-  const rodPole = new THREE.Mesh(rodGeo, toolMat);
+  const rodPole = new THREE.Mesh(rodGeo, rodMat);
   rodPole.castShadow = true;
   rodGroup.add(rodPole);
   rightArm.add(rodGroup);
@@ -501,7 +594,15 @@ function buildCartoonSurvivor(
     axeMesh,
     spearMesh,
     fireSpearMesh,
+    bowMesh,
+    hammerMesh,
     rodGroup,
+    toolMats: {
+      axe: axeMat,
+      spear: spearMat,
+      bow: bowMat,
+      hammer: hammerMat,
+    },
     rodTipLocal: new THREE.Vector3(0, 1.48, 0.86),
     backStackSlots,
     dispose: () => {
@@ -533,6 +634,8 @@ interface InstancedTreeBinding {
   instMesh: THREE.InstancedMesh;
   extraMeshes: THREE.InstancedMesh[];
   shadowMesh: THREE.InstancedMesh;
+  shadowOffsetX: number;
+  shadowOffsetZ: number;
   stumpMesh: THREE.InstancedMesh;
   stumpIndex: number;
   index: number;
@@ -620,13 +723,13 @@ export function createThreeIslandGame(
   campPointLight.position.set(CONFIG.ISLAND.CAMPFIRE.CX, 3.2, CONFIG.ISLAND.CAMPFIRE.CZ);
   scene.add(campPointLight);
 
-  // 3D Instanced Rain Streaks for Weather System
-  const rainCount = 220;
-  const rainDropGeo = new THREE.CapsuleGeometry(0.016, 0.42, 3, 5);
+  // 3D Instanced Rain Streaks & Ground Raindrop Ripples for Dynamic Weather
+  const rainCount = 240;
+  const rainDropGeo = new THREE.CapsuleGeometry(0.016, 0.45, 3, 5);
   const rainDropMat = new THREE.MeshBasicMaterial({
     color: 0xd4f0ff,
     transparent: true,
-    opacity: 0.55,
+    opacity: 0.58,
     depthWrite: false,
   });
   const rainInst = new THREE.InstancedMesh(rainDropGeo, rainDropMat, rainCount);
@@ -636,13 +739,32 @@ export function createThreeIslandGame(
   const rainOffsets: Array<{ x: number; y: number; z: number; spd: number }> = [];
   for (let i = 0; i < rainCount; i += 1) {
     rainOffsets.push({
-      x: ((Math.sin(i * 19.3) * 0.5) * 44),
+      x: Math.sin(i * 19.3) * 0.5 * 44,
       y: ((i * 0.37) % 1) * 18,
-      z: ((Math.cos(i * 27.7) * 0.5) * 38),
-      spd: 17 + (i % 5) * 2.2,
+      z: Math.cos(i * 27.7) * 0.5 * 38,
+      spd: 18 + (i % 5) * 2.4,
     });
   }
   const rainDummy = new THREE.Object3D();
+
+  const rippleCount = 24;
+  const rainRippleGeo = new THREE.RingGeometry(0.18, 0.25, 16);
+  rainRippleGeo.rotateX(-Math.PI / 2);
+  const rainRippleMat = new THREE.MeshBasicMaterial({
+    color: 0xdaf4ff,
+    transparent: true,
+    opacity: 0.42,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const rainRippleInst = new THREE.InstancedMesh(rainRippleGeo, rainRippleMat, rippleCount);
+  rainRippleInst.frustumCulled = false;
+  rainRippleInst.visible = false;
+  scene.add(rainRippleInst);
+  const ripplePool: Array<{ x: number; y: number; z: number; age: number; life: number }> = [];
+  for (let i = 0; i < rippleCount; i += 1) {
+    ripplePool.push({ x: 0, y: 0, z: 0, age: (i / rippleCount) * 0.7, life: 0.65 });
+  }
 
   const textures = createProceduralTextureSet();
   const maxAniso = Math.min(4, renderer.capabilities.getMaxAnisotropy());
@@ -657,6 +779,8 @@ export function createThreeIslandGame(
     moonOrbMat,
     rainDropGeo,
     rainDropMat,
+    rainRippleGeo,
+    rainRippleMat,
     { dispose: () => textures.disposeAll() },
   ];
 
@@ -692,12 +816,13 @@ export function createThreeIslandGame(
   });
   disposables.push(shadowDiscMat);
 
-  // GPU Ocean Shader
+  // GPU Ocean Shader with dynamic tide level, richer lagoon caustics & crisp dual-band surf foam
   let heightTex: THREE.DataTexture | null = null;
   const oceanMat = new THREE.ShaderMaterial({
     transparent: true,
     uniforms: {
       uTime: { value: 0 },
+      uSeaLevel: { value: 0 },
       uHeightTex: { value: null },
       uTerrainSize: { value: CONFIG.WORLD.TERRAIN_SIZE },
       uDeepColor: { value: new THREE.Color(CONFIG.COLORS.SEA_DEEP) },
@@ -717,6 +842,7 @@ export function createThreeIslandGame(
     `,
     fragmentShader: `
       uniform float uTime;
+      uniform float uSeaLevel;
       uniform sampler2D uHeightTex;
       uniform float uTerrainSize;
       uniform vec3 uDeepColor;
@@ -739,35 +865,36 @@ export function createThreeIslandGame(
         if (uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0) {
           terrainH = texture2D(uHeightTex, uv).r * 8.0 - 3.5;
         }
-        float waterDepth = max(0.0, -terrainH);
+        float waterDepth = max(0.0, uSeaLevel - terrainH);
 
-        float shallowMask = exp(-waterDepth * 0.82);
+        float shallowMask = exp(-waterDepth * 0.72);
         vec3 col = mix(uDeepColor, uShallowColor, shallowMask);
 
-        float ripple = wavePattern(vWorldPos.xz * 1.1, uTime);
-        float caustic = smoothstep(0.35, 0.92, wavePattern(vWorldPos.xz * 0.72 + vec2(uTime * 0.25, -uTime * 0.18), uTime * 1.2));
-        col += vec3(0.09, 0.2, 0.22) * caustic * (0.35 + 0.65 * shallowMask);
+        float ripple = wavePattern(vWorldPos.xz * 1.15, uTime);
+        float causticA = smoothstep(0.32, 0.92, wavePattern(vWorldPos.xz * 0.76 + vec2(uTime * 0.25, -uTime * 0.18), uTime * 1.25));
+        float causticB = smoothstep(0.45, 0.95, wavePattern(vWorldPos.xz * 1.18 - vec2(uTime * 0.14, uTime * 0.22), uTime * 0.9));
+        col += vec3(0.11, 0.24, 0.27) * (causticA * 0.75 + causticB * 0.45) * (0.35 + 0.65 * shallowMask);
 
         vec3 viewDir = normalize(cameraPosition - vWorldPos);
-        vec3 waveN = normalize(vec3(ripple * 0.06, 1.0, wavePattern(vWorldPos.xz * 1.3 + 4.2, -uTime) * 0.06));
+        vec3 waveN = normalize(vec3(ripple * 0.09, 1.0, wavePattern(vWorldPos.xz * 1.35 + 4.2, -uTime) * 0.09));
         vec3 halfVec = normalize(uSunDir + viewDir);
-        float spec = pow(max(dot(waveN, halfVec), 0.0), 42.0);
-        col += vec3(1.0, 0.96, 0.86) * spec * 0.45;
+        float spec = pow(max(dot(waveN, halfVec), 0.0), 48.0);
+        col += vec3(1.0, 0.97, 0.88) * spec * 0.56;
 
-        float foamZone = 1.0 - smoothstep(0.02, 0.92, waterDepth);
-        float surfWave = sin(waterDepth * 19.0 - uTime * 2.5 + ripple * 1.8);
-        float shoreLine = 1.0 - smoothstep(0.0, 0.19, waterDepth);
-        float foamAmt = clamp(shoreLine * 0.88 + foamZone * smoothstep(0.35, 0.85, surfWave) * 0.65, 0.0, 1.0);
-        col = mix(col, uFoamColor, foamAmt * 0.88);
+        float foamZone = 1.0 - smoothstep(0.02, 1.08, waterDepth);
+        float surfWave = sin(waterDepth * 21.0 - uTime * 2.8 + ripple * 2.0);
+        float shoreLine = 1.0 - smoothstep(0.0, 0.22, waterDepth);
+        float foamAmt = clamp(shoreLine * 0.92 + foamZone * smoothstep(0.28, 0.84, surfWave) * 0.72, 0.0, 1.0);
+        col = mix(col, uFoamColor, foamAmt * 0.9);
 
-        float fresnel = pow(1.0 - max(dot(viewDir, vec3(0.0, 1.0, 0.0)), 0.0), 3.0);
-        col = mix(col, uFogColor, fresnel * 0.35);
+        float fresnel = pow(1.0 - max(dot(viewDir, vec3(0.0, 1.0, 0.0)), 0.0), 2.8);
+        col = mix(col, uFogColor, fresnel * 0.34);
 
         float dist = length(cameraPosition - vWorldPos);
         float fogFactor = 1.0 - exp(-uFogDensity * uFogDensity * dist * dist);
         col = mix(col, uFogColor, clamp(fogFactor, 0.0, 1.0));
 
-        float alpha = mix(0.95, 0.72, shallowMask * (1.0 - foamAmt * 0.5));
+        float alpha = mix(0.95, 0.68, shallowMask * (1.0 - foamAmt * 0.52));
         gl_FragColor = vec4(col, alpha);
       }
     `,
@@ -876,25 +1003,309 @@ export function createThreeIslandGame(
   harvestRingMesh.visible = false;
   harvestRingMesh.renderOrder = 3;
   scene.add(harvestRingMesh);
-  disposables.push(harvestRingGeo, harvestRingMat);
+
+  // Focus Target Reticle (shows what F / Space / Action Button will target before interacting)
+  const focusRingGeo = new THREE.RingGeometry(0.95, 1.24, 32);
+  focusRingGeo.rotateX(-Math.PI / 2);
+  const focusRingMat = new THREE.MeshBasicMaterial({
+    color: 0x52f2ff,
+    transparent: true,
+    opacity: 0.72,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const focusRingMesh = new THREE.Mesh(focusRingGeo, focusRingMat);
+  focusRingMesh.visible = false;
+  focusRingMesh.renderOrder = 3;
+  scene.add(focusRingMesh);
+
+  // Hammer AoE Shockwave Ring
+  const hammerRingGeo = new THREE.RingGeometry(0.65, 1.0, 36);
+  hammerRingGeo.rotateX(-Math.PI / 2);
+  const hammerRingMat = new THREE.MeshBasicMaterial({
+    color: 0xffd24d,
+    transparent: true,
+    opacity: 0.85,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const hammerRingMesh = new THREE.Mesh(hammerRingGeo, hammerRingMat);
+  hammerRingMesh.visible = false;
+  hammerRingMesh.renderOrder = 4;
+  scene.add(hammerRingMesh);
+  let hammerWaveAge = -1;
+
+  // Flying Bow Arrow Pool & World Event Projectiles (Meteors + Volcano Magma Bombs)
+  const arrowGeoProj = buildArrowGeometry();
+  const arrowProjMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    roughness: 0.35,
+    vertexColors: true,
+  });
+  const arrowPool: Array<{
+    mesh: THREE.Mesh;
+    active: boolean;
+    age: number;
+    duration: number;
+    start: THREE.Vector3;
+    end: THREE.Vector3;
+  }> = [];
+  for (let i = 0; i < 6; i += 1) {
+    const mesh = new THREE.Mesh(arrowGeoProj, arrowProjMat);
+    mesh.visible = false;
+    scene.add(mesh);
+    arrowPool.push({
+      mesh,
+      active: false,
+      age: 0,
+      duration: 0.24,
+      start: new THREE.Vector3(),
+      end: new THREE.Vector3(),
+    });
+  }
+
+  const eventProjGeo = new THREE.SphereGeometry(0.28, 10, 8);
+  const lavaBombMat = new THREE.MeshBasicMaterial({ color: 0xff6a1f });
+  const meteorMat = new THREE.MeshBasicMaterial({ color: 0x9ef8ff });
+  const eventProjPool: Array<{
+    mesh: THREE.Mesh;
+    active: boolean;
+    age: number;
+    life: number;
+    vx: number;
+    vy: number;
+    vz: number;
+    gravity: number;
+  }> = [];
+  for (let i = 0; i < 10; i += 1) {
+    const mesh = new THREE.Mesh(eventProjGeo, lavaBombMat);
+    mesh.visible = false;
+    scene.add(mesh);
+    eventProjPool.push({ mesh, active: false, age: 0, life: 1.4, vx: 0, vy: 0, vz: 0, gravity: 9.8 });
+  }
+
+  // Click Target Pulse Ring + Localized Hazard Rings / Falling Meteors / Lightning Bolts / Predator Telegraphs & Claw Slashes
+  const clickRingGeo = new THREE.RingGeometry(0.45, 0.72, 24);
+  clickRingGeo.rotateX(-Math.PI / 2);
+  const clickRingMat = new THREE.MeshBasicMaterial({
+    color: 0x62f8ff,
+    transparent: true,
+    opacity: 0.82,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const clickRingMesh = new THREE.Mesh(clickRingGeo, clickRingMat);
+  clickRingMesh.visible = false;
+  clickRingMesh.renderOrder = 4;
+  scene.add(clickRingMesh);
+
+  const hazardRingGeo = new THREE.RingGeometry(0.84, 1.0, 28);
+  hazardRingGeo.rotateX(-Math.PI / 2);
+  const hazardDiscGeo = new THREE.CircleGeometry(0.92, 24);
+  hazardDiscGeo.rotateX(-Math.PI / 2);
+  const hazardMeteorGeo = new THREE.SphereGeometry(0.45, 10, 8);
+  const hazardVisPool: Array<{
+    ring: THREE.Mesh;
+    disc: THREE.Mesh;
+    proj: THREE.Mesh;
+    ringMat: THREE.MeshBasicMaterial;
+    discMat: THREE.MeshBasicMaterial;
+    projMat: THREE.MeshBasicMaterial;
+  }> = [];
+  for (let i = 0; i < 10; i += 1) {
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0xff3b2f,
+      transparent: true,
+      opacity: 0.9,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const discMat = new THREE.MeshBasicMaterial({
+      color: 0xff6230,
+      transparent: true,
+      opacity: 0.28,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const projMat = new THREE.MeshBasicMaterial({ color: 0xffa62b });
+    const ring = new THREE.Mesh(hazardRingGeo, ringMat);
+    const disc = new THREE.Mesh(hazardDiscGeo, discMat);
+    const proj = new THREE.Mesh(hazardMeteorGeo, projMat);
+    ring.visible = false;
+    disc.visible = false;
+    proj.visible = false;
+    ring.renderOrder = 4;
+    disc.renderOrder = 4;
+    scene.add(ring, disc, proj);
+    disposables.push(ringMat, discMat, projMat);
+    hazardVisPool.push({ ring, disc, proj, ringMat, discMat, projMat });
+  }
+
+  const boltGeo = buildLightningBoltGeometry();
+  const boltMat = new THREE.MeshBasicMaterial({
+    color: 0xbef6ff,
+    transparent: true,
+    opacity: 0.95,
+    vertexColors: true,
+  });
+  const boltPool: Array<{ mesh: THREE.Mesh; age: number; active: boolean }> = [];
+  for (let i = 0; i < 4; i += 1) {
+    const mesh = new THREE.Mesh(boltGeo, boltMat);
+    mesh.visible = false;
+    scene.add(mesh);
+    boltPool.push({ mesh, age: 0, active: false });
+  }
+
+  const clawSlashGeo = buildClawSlashGeometry();
+  const clawSlashPool: Array<{
+    mesh: THREE.Mesh;
+    mat: THREE.MeshBasicMaterial;
+    age: number;
+    active: boolean;
+  }> = [];
+  for (let i = 0; i < 4; i += 1) {
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.95,
+      vertexColors: true,
+    });
+    const mesh = new THREE.Mesh(clawSlashGeo, mat);
+    mesh.visible = false;
+    mesh.renderOrder = 5;
+    scene.add(mesh);
+    disposables.push(mat);
+    clawSlashPool.push({ mesh, mat, age: 0, active: false });
+  }
+
+  const predWarnRingGeo = new THREE.RingGeometry(0.75, 1.02, 24);
+  predWarnRingGeo.rotateX(-Math.PI / 2);
+  const predWarnRingMat = new THREE.MeshBasicMaterial({
+    color: 0xff2b2b,
+    transparent: true,
+    opacity: 0.85,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const predWarnPool: THREE.Mesh[] = [];
+  for (let i = 0; i < 6; i += 1) {
+    const m = new THREE.Mesh(predWarnRingGeo, predWarnRingMat);
+    m.visible = false;
+    m.renderOrder = 4;
+    scene.add(m);
+    predWarnPool.push(m);
+  }
+
+  // Seasonal Instanced Falling Leaf / Snowflake Particle Pool (120 motes)
+  const seasonParticleCount = 120;
+  const leafSnowGeo = buildLeafSnowQuadGeometry();
+  const leafSnowMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.92,
+  });
+  const leafSnowInst = new THREE.InstancedMesh(leafSnowGeo, leafSnowMat, seasonParticleCount);
+  leafSnowInst.frustumCulled = false;
+  leafSnowInst.visible = false;
+  scene.add(leafSnowInst);
+  const seasonParticleData: Array<{
+    x: number;
+    y: number;
+    z: number;
+    spd: number;
+    phase: number;
+    spin: number;
+    tintIdx: number;
+  }> = [];
+  for (let i = 0; i < seasonParticleCount; i += 1) {
+    seasonParticleData.push({
+      x: Math.sin(i * 17.7) * 20,
+      y: ((i * 0.43) % 1) * 14,
+      z: Math.cos(i * 23.1) * 18,
+      spd: 1.6 + (i % 5) * 0.42,
+      phase: i * 0.71,
+      spin: (i % 2 === 0 ? 1 : -1) * (1.8 + (i % 4) * 0.5),
+      tintIdx: i % 4,
+    });
+  }
+  const autumnPalette = [
+    new THREE.Color(0xff7b1c),
+    new THREE.Color(0xffa62b),
+    new THREE.Color(0xe3451e),
+    new THREE.Color(0xffcf40),
+  ];
+  const winterColor = new THREE.Color(0xf4fbff);
+  const seasonDummy = new THREE.Object3D();
+
+  disposables.push(
+    harvestRingGeo,
+    harvestRingMat,
+    focusRingGeo,
+    focusRingMat,
+    hammerRingGeo,
+    hammerRingMat,
+    arrowGeoProj,
+    arrowProjMat,
+    eventProjGeo,
+    lavaBombMat,
+    meteorMat,
+    clickRingGeo,
+    clickRingMat,
+    hazardRingGeo,
+    hazardDiscGeo,
+    hazardMeteorGeo,
+    boltGeo,
+    boltMat,
+    clawSlashGeo,
+    predWarnRingGeo,
+    predWarnRingMat,
+    leafSnowGeo,
+    leafSnowMat
+  );
 
   let obeliskCrystal: THREE.Mesh | null = null;
   let obeliskHalo: THREE.Mesh | null = null;
+  let obeliskHaloInner: THREE.Mesh | null = null;
   let lavaPoolMesh: THREE.Mesh | null = null;
   let springWaterMesh: THREE.Mesh | null = null;
+  let waterfallMat: THREE.ShaderMaterial | null = null;
   let beaconFlameMesh: THREE.Mesh | null = null;
+  let beaconBeamMesh: THREE.Mesh | null = null;
   let fireflyGroup: THREE.Group | null = null;
   let campFlames: THREE.Mesh[] = [];
   let campAuraRing: THREE.Mesh | null = null;
+  let campCoalBed: THREE.Mesh | null = null;
+  let campEmberInst: THREE.InstancedMesh | null = null;
+  const campEmberSeeds: Array<{ ang: number; rad: number; spd: number; phase: number }> = [];
+  for (let i = 0; i < 48; i += 1) {
+    campEmberSeeds.push({
+      ang: (i / 48) * Math.PI * 2 * 3,
+      rad: 0.14 + (i % 5) * 0.11,
+      spd: 0.7 + (i % 4) * 0.25,
+      phase: (i / 48) * 1.0,
+    });
+  }
   let windUniformTime: { value: number } | null = null;
+  const seasonUniformMix = { value: 0 };
+  const seasonUniformKind = { value: 0 };
+  let activeTerrainMesh: THREE.Mesh | null = null;
+  let activeTerrainMat: THREE.MeshStandardMaterial | null = null;
+  let activeRockMainMat: THREE.MeshStandardMaterial | null = null;
+  let activeRockLightMat: THREE.MeshStandardMaterial | null = null;
+  let activePebbleMat: THREE.MeshStandardMaterial | null = null;
   let islandDisposables: Array<{ dispose: () => void }> = [];
 
-  // Interactive harvest, fishing, shell & camp build pad visual bindings
+  // Interactive harvest, fishing, shell, secret chests & camp build pad visual bindings
   const bushNodeVisuals = new Map<string, { group: THREE.Group; berries: THREE.Mesh[]; baseScale: number }>();
   const shellNodeVisuals = new Map<string, { mesh: THREE.Mesh; baseScale: number }>();
   const fishingVisuals = new Map<string, { fishA: THREE.Mesh; fishB: THREE.Mesh; ripple: THREE.Mesh; waterX: number; waterZ: number }>();
   const buildPadVisuals = new Map<CampUpgradeId, { padGroup: THREE.Group; builtGroup: THREE.Group; popAge: number }>();
   const landmarkRingVisuals = new Map<StrangeLandmarkId, THREE.Mesh>();
+  const secretSpotVisuals = new Map<
+    string,
+    { group: THREE.Group; lid: THREE.Mesh; glowRing: THREE.Mesh; sparkles: THREE.Mesh[]; openAnim: number }
+  >();
   const treeNodeVisuals = new Map<string, InstancedTreeBinding>();
   const bananaBunchVisuals = new Map<string, { trunkMesh: THREE.InstancedMesh; canopyMesh: THREE.InstancedMesh; bunchMesh: THREE.InstancedMesh; index: number; prop: IslandProp }>();
   const animalGeoLib = createAnimalGeometryLibrary();
@@ -902,6 +1313,7 @@ export function createThreeIslandGame(
   let campRoastGroup: THREE.Group | null = null;
   let campRoastFish: THREE.Mesh | null = null;
   let campRoastBanana: THREE.Mesh | null = null;
+  let campRoastMeat: THREE.Mesh | null = null;
 
   // Shared geometries & materials for survivor back-stack + flying 3D item arcs
   const stackWoodGeo = buildWoodLogGeometry(0.085, 0.52);
@@ -909,6 +1321,7 @@ export function createThreeIslandGame(
   const stackBerryGeo = new THREE.SphereGeometry(0.09, 8, 7);
   const stackShellGeo = buildSeashellGeometry();
   const stackBananaGeo = buildBananaItemGeometry(1.0);
+  const stackMeatGeo = buildMeatCutGeometry();
   const stackVertexMat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     roughness: 0.72,
@@ -922,6 +1335,7 @@ export function createThreeIslandGame(
     stackBerryGeo,
     stackShellGeo,
     stackBananaGeo,
+    stackMeatGeo,
     stackVertexMat,
     animalGeoLib
   );
@@ -935,6 +1349,7 @@ export function createThreeIslandGame(
       berryGeo: stackBerryGeo,
       shellGeo: stackShellGeo,
       bananaGeo: stackBananaGeo,
+      meatGeo: stackMeatGeo,
       stackMat: stackVertexMat,
       berryMat: stackBerryMat,
     }
@@ -986,6 +1401,7 @@ export function createThreeIslandGame(
   const chipWaterMat = new THREE.MeshBasicMaterial({ color: 0x8ef8ff });
   const chipBerryMat = new THREE.MeshBasicMaterial({ color: 0xff4764 });
   const chipShellMat = new THREE.MeshBasicMaterial({ color: 0xffb3c7 });
+  const chipMeatMat = new THREE.MeshBasicMaterial({ color: 0xe64538 });
   const emberMat = new THREE.MeshBasicMaterial({ color: 0xffa62b });
   disposables.push(
     puffGeo,
@@ -996,6 +1412,7 @@ export function createThreeIslandGame(
     chipWaterMat,
     chipBerryMat,
     chipShellMat,
+    chipMeatMat,
     emberMat
   );
 
@@ -1071,6 +1488,7 @@ export function createThreeIslandGame(
     fishingVisuals.clear();
     buildPadVisuals.clear();
     landmarkRingVisuals.clear();
+    secretSpotVisuals.clear();
     treeNodeVisuals.clear();
     bananaBunchVisuals.clear();
     for (const rig of animalRigBindings.values()) {
@@ -1083,15 +1501,26 @@ export function createThreeIslandGame(
     }
     obeliskCrystal = null;
     obeliskHalo = null;
+    obeliskHaloInner = null;
     lavaPoolMesh = null;
     springWaterMesh = null;
+    waterfallMat = null;
     beaconFlameMesh = null;
+    beaconBeamMesh = null;
     fireflyGroup = null;
     campFlames = [];
     campAuraRing = null;
+    campCoalBed = null;
+    campEmberInst = null;
     campRoastGroup = null;
     campRoastFish = null;
     campRoastBanana = null;
+    campRoastMeat = null;
+    activeTerrainMesh = null;
+    activeTerrainMat = null;
+    activeRockMainMat = null;
+    activeRockLightMat = null;
+    activePebbleMat = null;
   };
 
   const buildWeirdLandmarks = (world: IslandWorldData) => {
@@ -1160,18 +1589,50 @@ export function createThreeIslandGame(
     logs.castShadow = true;
     campGroup.add(logs);
 
+    const coalBedGeo = new THREE.CircleGeometry(0.64, 16);
+    coalBedGeo.rotateX(-Math.PI / 2);
+    const coalBedMat = new THREE.MeshStandardMaterial({
+      color: 0xff5a12,
+      emissive: 0xff4200,
+      emissiveIntensity: 1.5,
+      roughness: 0.4,
+    });
+    campCoalBed = new THREE.Mesh(coalBedGeo, coalBedMat);
+    campCoalBed.position.y = 0.05;
+    campGroup.add(campCoalBed);
+
+    const flameWhiteCoreMat = new THREE.MeshStandardMaterial({
+      color: 0xfff8d6,
+      emissive: 0xffea88,
+      emissiveIntensity: 1.85,
+      roughness: 0.15,
+    });
+    const campEmberGeo = new THREE.SphereGeometry(0.05, 6, 5);
+    const campEmberMat = new THREE.MeshBasicMaterial({ color: 0xffbc42 });
+    campEmberInst = new THREE.InstancedMesh(campEmberGeo, campEmberMat, campEmberSeeds.length);
+    campEmberInst.frustumCulled = false;
+    campGroup.add(campEmberInst);
+    islandDisposables.push(coalBedGeo, coalBedMat, flameWhiteCoreMat, campEmberGeo, campEmberMat);
+
     const flameMain = new THREE.Mesh(campFlameGeo, flameOuterMat);
-    flameMain.position.y = 0.18;
-    flameMain.scale.set(0.95, 1.05, 0.95);
+    flameMain.position.y = 0.2;
+    flameMain.scale.set(1.05, 1.15, 1.05);
     const flameCore = new THREE.Mesh(campFlameGeo, flameInnerMat);
-    flameCore.position.y = 0.22;
-    flameCore.scale.set(0.62, 0.78, 0.62);
+    flameCore.position.y = 0.24;
+    flameCore.scale.set(0.68, 0.88, 0.68);
+    const flameTip = new THREE.Mesh(campFlameGeo, flameWhiteCoreMat);
+    flameTip.position.y = 0.28;
+    flameTip.scale.set(0.38, 0.56, 0.38);
     const flameSide = new THREE.Mesh(campFlameGeo, flameOuterMat);
-    flameSide.position.set(0.14, 0.18, -0.08);
-    flameSide.rotation.z = -0.18;
-    flameSide.scale.set(0.55, 0.68, 0.55);
-    campFlames = [flameMain, flameCore, flameSide];
-    campGroup.add(flameMain, flameCore, flameSide);
+    flameSide.position.set(0.18, 0.19, -0.09);
+    flameSide.rotation.z = -0.22;
+    flameSide.scale.set(0.58, 0.72, 0.58);
+    const flameSideL = new THREE.Mesh(campFlameGeo, flameInnerMat);
+    flameSideL.position.set(-0.17, 0.2, 0.1);
+    flameSideL.rotation.z = 0.2;
+    flameSideL.scale.set(0.52, 0.66, 0.52);
+    campFlames = [flameMain, flameCore, flameSide, flameSideL, flameTip];
+    campGroup.add(flameMain, flameCore, flameTip, flameSide, flameSideL);
 
     const campChest = new THREE.Mesh(campChestGeo, woodMat);
     campChest.position.set(1.25, 0.02, -0.75);
@@ -1203,7 +1664,11 @@ export function createThreeIslandGame(
     campRoastBanana.position.set(0, 0.86, 0);
     campRoastBanana.scale.setScalar(1.45);
     campRoastBanana.visible = false;
-    campRoastGroup.add(postL, postR, crossbar, campRoastFish, campRoastBanana);
+    campRoastMeat = new THREE.Mesh(stackMeatGeo, stackVertexMat);
+    campRoastMeat.position.set(0, 0.86, 0);
+    campRoastMeat.scale.setScalar(1.42);
+    campRoastMeat.visible = false;
+    campRoastGroup.add(postL, postR, crossbar, campRoastFish, campRoastBanana, campRoastMeat);
     campRoastGroup.visible = false;
     campGroup.add(campRoastGroup);
 
@@ -1229,6 +1694,7 @@ export function createThreeIslandGame(
     const shelterGeo = buildCampShelterGeometry();
     const rackGeo = buildStorageRackGeometry();
     const pierGeo = buildFishingPierGeometry();
+    const boatGeo = buildBoatCradleGeometry();
     islandDisposables.push(
       padRingGeo,
       padMarkerGeo,
@@ -1236,7 +1702,8 @@ export function createThreeIslandGame(
       builtStructureMat,
       shelterGeo,
       rackGeo,
-      pierGeo
+      pierGeo,
+      boatGeo
     );
 
     for (const pad of world.buildPads) {
@@ -1262,7 +1729,13 @@ export function createThreeIslandGame(
       builtGroup.visible = false;
 
       const structGeo =
-        pad.id === 'shelter' ? shelterGeo : pad.id === 'rack' ? rackGeo : pierGeo;
+        pad.id === 'shelter'
+          ? shelterGeo
+          : pad.id === 'rack'
+            ? rackGeo
+            : pad.id === 'pier'
+              ? pierGeo
+              : boatGeo;
       const structMesh = new THREE.Mesh(structGeo, builtStructureMat);
       structMesh.castShadow = true;
       structMesh.receiveShadow = true;
@@ -1298,7 +1771,64 @@ export function createThreeIslandGame(
       landmarkRingVisuals.set(lm.id, lmRing);
     }
 
-    // 1. ANCIENT RUINS: Sculpted Weathered Altar + Curved Sun-Crystal + Monolith Arch (Zero Boxes/Octahedrons!)
+    // 0D. 5 HIDDEN SECRET PLACE CHESTS (With hinged animated lid + firefly halo!)
+    if (world.secretSpots && world.secretSpots.length > 0) {
+      const secretBaseGeo = buildSecretChestBaseGeometry();
+      const secretLidGeo = buildSecretChestLidGeometry();
+      const secretMat = new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        roughness: 0.5,
+        metalness: 0.18,
+        vertexColors: true,
+      });
+      const secretGlowGeo = new THREE.RingGeometry(0.95, 1.32, 28);
+      secretGlowGeo.rotateX(-Math.PI / 2);
+      const secretSparkGeo = new THREE.SphereGeometry(0.08, 7, 6);
+      const secretSparkMat = new THREE.MeshBasicMaterial({ color: 0xffea75 });
+      islandDisposables.push(secretBaseGeo, secretLidGeo, secretMat, secretGlowGeo, secretSparkGeo, secretSparkMat);
+
+      for (const sec of world.secretSpots) {
+        const sGroup = new THREE.Group();
+        sGroup.position.set(sec.x, sec.y - 0.03, sec.z);
+        sGroup.rotation.y = Math.atan2(-sec.x, -sec.z);
+
+        const baseMesh = new THREE.Mesh(secretBaseGeo, secretMat);
+        baseMesh.castShadow = true;
+        baseMesh.receiveShadow = true;
+        sGroup.add(baseMesh);
+
+        const lidMesh = new THREE.Mesh(secretLidGeo, secretMat);
+        lidMesh.position.set(0, 0.66, -0.32);
+        lidMesh.castShadow = true;
+        sGroup.add(lidMesh);
+
+        const glowMat = new THREE.MeshBasicMaterial({
+          color: 0xffd24d,
+          transparent: true,
+          opacity: 0.72,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        });
+        const glowRing = new THREE.Mesh(secretGlowGeo, glowMat);
+        glowRing.position.y = 0.08;
+        sGroup.add(glowRing);
+        islandDisposables.push(glowMat);
+
+        const sparkles: THREE.Mesh[] = [];
+        for (let k = 0; k < 3; k += 1) {
+          const sp = new THREE.Mesh(secretSparkGeo, secretSparkMat);
+          const ang = (k / 3) * Math.PI * 2;
+          sp.position.set(Math.cos(ang) * 0.75, 1.05 + k * 0.14, Math.sin(ang) * 0.75);
+          sGroup.add(sp);
+          sparkles.push(sp);
+        }
+
+        islandGroup.add(sGroup);
+        secretSpotVisuals.set(sec.id, { group: sGroup, lid: lidMesh, glowRing, sparkles, openAnim: 0 });
+      }
+    }
+
+    // 1. ANCIENT RUINS: Stepped Sun Dais + Dual Rune Halos + 4 Glowing Braziers + Monolith Arch
     const ruinsBaseY = groundHeightAt(RUINS.CX, RUINS.CZ, world);
     const ruinsGroup = new THREE.Group();
     ruinsGroup.position.set(RUINS.CX, ruinsBaseY - 0.08, RUINS.CZ);
@@ -1308,30 +1838,55 @@ export function createThreeIslandGame(
     const altarTopGeo = buildSculptedBoulderGeometry(1.75, 2.7, false);
     altarTopGeo.scale(1.0, 0.2, 1.0);
     const obeliskGeo = buildSculptedSunCrystalGeometry();
-    const haloGeo = new THREE.TorusGeometry(1.75, 0.085, 10, 32);
+    const haloGeo = new THREE.TorusGeometry(1.85, 0.085, 10, 36);
+    const haloInnerGeo = new THREE.TorusGeometry(1.25, 0.055, 8, 28);
+    const sunDialRingGeo = new THREE.RingGeometry(2.45, 2.72, 36);
+    sunDialRingGeo.rotateX(-Math.PI / 2);
+    const brazierGeo = buildBrazierGeometry();
+    const brazierFlameGeo = buildFlameTongueGeometry();
     const archPillarGeo = buildSculptedStoneSlabGeometry(1.05, 3.6, 1.05, 1.5);
     const archLintelGeo = buildSculptedStoneSlabGeometry(5.6, 0.92, 1.2, 2.8);
     const obeliskMat = new THREE.MeshStandardMaterial({
       color: CONFIG.COLORS.OBELISK_GLOW,
       emissive: CONFIG.COLORS.OBELISK_GLOW,
-      emissiveIntensity: 0.82,
-      roughness: 0.18,
+      emissiveIntensity: 0.92,
+      roughness: 0.16,
       metalness: 0.25,
     });
     const haloMat = new THREE.MeshBasicMaterial({
       color: 0xa2faff,
       transparent: true,
-      opacity: 0.78,
+      opacity: 0.8,
+    });
+    const sunGoldMat = new THREE.MeshStandardMaterial({
+      color: 0xffd24d,
+      emissive: 0xffaa1c,
+      emissiveIntensity: 0.65,
+      roughness: 0.25,
+      metalness: 0.45,
+      side: THREE.DoubleSide,
+    });
+    const brazierFlameMat = new THREE.MeshStandardMaterial({
+      color: 0xffb838,
+      emissive: 0xff6a00,
+      emissiveIntensity: 1.45,
+      roughness: 0.15,
     });
     islandDisposables.push(
       altarBaseGeo,
       altarTopGeo,
       obeliskGeo,
       haloGeo,
+      haloInnerGeo,
+      sunDialRingGeo,
+      brazierGeo,
+      brazierFlameGeo,
       archPillarGeo,
       archLintelGeo,
       obeliskMat,
-      haloMat
+      haloMat,
+      sunGoldMat,
+      brazierFlameMat
     );
 
     const altarBase = new THREE.Mesh(altarBaseGeo, stoneDarkMat);
@@ -1343,6 +1898,9 @@ export function createThreeIslandGame(
     altarTop.position.y = 0.48;
     altarTop.castShadow = true;
 
+    const sunDialRing = new THREE.Mesh(sunDialRingGeo, sunGoldMat);
+    sunDialRing.position.y = 0.14;
+
     obeliskCrystal = new THREE.Mesh(obeliskGeo, obeliskMat);
     obeliskCrystal.position.y = 2.85;
     obeliskCrystal.castShadow = true;
@@ -1350,6 +1908,21 @@ export function createThreeIslandGame(
     obeliskHalo = new THREE.Mesh(haloGeo, haloMat);
     obeliskHalo.rotation.x = Math.PI / 2;
     obeliskHalo.position.y = 1.75;
+
+    obeliskHaloInner = new THREE.Mesh(haloInnerGeo, sunGoldMat);
+    obeliskHaloInner.rotation.x = Math.PI * 0.36;
+    obeliskHaloInner.position.y = 2.55;
+
+    for (let b = 0; b < 4; b += 1) {
+      const ba = (b / 4) * Math.PI * 2 + Math.PI * 0.25;
+      const brazier = new THREE.Mesh(brazierGeo, stoneDarkMat);
+      brazier.position.set(Math.cos(ba) * 3.85, 0.08, Math.sin(ba) * 3.85);
+      brazier.castShadow = true;
+      const bFlame = new THREE.Mesh(brazierFlameGeo, brazierFlameMat);
+      bFlame.position.set(Math.cos(ba) * 3.85, 0.96, Math.sin(ba) * 3.85);
+      bFlame.scale.setScalar(0.68);
+      ruinsGroup.add(brazier, bFlame);
+    }
 
     const archL = new THREE.Mesh(archPillarGeo, stoneMat);
     archL.position.set(-2.1, 1.75, -5.2);
@@ -1362,7 +1935,17 @@ export function createThreeIslandGame(
     archTop.rotation.z = 0.04;
     archTop.castShadow = true;
 
-    ruinsGroup.add(altarBase, altarTop, obeliskCrystal, obeliskHalo, archL, archR, archTop);
+    ruinsGroup.add(
+      altarBase,
+      altarTop,
+      sunDialRing,
+      obeliskCrystal,
+      obeliskHalo,
+      obeliskHaloInner,
+      archL,
+      archR,
+      archTop
+    );
     islandGroup.add(ruinsGroup);
 
     // Organic Weathered Standing Pillars & Rune Monoliths
@@ -1404,13 +1987,13 @@ export function createThreeIslandGame(
       islandGroup.add(cg);
     }
 
-    // 2. VOLCANO CALDERA: Animated GPU Molten Lava Lake + Sculpted Basalt & Magma Crags (Zero Cones!)
+    // 2. VOLCANO CALDERA: Animated Molten Lava Lake + Obsidian Magma Forge Anvil + Basalt Crags
     const pitGroundY = groundHeightAt(VOLCANO.CX, VOLCANO.CZ, world);
     const rimLevel = groundHeightAt(VOLCANO.CX + 5.3, VOLCANO.CZ, world);
     const volcGroup = new THREE.Group();
     volcGroup.position.set(VOLCANO.CX, pitGroundY + 0.52, VOLCANO.CZ);
 
-    const lavaGeo = new THREE.CircleGeometry(3.45, 28);
+    const lavaGeo = new THREE.CircleGeometry(3.55, 28);
     lavaGeo.rotateX(-Math.PI / 2);
     const lavaMat = new THREE.ShaderMaterial({
       uniforms: {
@@ -1443,17 +2026,34 @@ export function createThreeIslandGame(
     });
     const spireOuterGeo = buildOrganicBasaltCragGeometry(0.95, 2.75, 2.3);
     const spireCoreGeo = buildOrganicBasaltCragGeometry(0.46, 2.1, 5.1);
+    const anvilGeo = buildAnvilGeometry();
+    const anvilMat = getPbrMat(0x2a2d36, 0.45);
     const spireMat = new THREE.MeshStandardMaterial({
       color: 0xff6d2e,
       emissive: 0xff4512,
-      emissiveIntensity: 0.72,
+      emissiveIntensity: 0.78,
       roughness: 0.2,
     });
-    islandDisposables.push(lavaGeo, lavaMat, spireOuterGeo, spireCoreGeo, spireMat);
+    islandDisposables.push(lavaGeo, lavaMat, spireOuterGeo, spireCoreGeo, anvilGeo, spireMat);
 
     lavaPoolMesh = new THREE.Mesh(lavaGeo, lavaMat);
     volcGroup.add(lavaPoolMesh);
     islandGroup.add(volcGroup);
+
+    // Obsidian Magma Forge Anvil beside the Volcano Shrine site!
+    const forgeX = VOLCANO.CX - 6.8;
+    const forgeZ = VOLCANO.CZ + 2.5;
+    const forgeY = groundHeightAt(forgeX, forgeZ, world);
+    const anvilMesh = new THREE.Mesh(anvilGeo, anvilMat);
+    anvilMesh.position.set(forgeX, forgeY - 0.05, forgeZ);
+    anvilMesh.rotation.y = 0.65;
+    anvilMesh.scale.setScalar(1.18);
+    anvilMesh.castShadow = true;
+    islandGroup.add(anvilMesh);
+    const forgeGlow = new THREE.Mesh(brazierFlameGeo, spireMat);
+    forgeGlow.position.set(forgeX + 0.1, forgeY + 0.94, forgeZ);
+    forgeGlow.scale.setScalar(0.36);
+    islandGroup.add(forgeGlow);
 
     for (let i = 0; i < 6; i += 1) {
       const a = (i / 6) * Math.PI * 2 + 0.35;
@@ -1480,9 +2080,9 @@ export function createThreeIslandGame(
       islandGroup.add(sg);
     }
 
-    // 3. NORTHERN CRYSTAL HOT SPRING
+    // 3. NORTHERN CRYSTAL HOT SPRING + TERRACED WATERFALL + CRYSTAL SPIRES
     const springGroundY = groundHeightAt(SPRING.CX, SPRING.CZ, world);
-    const springPoolGeo = new THREE.CircleGeometry(4.45, 32);
+    const springPoolGeo = new THREE.CircleGeometry(4.55, 32);
     springPoolGeo.rotateX(-Math.PI / 2);
     const springPoolMat = new THREE.ShaderMaterial({
       transparent: true,
@@ -1511,12 +2111,97 @@ export function createThreeIslandGame(
         }
       `,
     });
-    islandDisposables.push(springPoolGeo, springPoolMat);
+    const wfRockGeo = buildSculptedBoulderGeometry(1.75, 4.4);
+    wfRockGeo.scale(1.35, 1.45, 0.95);
+    const waterfallGeo = new THREE.PlaneGeometry(2.1, 3.2, 6, 10);
+    waterfallMat = new THREE.ShaderMaterial({
+      transparent: true,
+      side: THREE.DoubleSide,
+      uniforms: {
+        uTime: { value: 0 },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        varying vec2 vUv;
+        void main() {
+          float streak = sin(vUv.x * 22.0) * 0.5 + 0.5;
+          float flow = sin(vUv.y * 18.0 + uTime * 7.5 + streak * 2.0) * 0.5 + 0.5;
+          float foamEdge = smoothstep(0.0, 0.22, vUv.y) * smoothstep(1.0, 0.8, vUv.y);
+          vec3 waterCol = mix(vec3(0.28, 0.9, 1.0), vec3(0.94, 1.0, 1.0), flow * 0.65 + (1.0 - foamEdge) * 0.45);
+          gl_FragColor = vec4(waterCol, 0.84);
+        }
+      `,
+    });
+    const springSpireGeo = buildCrystalClusterGeometry();
+    const springSpireMat = new THREE.MeshStandardMaterial({
+      color: 0x72f7ff,
+      emissive: 0x3ee5ff,
+      emissiveIntensity: 0.55,
+      roughness: 0.18,
+      metalness: 0.18,
+    });
+    const wfSpoutGeo = buildSculptedStoneSlabGeometry(1.4, 0.36, 0.85, 2.2);
+    const wfFoamGeo = new THREE.TorusGeometry(0.95, 0.22, 6, 16);
+    wfFoamGeo.rotateX(Math.PI / 2);
+    const wfFoamMat = new THREE.MeshStandardMaterial({
+      color: 0xe6ffff,
+      emissive: 0x8ef7ff,
+      emissiveIntensity: 0.35,
+      roughness: 0.25,
+      transparent: true,
+      opacity: 0.85,
+    });
+    islandDisposables.push(
+      springPoolGeo,
+      springPoolMat,
+      wfRockGeo,
+      waterfallGeo,
+      waterfallMat,
+      wfSpoutGeo,
+      wfFoamGeo,
+      wfFoamMat,
+      springSpireGeo,
+      springSpireMat
+    );
     springWaterMesh = new THREE.Mesh(springPoolGeo, springPoolMat);
     springWaterMesh.position.set(SPRING.CX, springGroundY + 0.5, SPRING.CZ);
     islandGroup.add(springWaterMesh);
 
-    // 4. GIANT BIOLUMINESCENT MUSHROOMS + FIREFLIES
+    const wfRock = new THREE.Mesh(wfRockGeo, stoneDarkMat);
+    wfRock.position.set(SPRING.CX, springGroundY + 1.45, SPRING.CZ - 5.95);
+    wfRock.castShadow = true;
+    const wfSpout = new THREE.Mesh(wfSpoutGeo, stoneMat);
+    wfSpout.position.set(SPRING.CX, springGroundY + 2.75, SPRING.CZ - 4.45);
+    wfSpout.castShadow = true;
+    const wfSheet = new THREE.Mesh(waterfallGeo, waterfallMat);
+    wfSheet.position.set(SPRING.CX, springGroundY + 1.72, SPRING.CZ - 3.74);
+    wfSheet.rotation.x = -0.18;
+    const wfFoam = new THREE.Mesh(wfFoamGeo, wfFoamMat);
+    wfFoam.position.set(SPRING.CX, springGroundY + 0.56, SPRING.CZ - 3.42);
+    wfFoam.scale.set(1.25, 0.45, 0.72);
+    islandGroup.add(wfRock, wfSpout, wfSheet, wfFoam);
+
+    for (let i = 0; i < 4; i += 1) {
+      const sa = (i / 4) * Math.PI * 2 + 0.65;
+      const spire = new THREE.Mesh(springSpireGeo, springSpireMat);
+      spire.position.set(
+        SPRING.CX + Math.cos(sa) * 4.85,
+        springGroundY + 0.1,
+        SPRING.CZ + Math.sin(sa) * 4.85
+      );
+      spire.scale.setScalar(1.25 + (i % 2) * 0.35);
+      spire.rotation.y = sa;
+      islandGroup.add(spire);
+    }
+
+    // 4. GIANT BIOLUMINESCENT MUSHROOMS + SPORE LANTERN CLUSTERS + FIREFLIES
     const stemMat = getPbrMat(CONFIG.COLORS.MUSHROOM_STEM, 0.82);
     const gillMat = getPbrMat(0xd6b5c8, 0.86);
     const capMatA = getPbrMat(CONFIG.COLORS.MUSHROOM_CAP_A, 0.58);
@@ -1533,7 +2218,23 @@ export function createThreeIslandGame(
     const gillRingGeo = new THREE.TorusGeometry(0.42, 0.08, 8, 16);
     gillRingGeo.rotateX(Math.PI / 2);
     const spotGeo = new THREE.SphereGeometry(0.17, 12, 10);
-    islandDisposables.push(spotMat, stemGeo, capGeo, gillConeGeo, gillRingGeo, spotGeo);
+    const sporeOrbGeo = new THREE.SphereGeometry(0.13, 8, 7);
+    const sporeOrbMat = new THREE.MeshStandardMaterial({
+      color: 0xffa8f5,
+      emissive: 0xd966ff,
+      emissiveIntensity: 1.1,
+      roughness: 0.2,
+    });
+    islandDisposables.push(
+      spotMat,
+      stemGeo,
+      capGeo,
+      gillConeGeo,
+      gillRingGeo,
+      spotGeo,
+      sporeOrbGeo,
+      sporeOrbMat
+    );
 
     for (const mush of world.props.filter((p) => p.kind === 'mushroom')) {
       const mg = new THREE.Group();
@@ -1586,6 +2287,14 @@ export function createThreeIslandGame(
         mg.add(sp);
       }
 
+      // Hanging glowing spore lanterns under giant cap edge
+      for (let h = 0; h < 3; h += 1) {
+        const ha = (h / 3) * Math.PI * 2 + 0.5;
+        const orb = new THREE.Mesh(sporeOrbGeo, h % 2 === 0 ? spotMat : sporeOrbMat);
+        orb.position.set(capCenterX + Math.cos(ha) * 1.02, 1.62 - (h % 2) * 0.18, Math.sin(ha) * 1.02);
+        mg.add(orb);
+      }
+
       const miniStem = new THREE.Mesh(stemGeo, stemMat);
       miniStem.position.set(0.46, 0.34, 0.36);
       miniStem.scale.setScalar(0.32);
@@ -1599,19 +2308,19 @@ export function createThreeIslandGame(
 
     fireflyGroup = new THREE.Group();
     fireflyGroup.position.set(MUSHROOM.CX, groundHeightAt(MUSHROOM.CX, MUSHROOM.CZ, world) + 1.5, MUSHROOM.CZ);
-    const ffGeo = new THREE.SphereGeometry(0.1, 6, 6);
+    const ffGeo = new THREE.SphereGeometry(0.11, 6, 6);
     const ffMat = new THREE.MeshBasicMaterial({ color: 0x8efeff });
     islandDisposables.push(ffGeo, ffMat);
-    for (let i = 0; i < 20; i += 1) {
+    for (let i = 0; i < 30; i += 1) {
       const ff = new THREE.Mesh(ffGeo, ffMat);
-      const a = (i / 20) * Math.PI * 2;
-      const dist = 2.5 + (i % 5) * 2.1;
-      ff.position.set(Math.cos(a) * dist, (i % 3) * 0.65, Math.sin(a) * dist);
+      const a = (i / 30) * Math.PI * 2;
+      const dist = 2.2 + (i % 6) * 2.0;
+      ff.position.set(Math.cos(a) * dist, (i % 4) * 0.55, Math.sin(a) * dist);
       fireflyGroup.add(ff);
     }
     islandGroup.add(fireflyGroup);
 
-    // 5. SHIPWRECK COVE: Sculpted Curved Wooden Hull + Arched Deckhouse + Rounded Chest & Barrel + Lighthouse
+    // 5. SHIPWRECK COVE: Sculpted Hull + Pirate Pennant + Ship Wheel + Iron Anchor + Rotating Lighthouse Beam
     const hullGroundY = groundHeightAt(SHIPWRECK.HULL_CX, SHIPWRECK.HULL_CZ, world);
     const shipGroup = new THREE.Group();
     shipGroup.position.set(SHIPWRECK.HULL_CX, hullGroundY - 0.02, SHIPWRECK.HULL_CZ);
@@ -1625,9 +2334,27 @@ export function createThreeIslandGame(
     const yardGeo = new THREE.CapsuleGeometry(0.075, 2.8, 5, 8);
     yardGeo.rotateZ(Math.PI / 2);
     const sailGeo = new THREE.CylinderGeometry(1.5, 1.5, 2.15, 12, 1, true, -0.55, 1.1);
+    const pennantGeo = new THREE.ConeGeometry(0.32, 0.95, 4);
+    pennantGeo.rotateZ(-Math.PI / 2);
+    const pennantMat = getPbrMat(0xd93025, 0.65);
+    const wheelRimGeo = new THREE.TorusGeometry(0.38, 0.045, 7, 16);
+    const anchorGeo = buildAnchorGeometry();
+    const ironMat = getPbrMat(0x3a434d, 0.55);
     const chestGeo = buildRoundedChestGeometry();
     const barrelGeo = buildWeatheredBarrelGeometry();
-    islandDisposables.push(hullGeo, hullMat, cabinGeo, mastGeo, yardGeo, sailGeo, chestGeo, barrelGeo);
+    islandDisposables.push(
+      hullGeo,
+      hullMat,
+      cabinGeo,
+      mastGeo,
+      yardGeo,
+      sailGeo,
+      pennantGeo,
+      wheelRimGeo,
+      anchorGeo,
+      chestGeo,
+      barrelGeo
+    );
 
     const hullMesh = new THREE.Mesh(hullGeo, hullMat);
     hullMesh.castShadow = true;
@@ -1636,6 +2363,10 @@ export function createThreeIslandGame(
     const sternCabin = new THREE.Mesh(cabinGeo, woodDarkMat);
     sternCabin.position.set(-1.55, 1.0, 0);
     sternCabin.castShadow = true;
+
+    const shipWheel = new THREE.Mesh(wheelRimGeo, woodMat);
+    shipWheel.position.set(-0.78, 1.48, 0);
+    shipWheel.rotation.y = Math.PI / 2;
 
     const mast = new THREE.Mesh(mastGeo, woodDarkMat);
     mast.position.set(0.45, 2.55, 0);
@@ -1646,14 +2377,25 @@ export function createThreeIslandGame(
     yard.position.set(0.9, 4.05, 0);
     yard.rotation.y = 0.25;
 
+    const pennant = new THREE.Mesh(pennantGeo, pennantMat);
+    pennant.position.set(1.25, 4.78, 0);
+
     const sail = new THREE.Mesh(sailGeo, sailMat);
     sail.position.set(0.95, 2.95, -0.95);
     sail.rotation.y = 0.25;
     sail.castShadow = true;
     (sailMat as THREE.MeshStandardMaterial).side = THREE.DoubleSide;
 
-    shipGroup.add(hullMesh, sternCabin, mast, yard, sail);
+    shipGroup.add(hullMesh, sternCabin, shipWheel, mast, yard, pennant, sail);
     islandGroup.add(shipGroup);
+
+    const anchorX = SHIPWRECK.HULL_CX + 3.25;
+    const anchorZ = SHIPWRECK.HULL_CZ - 1.25;
+    const anchorMesh = new THREE.Mesh(anchorGeo, ironMat);
+    anchorMesh.position.set(anchorX, groundHeightAt(anchorX, anchorZ, world) + 0.04, anchorZ);
+    anchorMesh.rotation.set(1.15, 0.4, -0.35);
+    anchorMesh.castShadow = true;
+    islandGroup.add(anchorMesh);
 
     const chestX = SHIPWRECK.HULL_CX - 3.0;
     const chestZ = SHIPWRECK.HULL_CZ + 0.6;
@@ -1662,6 +2404,19 @@ export function createThreeIslandGame(
     chestA.rotation.y = 0.4;
     chestA.castShadow = true;
     islandGroup.add(chestA);
+
+    const goldCoinGeo = new THREE.SphereGeometry(0.11, 8, 6);
+    islandDisposables.push(goldCoinGeo);
+    for (let g = 0; g < 4; g += 1) {
+      const glint = new THREE.Mesh(goldCoinGeo, sunGoldMat);
+      glint.scale.set(1, 0.45, 1);
+      glint.position.set(
+        chestX + (g - 1.5) * 0.22,
+        groundHeightAt(chestX, chestZ, world) + 0.08,
+        chestZ + 0.42 + (g % 2) * 0.14
+      );
+      islandGroup.add(glint);
+    }
 
     const barrelX = SHIPWRECK.HULL_CX - 3.6;
     const barrelZ = SHIPWRECK.HULL_CZ - 0.5;
@@ -1685,7 +2440,7 @@ export function createThreeIslandGame(
       islandGroup.add(rib);
     }
 
-    // Sculpted Coastal Lighthouse Dome Beacon
+    // Sculpted Coastal Lighthouse Dome Beacon + Rotating Spotlight Cone
     const lhGroundY = groundHeightAt(SHIPWRECK.LIGHTHOUSE_CX, SHIPWRECK.LIGHTHOUSE_CZ, world);
     const beaconGroup = new THREE.Group();
     beaconGroup.position.set(SHIPWRECK.LIGHTHOUSE_CX, lhGroundY - 0.15, SHIPWRECK.LIGHTHOUSE_CZ);
@@ -1701,13 +2456,31 @@ export function createThreeIslandGame(
     const strutGeo = new THREE.CapsuleGeometry(0.055, 0.88, 4, 6);
     const lanternCapGeo = new THREE.SphereGeometry(0.92, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.55);
     const flameGeo = new THREE.SphereGeometry(0.54, 14, 12);
+    const beamGeo = new THREE.ConeGeometry(2.1, 11.5, 16, 1, true);
+    beamGeo.translate(0, -5.75, 0);
+    beamGeo.rotateX(Math.PI * 0.5);
     const flameMat = new THREE.MeshStandardMaterial({
       color: 0xffe878,
       emissive: 0xffa81c,
       emissiveIntensity: 1.15,
       roughness: 0.15,
     });
-    islandDisposables.push(towerGeo, strutGeo, lanternCapGeo, flameGeo, flameMat);
+    const beamMat = new THREE.MeshBasicMaterial({
+      color: 0xfff3a8,
+      transparent: true,
+      opacity: 0.18,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    islandDisposables.push(
+      towerGeo,
+      strutGeo,
+      lanternCapGeo,
+      flameGeo,
+      beamGeo,
+      flameMat,
+      beamMat
+    );
 
     const tower = new THREE.Mesh(towerGeo, stoneMat);
     tower.castShadow = true;
@@ -1716,6 +2489,8 @@ export function createThreeIslandGame(
     cap.scale.set(1, 0.85, 1);
     beaconFlameMesh = new THREE.Mesh(flameGeo, flameMat);
     beaconFlameMesh.position.y = 4.25;
+    beaconBeamMesh = new THREE.Mesh(beamGeo, beamMat);
+    beaconBeamMesh.position.y = 4.25;
 
     for (let i = 0; i < 4; i += 1) {
       const a = (i / 4) * Math.PI * 2 + 0.4;
@@ -1723,7 +2498,7 @@ export function createThreeIslandGame(
       strut.position.set(Math.cos(a) * 0.68, 4.25, Math.sin(a) * 0.68);
       beaconGroup.add(strut);
     }
-    beaconGroup.add(tower, cap, beaconFlameMesh);
+    beaconGroup.add(tower, cap, beaconFlameMesh, beaconBeamMesh);
     islandGroup.add(beaconGroup);
 
     // 6. OFFSHORE SEA STACKS
@@ -1782,6 +2557,97 @@ export function createThreeIslandGame(
     }
     terrainGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
+    // Shared Wind Sway + Seasonal Autumn/Winter Hook
+    windUniformTime = { value: 0 };
+    const applySeasonAndWind = (
+      mat: THREE.MeshStandardMaterial,
+      mode: 'terrain' | 'foliage',
+      minY = 0,
+      ampScale = 0
+    ) => {
+      const timeRef = windUniformTime!;
+      const mixRef = seasonUniformMix;
+      const kindRef = seasonUniformKind;
+      mat.customProgramCacheKey = () => `tropical-season-wind-v3-${mode}-${minY}-${ampScale}`;
+      mat.onBeforeCompile = (shader) => {
+        shader.uniforms.uWindTime = timeRef;
+        shader.uniforms.uSeasonMix = mixRef;
+        shader.uniforms.uSeasonKind = kindRef;
+        const windCode =
+          ampScale > 0
+            ? `
+             #ifdef USE_INSTANCING
+               vec3 instPos = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
+               float hWeight = max(0.0, transformed.y - float(${minY.toFixed(2)}));
+               float sway = sin(uWindTime * 2.1 + instPos.x * 0.35 + instPos.z * 0.28) * ${Number(0.095 * ampScale).toFixed(4)};
+               transformed.x += sway * hWeight;
+               transformed.z += cos(uWindTime * 1.65 + instPos.z * 0.3) * ${Number(0.05 * ampScale).toFixed(4)} * hWeight;
+             #endif`
+            : '';
+
+        shader.vertexShader = shader.vertexShader
+          .replace(
+            '#include <common>',
+            `#include <common>
+             uniform float uWindTime;
+             varying vec3 vSeasonWPos;
+             varying vec3 vSeasonWNorm;`
+          )
+          .replace(
+            '#include <begin_vertex>',
+            `#include <begin_vertex>
+             ${windCode}
+             vec4 sWPos = modelMatrix * vec4(transformed, 1.0);
+             #ifdef USE_INSTANCING
+               sWPos = modelMatrix * instanceMatrix * vec4(transformed, 1.0);
+             #endif
+             vSeasonWPos = sWPos.xyz;
+             vSeasonWNorm = normalize(mat3(modelMatrix) * objectNormal);`
+          );
+
+        const fragSeasonCode =
+          mode === 'terrain'
+            ? `
+             if (uSeasonMix > 0.01) {
+               if (uSeasonKind > 0.5 && uSeasonKind < 1.5) {
+                 float grassBand = smoothstep(0.95, 1.8, vSeasonWPos.y) * smoothstep(0.45, 0.9, vSeasonWNorm.y);
+                 float autumnHue = 0.5 + 0.5 * sin(vSeasonWPos.x * 0.14 + vSeasonWPos.z * 0.16);
+                 vec3 autumnGround = mix(vec3(0.74, 0.48, 0.14), vec3(0.84, 0.34, 0.12), autumnHue);
+                 diffuseColor.rgb = mix(diffuseColor.rgb, autumnGround, uSeasonMix * grassBand * 0.62);
+               } else if (uSeasonKind >= 1.5) {
+                 float snowMask = smoothstep(1.25, 3.8, vSeasonWPos.y) * smoothstep(0.32, 0.85, vSeasonWNorm.y);
+                 diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.93, 0.97, 1.0), uSeasonMix * (0.28 + snowMask * 0.68));
+               }
+             }`
+            : `
+             if (uSeasonMix > 0.01) {
+               if (uSeasonKind > 0.5 && uSeasonKind < 1.5) {
+                 float leafMix = 0.5 + 0.5 * sin(vSeasonWPos.x * 0.32 - vSeasonWPos.z * 0.27);
+                 vec3 autumnCol = mix(vec3(0.96, 0.45, 0.08), vec3(0.82, 0.22, 0.08), leafMix);
+                 diffuseColor.rgb = mix(diffuseColor.rgb, autumnCol, uSeasonMix * 0.86);
+               } else if (uSeasonKind >= 1.5) {
+                 float topFrost = smoothstep(-0.1, 0.78, vSeasonWNorm.y);
+                 diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.9, 0.95, 1.0), uSeasonMix * (0.38 + topFrost * 0.48));
+               }
+             }`;
+
+        shader.fragmentShader = shader.fragmentShader
+          .replace(
+            '#include <common>',
+            `#include <common>
+             uniform float uSeasonMix;
+             uniform float uSeasonKind;
+             varying vec3 vSeasonWPos;
+             varying vec3 vSeasonWNorm;`
+          )
+          .replace(
+            '#include <color_fragment>',
+            `#include <color_fragment>
+             ${fragSeasonCode}`
+          );
+      };
+    };
+
     const terrainMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       map: textures.terrainDetailDiffuse,
@@ -1791,8 +2657,11 @@ export function createThreeIslandGame(
       metalness: 0.02,
       vertexColors: true,
     });
+    applySeasonAndWind(terrainMat, 'terrain', 0, 0);
+    activeTerrainMat = terrainMat;
     const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
     terrainMesh.receiveShadow = true;
+    activeTerrainMesh = terrainMesh;
     islandGroup.add(terrainMesh);
     islandDisposables.push(terrainGeo, terrainMat);
 
@@ -1829,6 +2698,7 @@ export function createThreeIslandGame(
         side: THREE.DoubleSide,
         vertexColors: true,
       });
+      applySeasonAndWind(frondMat, 'foliage', 2.0, 0.25);
       const coconutMat = getPbrMat(CONFIG.COLORS.COCONUT, 0.82);
 
       const trunkInst = new THREE.InstancedMesh(trunkGeo, trunkMat, palmProps.length);
@@ -1855,6 +2725,8 @@ export function createThreeIslandGame(
           instMesh: trunkInst,
           extraMeshes: [frondInst, coconutInst],
           shadowMesh: shadowInst,
+          shadowOffsetX: 0.4,
+          shadowOffsetZ: 0.15,
           stumpMesh: stumpInst,
           stumpIndex: idx,
           index: idx,
@@ -1886,11 +2758,16 @@ export function createThreeIslandGame(
       islandDisposables.push(frondMat, trunkGeo, frondGeo, coconutGeo, palmShadowGeo);
     }
 
-    // 4. INSTANCED FLOWERING & LUSH JUNGLE TREES
+    const applyWindSway = (mat: THREE.MeshStandardMaterial, minY = 0, ampScale = 1.0) => {
+      applySeasonAndWind(mat, 'foliage', minY, ampScale);
+    };
+
+    // 4. INSTANCED ORGANIC FLOWERING & LUSH JUNGLE TREES (Two Canopy Variants + Blossom Sprays!)
     const jungleProps = world.props.filter((p) => p.kind === 'jungle');
     if (jungleProps.length > 0) {
       const jTrunkGeo = buildJungleTrunkGeometry();
-      const jCanopyGeo = buildJungleCanopyGeometry();
+      const jCanopyGeoA = buildJungleCanopyGeometry();
+      const jCanopyGeoB = buildJungleCanopyVariantBGeometry();
       const jBlossomGeo = buildCanopyBlossomsGeometry();
       const jShadowGeo = new THREE.CircleGeometry(1.5, 16);
       jShadowGeo.rotateX(-Math.PI / 2);
@@ -1900,30 +2777,36 @@ export function createThreeIslandGame(
         color: 0xffffff,
         roughness: 0.78,
         metalness: 0.02,
+        side: THREE.DoubleSide,
         vertexColors: true,
       });
+      applyWindSway(jCanopyMat, 2.0, 0.35);
       const jBlossomMat = new THREE.MeshStandardMaterial({
         color: 0xffffff,
         roughness: 0.52,
         metalness: 0.02,
+        side: THREE.DoubleSide,
         vertexColors: true,
       });
+      applyWindSway(jBlossomMat, 2.0, 0.35);
 
       const jTrunkInst = new THREE.InstancedMesh(jTrunkGeo, jTrunkMat, jungleProps.length);
-      const jCanopyInst = new THREE.InstancedMesh(jCanopyGeo, jCanopyMat, jungleProps.length);
+      const jCanopyInstA = new THREE.InstancedMesh(jCanopyGeoA, jCanopyMat, jungleProps.length);
+      const jCanopyInstB = new THREE.InstancedMesh(jCanopyGeoB, jCanopyMat, jungleProps.length);
       const jBlossomInst = new THREE.InstancedMesh(jBlossomGeo, jBlossomMat, jungleProps.length);
       const jShadowInst = new THREE.InstancedMesh(jShadowGeo, shadowDiscMat, jungleProps.length);
       const jStumpInst = new THREE.InstancedMesh(treeStumpGeo, treeStumpMat, jungleProps.length);
 
       jTrunkInst.castShadow = !isSoftwareGl;
-      jCanopyInst.castShadow = !isSoftwareGl;
+      jCanopyInstA.castShadow = !isSoftwareGl;
+      jCanopyInstB.castShadow = !isSoftwareGl;
 
       const palette = [
-        new THREE.Color(0x3ba845),
-        new THREE.Color(0x52c445),
-        new THREE.Color(0x2d8a4b),
-        new THREE.Color(0x6ed142),
-        new THREE.Color(0x46b85a),
+        new THREE.Color(0x88e878),
+        new THREE.Color(0x9ff27a),
+        new THREE.Color(0x70cf82),
+        new THREE.Color(0xb2f574),
+        new THREE.Color(0x7ee092),
       ];
       const dummy = new THREE.Object3D();
       jungleProps.forEach((p: IslandProp, idx: number) => {
@@ -1932,21 +2815,27 @@ export function createThreeIslandGame(
         dummy.scale.setScalar(p.scale);
         dummy.updateMatrix();
         jTrunkInst.setMatrixAt(idx, dummy.matrix);
-        jCanopyInst.setMatrixAt(idx, dummy.matrix);
-        jCanopyInst.setColorAt(idx, palette[p.variant % palette.length]);
+
+        const useB = p.variant % 2 === 1;
+        jCanopyInstA.setMatrixAt(idx, useB ? hideDummy.matrix : dummy.matrix);
+        jCanopyInstB.setMatrixAt(idx, useB ? dummy.matrix : hideDummy.matrix);
+        jCanopyInstA.setColorAt(idx, palette[p.variant % palette.length]);
+        jCanopyInstB.setColorAt(idx, palette[p.variant % palette.length]);
         jStumpInst.setMatrixAt(idx, hideDummy.matrix);
 
-        // Give ~60% of jungle trees vivid blossoms/fruits
         if (p.variant >= 2) {
           jBlossomInst.setMatrixAt(idx, dummy.matrix);
         } else {
           jBlossomInst.setMatrixAt(idx, hideDummy.matrix);
         }
 
+        const canopyMesh = useB ? jCanopyInstB : jCanopyInstA;
         treeNodeVisuals.set(p.id, {
           instMesh: jTrunkInst,
-          extraMeshes: p.variant >= 2 ? [jCanopyInst, jBlossomInst] : [jCanopyInst],
+          extraMeshes: p.variant >= 2 ? [canopyMesh, jBlossomInst] : [canopyMesh],
           shadowMesh: jShadowInst,
+          shadowOffsetX: 0.25,
+          shadowOffsetZ: 0.1,
           stumpMesh: jStumpInst,
           stumpIndex: idx,
           index: idx,
@@ -1964,19 +2853,30 @@ export function createThreeIslandGame(
       });
 
       jTrunkInst.instanceMatrix.needsUpdate = true;
-      jCanopyInst.instanceMatrix.needsUpdate = true;
+      jCanopyInstA.instanceMatrix.needsUpdate = true;
+      jCanopyInstB.instanceMatrix.needsUpdate = true;
       jBlossomInst.instanceMatrix.needsUpdate = true;
       jStumpInst.instanceMatrix.needsUpdate = true;
-      if (jCanopyInst.instanceColor) jCanopyInst.instanceColor.needsUpdate = true;
+      if (jCanopyInstA.instanceColor) jCanopyInstA.instanceColor.needsUpdate = true;
+      if (jCanopyInstB.instanceColor) jCanopyInstB.instanceColor.needsUpdate = true;
       jShadowInst.instanceMatrix.needsUpdate = true;
       jTrunkInst.computeBoundingSphere();
-      jCanopyInst.computeBoundingSphere();
+      jCanopyInstA.computeBoundingSphere();
+      jCanopyInstB.computeBoundingSphere();
       jBlossomInst.computeBoundingSphere();
       jShadowInst.computeBoundingSphere();
       jStumpInst.computeBoundingSphere();
 
-      islandGroup.add(jShadowInst, jStumpInst, jTrunkInst, jCanopyInst, jBlossomInst);
-      islandDisposables.push(jCanopyMat, jBlossomMat, jTrunkGeo, jCanopyGeo, jBlossomGeo, jShadowGeo);
+      islandGroup.add(jShadowInst, jStumpInst, jTrunkInst, jCanopyInstA, jCanopyInstB, jBlossomInst);
+      islandDisposables.push(
+        jCanopyMat,
+        jBlossomMat,
+        jTrunkGeo,
+        jCanopyGeoA,
+        jCanopyGeoB,
+        jBlossomGeo,
+        jShadowGeo
+      );
     }
 
     // 4B. INSTANCED SCULPTED ORGANIC PINE TREES (Zero Cones!)
@@ -1994,6 +2894,7 @@ export function createThreeIslandGame(
         metalness: 0.02,
         vertexColors: true,
       });
+      applySeasonAndWind(pCanopyMat, 'foliage', 2.0, 0.2);
 
       const pTrunkInst = new THREE.InstancedMesh(pTrunkGeo, pTrunkMat, pineProps.length);
       const pCanopyInst = new THREE.InstancedMesh(pCanopyGeo, pCanopyMat, pineProps.length);
@@ -2023,6 +2924,8 @@ export function createThreeIslandGame(
           instMesh: pTrunkInst,
           extraMeshes: [pCanopyInst],
           shadowMesh: pShadowInst,
+          shadowOffsetX: 0.2,
+          shadowOffsetZ: 0.1,
           stumpMesh: pStumpInst,
           stumpIndex: idx,
           index: idx,
@@ -2136,6 +3039,7 @@ export function createThreeIslandGame(
         metalness: 0.02,
         vertexColors: true,
       });
+      applySeasonAndWind(byCanopyMat, 'foliage', 2.0, 0.2);
 
       const byTrunkInst = new THREE.InstancedMesh(byTrunkGeo, byTrunkMat, banyanProps.length);
       const byCanopyInst = new THREE.InstancedMesh(byCanopyGeo, byCanopyMat, banyanProps.length);
@@ -2164,6 +3068,8 @@ export function createThreeIslandGame(
           instMesh: byTrunkInst,
           extraMeshes: [byCanopyInst],
           shadowMesh: byShadowInst,
+          shadowOffsetX: 0.28,
+          shadowOffsetZ: 0.12,
           stumpMesh: byStumpInst,
           stumpIndex: idx,
           index: idx,
@@ -2211,6 +3117,7 @@ export function createThreeIslandGame(
         side: THREE.DoubleSide,
         vertexColors: true,
       });
+      applySeasonAndWind(wCanopyMat, 'foliage', 1.8, 0.3);
 
       const wTrunkInst = new THREE.InstancedMesh(wTrunkGeo, wTrunkMat, willowProps.length);
       const wCanopyInst = new THREE.InstancedMesh(wCanopyGeo, wCanopyMat, willowProps.length);
@@ -2231,6 +3138,8 @@ export function createThreeIslandGame(
           instMesh: wTrunkInst,
           extraMeshes: [wCanopyInst],
           shadowMesh: wShadowInst,
+          shadowOffsetX: 0.2,
+          shadowOffsetZ: 0.1,
           stumpMesh: wStumpInst,
           stumpIndex: idx,
           index: idx,
@@ -2304,6 +3213,8 @@ export function createThreeIslandGame(
       metalness: 0.02,
       vertexColors: true,
     });
+    activeRockMainMat = rockMainMat;
+    activeRockLightMat = rockLightMat;
     const rockGeoA = buildSculptedBoulderGeometry(0.74, 1.3);
     const rockGeoB = buildSculptedBoulderGeometry(0.45, 4.7);
     const rockGeoC = buildSculptedBoulderGeometry(0.28, 7.9);
@@ -2475,32 +3386,6 @@ export function createThreeIslandGame(
       bushNodeVisuals.set(bush.id, { group, berries, baseScale: bush.scale });
     }
 
-    // Shared Wind Sway Hook
-    windUniformTime = { value: 0 };
-    const applyWindSway = (mat: THREE.MeshStandardMaterial) => {
-      const timeRef = windUniformTime!;
-      mat.customProgramCacheKey = () => 'tropical-wind-sway-v1';
-      mat.onBeforeCompile = (shader) => {
-        shader.uniforms.uWindTime = timeRef;
-        shader.vertexShader = shader.vertexShader
-          .replace(
-            '#include <common>',
-            `#include <common>
-             uniform float uWindTime;`
-          )
-          .replace(
-            '#include <begin_vertex>',
-            `#include <begin_vertex>
-             #ifdef USE_INSTANCING
-               vec3 instPos = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
-               float sway = sin(uWindTime * 2.2 + instPos.x * 0.35 + instPos.z * 0.28) * 0.095;
-               transformed.x += sway * max(0.0, transformed.y);
-               transformed.z += cos(uWindTime * 1.7 + instPos.z * 0.3) * 0.05 * max(0.0, transformed.y);
-             #endif`
-          );
-      };
-    };
-
     const dummy = new THREE.Object3D();
     const floraRng = createSeededRandom(`${world.seed}-dense-flora`);
     const isClearOfStructures = (fx: number, fz: number): boolean => {
@@ -2515,7 +3400,7 @@ export function createThreeIslandGame(
       return true;
     };
 
-    // 8. INSTANCED MEADOW FERNS & CURVED GRASS BLADES
+    // 8. INSTANCED DIVERSE GRASSES, CLOVER PATCHES, PLUME GRASS & FERNS
     const fernGeo = buildFernTuftGeometry();
     const fernMat = new THREE.MeshStandardMaterial({
       color: 0x4db844,
@@ -2555,13 +3440,14 @@ export function createThreeIslandGame(
       side: THREE.DoubleSide,
       vertexColors: true,
     });
-    applyWindSway(grassMat);
+    applyWindSway(grassMat, 0, 1.0);
     const grassMatrices: THREE.Matrix4[] = [];
     const grassColors: THREE.Color[] = [];
     const grassPalette = [
       new THREE.Color(0x9ff08a),
       new THREE.Color(0xb4f584),
       new THREE.Color(0x88dc84),
+      new THREE.Color(0xa6ea96),
     ];
     for (let i = 0; i < CONFIG.PROPS.GRASS_TUFT_COUNT; i += 1) {
       const phi = floraRng() * Math.PI * 2;
@@ -2569,10 +3455,10 @@ export function createThreeIslandGame(
       const gx = Math.cos(phi) * 84 * rad;
       const gz = Math.sin(phi) * 70 * rad;
       const gy = groundHeightAt(gx, gz, world);
-      if (gy < 1.25 || gy > 4.5 || !isClearOfStructures(gx, gz)) continue;
+      if (gy < 1.2 || gy > 4.6 || !isClearOfStructures(gx, gz)) continue;
       dummy.position.set(gx, gy - 0.04, gz);
       dummy.rotation.set(0, floraRng() * Math.PI * 2, 0);
-      dummy.scale.setScalar(0.8 + floraRng() * 0.85);
+      dummy.scale.setScalar(0.82 + floraRng() * 0.88);
       dummy.updateMatrix();
       grassMatrices.push(dummy.matrix.clone());
       grassColors.push(grassPalette[i % grassPalette.length]);
@@ -2590,7 +3476,71 @@ export function createThreeIslandGame(
     }
     islandDisposables.push(grassMat, grassGeo);
 
-    // 9. INSTANCED WILDFLOWERS
+    // 8B. CLOVER PATCHES & SAVANNA GOLDEN-TIPPED PLUME GRASS
+    const cloverGeo = buildCloverPatchGeometry();
+    const cloverMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.82,
+      metalness: 0.02,
+      side: THREE.DoubleSide,
+      vertexColors: true,
+    });
+    const cloverMatrices: THREE.Matrix4[] = [];
+    for (let i = 0; i < CONFIG.PROPS.CLOVER_PATCH_COUNT; i += 1) {
+      const phi = floraRng() * Math.PI * 2;
+      const rad = Math.sqrt(floraRng());
+      const cx = Math.cos(phi) * 78 * rad;
+      const cz = Math.sin(phi) * 64 * rad;
+      const cy = groundHeightAt(cx, cz, world);
+      if (cy < 1.35 || cy > 4.2 || !isClearOfStructures(cx, cz)) continue;
+      dummy.position.set(cx, cy - 0.02, cz);
+      dummy.rotation.set(0, floraRng() * Math.PI * 2, 0);
+      dummy.scale.setScalar(0.9 + floraRng() * 0.9);
+      dummy.updateMatrix();
+      cloverMatrices.push(dummy.matrix.clone());
+    }
+    if (cloverMatrices.length > 0) {
+      const cloverInst = new THREE.InstancedMesh(cloverGeo, cloverMat, cloverMatrices.length);
+      cloverMatrices.forEach((m, idx) => cloverInst.setMatrixAt(idx, m));
+      cloverInst.instanceMatrix.needsUpdate = true;
+      cloverInst.computeBoundingSphere();
+      islandGroup.add(cloverInst);
+    }
+    islandDisposables.push(cloverMat, cloverGeo);
+
+    const plumeGeo = buildSavannaPlumeGrassGeometry();
+    const plumeMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.8,
+      metalness: 0.02,
+      side: THREE.DoubleSide,
+      vertexColors: true,
+    });
+    applyWindSway(plumeMat, 0, 1.35);
+    const plumeMatrices: THREE.Matrix4[] = [];
+    for (let i = 0; i < CONFIG.PROPS.PLUME_GRASS_COUNT; i += 1) {
+      const phi = floraRng() * Math.PI * 2;
+      const rad = 0.28 + floraRng() * 0.65;
+      const px = Math.cos(phi) * 82 * rad;
+      const pz = Math.sin(phi) * 68 * rad;
+      const py = groundHeightAt(px, pz, world);
+      if (py < 1.1 || py > 4.5 || !isClearOfStructures(px, pz)) continue;
+      dummy.position.set(px, py - 0.04, pz);
+      dummy.rotation.set(0, floraRng() * Math.PI * 2, 0);
+      dummy.scale.setScalar(0.85 + floraRng() * 0.7);
+      dummy.updateMatrix();
+      plumeMatrices.push(dummy.matrix.clone());
+    }
+    if (plumeMatrices.length > 0) {
+      const plumeInst = new THREE.InstancedMesh(plumeGeo, plumeMat, plumeMatrices.length);
+      plumeMatrices.forEach((m, idx) => plumeInst.setMatrixAt(idx, m));
+      plumeInst.instanceMatrix.needsUpdate = true;
+      plumeInst.computeBoundingSphere();
+      islandGroup.add(plumeInst);
+    }
+    islandDisposables.push(plumeMat, plumeGeo);
+
+    // 9. INSTANCED DIVERSE FLOWERS: WILDFLOWERS, TROPICAL HIBISCUS, BELLFLOWER SPIKES, SPORE BLOOMS & LOTUSES
     const flowerGeo = buildWildflowerGeometry();
     const flowerMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
@@ -2599,7 +3549,7 @@ export function createThreeIslandGame(
       side: THREE.DoubleSide,
       vertexColors: true,
     });
-    applyWindSway(flowerMat);
+    applyWindSway(flowerMat, 0, 1.0);
     const flowerPalette = [
       new THREE.Color(0xff6b8b),
       new THREE.Color(0xffd447),
@@ -2615,7 +3565,7 @@ export function createThreeIslandGame(
       const fx = Math.cos(phi) * 80 * rad;
       const fz = Math.sin(phi) * 66 * rad;
       const fy = groundHeightAt(fx, fz, world);
-      if (fy < 1.35 || fy > 4.2 || !isClearOfStructures(fx, fz)) continue;
+      if (fy < 1.3 || fy > 4.3 || !isClearOfStructures(fx, fz)) continue;
       dummy.position.set(fx, fy - 0.03, fz);
       dummy.rotation.set(0, floraRng() * Math.PI * 2, 0);
       dummy.scale.setScalar(0.85 + floraRng() * 0.7);
@@ -2635,6 +3585,171 @@ export function createThreeIslandGame(
       islandGroup.add(flowerInst);
     }
     islandDisposables.push(flowerMat, flowerGeo);
+
+    // 9B. Tropical Hibiscus Blooms
+    const hibiscusGeo = buildTropicalHibiscusGeometry();
+    const hibiscusMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.65,
+      metalness: 0.02,
+      side: THREE.DoubleSide,
+      vertexColors: true,
+    });
+    applyWindSway(hibiscusMat, 0, 1.0);
+    const hibiscusPalette = [
+      new THREE.Color(0xff3864),
+      new THREE.Color(0xff729f),
+      new THREE.Color(0xff9f2e),
+      new THREE.Color(0xff4d4d),
+    ];
+    const hibiscusMatrices: THREE.Matrix4[] = [];
+    const hibiscusColors: THREE.Color[] = [];
+    for (let i = 0; i < CONFIG.PROPS.HIBISCUS_FLOWER_COUNT; i += 1) {
+      const phi = floraRng() * Math.PI * 2;
+      const rad = Math.sqrt(floraRng());
+      const hx = Math.cos(phi) * 76 * rad;
+      const hz = Math.sin(phi) * 62 * rad;
+      const hy = groundHeightAt(hx, hz, world);
+      if (hy < 1.2 || hy > 3.9 || !isClearOfStructures(hx, hz)) continue;
+      dummy.position.set(hx, hy - 0.03, hz);
+      dummy.rotation.set(0, floraRng() * Math.PI * 2, 0);
+      dummy.scale.setScalar(0.9 + floraRng() * 0.65);
+      dummy.updateMatrix();
+      hibiscusMatrices.push(dummy.matrix.clone());
+      hibiscusColors.push(hibiscusPalette[i % hibiscusPalette.length]);
+    }
+    if (hibiscusMatrices.length > 0) {
+      const hibInst = new THREE.InstancedMesh(hibiscusGeo, hibiscusMat, hibiscusMatrices.length);
+      hibiscusMatrices.forEach((m, idx) => {
+        hibInst.setMatrixAt(idx, m);
+        hibInst.setColorAt(idx, hibiscusColors[idx]);
+      });
+      hibInst.instanceMatrix.needsUpdate = true;
+      if (hibInst.instanceColor) hibInst.instanceColor.needsUpdate = true;
+      hibInst.computeBoundingSphere();
+      islandGroup.add(hibInst);
+    }
+    islandDisposables.push(hibiscusMat, hibiscusGeo);
+
+    // 9C. Bellflower Spikes
+    const bellGeo = buildBellflowerSpikeGeometry();
+    const bellMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.68,
+      metalness: 0.02,
+      side: THREE.DoubleSide,
+      vertexColors: true,
+    });
+    applyWindSway(bellMat, 0, 1.15);
+    const bellPalette = [
+      new THREE.Color(0x9d7eff),
+      new THREE.Color(0x63c5ff),
+      new THREE.Color(0xf49eff),
+      new THREE.Color(0xfff1a8),
+    ];
+    const bellMatrices: THREE.Matrix4[] = [];
+    const bellColors: THREE.Color[] = [];
+    for (let i = 0; i < CONFIG.PROPS.BELLFLOWER_COUNT; i += 1) {
+      const phi = floraRng() * Math.PI * 2;
+      const rad = Math.sqrt(floraRng());
+      const bx = Math.cos(phi) * 78 * rad;
+      const bz = Math.sin(phi) * 64 * rad;
+      const by = groundHeightAt(bx, bz, world);
+      if (by < 1.35 || by > 4.4 || !isClearOfStructures(bx, bz)) continue;
+      dummy.position.set(bx, by - 0.03, bz);
+      dummy.rotation.set(0, floraRng() * Math.PI * 2, 0);
+      dummy.scale.setScalar(0.85 + floraRng() * 0.7);
+      dummy.updateMatrix();
+      bellMatrices.push(dummy.matrix.clone());
+      bellColors.push(bellPalette[i % bellPalette.length]);
+    }
+    if (bellMatrices.length > 0) {
+      const bellInst = new THREE.InstancedMesh(bellGeo, bellMat, bellMatrices.length);
+      bellMatrices.forEach((m, idx) => {
+        bellInst.setMatrixAt(idx, m);
+        bellInst.setColorAt(idx, bellColors[idx]);
+      });
+      bellInst.instanceMatrix.needsUpdate = true;
+      if (bellInst.instanceColor) bellInst.instanceColor.needsUpdate = true;
+      bellInst.computeBoundingSphere();
+      islandGroup.add(bellInst);
+    }
+    islandDisposables.push(bellMat, bellGeo);
+
+    // 9D. Mushroom Forest Glowing Spore-Blooms
+    const sporeBloomGeo = buildSporeBloomGeometry();
+    const sporeBloomMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      emissive: 0x26b4cc,
+      emissiveIntensity: 0.42,
+      roughness: 0.55,
+      side: THREE.DoubleSide,
+      vertexColors: true,
+    });
+    const sporeMatrices: THREE.Matrix4[] = [];
+    for (let i = 0; i < CONFIG.PROPS.SPORE_BLOOM_COUNT; i += 1) {
+      const a = floraRng() * Math.PI * 2;
+      const r = Math.sqrt(floraRng()) * CONFIG.ISLAND.MUSHROOM.RADIUS * 1.15;
+      const sx = CONFIG.ISLAND.MUSHROOM.CX + Math.cos(a) * r;
+      const sz = CONFIG.ISLAND.MUSHROOM.CZ + Math.sin(a) * r;
+      const sy = groundHeightAt(sx, sz, world);
+      if (sy < 1.1 || sy > 3.8) continue;
+      dummy.position.set(sx, sy - 0.02, sz);
+      dummy.rotation.set(0, floraRng() * Math.PI * 2, 0);
+      dummy.scale.setScalar(0.9 + floraRng() * 0.75);
+      dummy.updateMatrix();
+      sporeMatrices.push(dummy.matrix.clone());
+    }
+    if (sporeMatrices.length > 0) {
+      const sporeInst = new THREE.InstancedMesh(sporeBloomGeo, sporeBloomMat, sporeMatrices.length);
+      sporeMatrices.forEach((m, idx) => sporeInst.setMatrixAt(idx, m));
+      sporeInst.instanceMatrix.needsUpdate = true;
+      sporeInst.computeBoundingSphere();
+      islandGroup.add(sporeInst);
+    }
+    islandDisposables.push(sporeBloomMat, sporeBloomGeo);
+
+    // 9E. Crystal Spring & Cove Water Lotuses
+    const lotusGeo = buildLotusBloomGeometry();
+    const lotusMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.48,
+      metalness: 0.02,
+      side: THREE.DoubleSide,
+      vertexColors: true,
+    });
+    const lotusMatrices: THREE.Matrix4[] = [];
+    const springSurfY = groundHeightAt(CONFIG.ISLAND.SPRING.CX, CONFIG.ISLAND.SPRING.CZ, world) + 0.52;
+    for (let i = 0; i < CONFIG.PROPS.LOTUS_COUNT; i += 1) {
+      if (i < 12) {
+        const a = (i / 12) * Math.PI * 2 + floraRng() * 0.3;
+        const r = 1.4 + floraRng() * 2.5;
+        dummy.position.set(
+          CONFIG.ISLAND.SPRING.CX + Math.cos(a) * r,
+          springSurfY,
+          CONFIG.ISLAND.SPRING.CZ + Math.sin(a) * r
+        );
+      } else {
+        const a = floraRng() * Math.PI * 2;
+        const lx = Math.cos(a) * (CONFIG.WORLD.ISLAND_RX * 0.94);
+        const lz = Math.sin(a) * (CONFIG.WORLD.ISLAND_RZ * 0.94);
+        const ly = groundHeightAt(lx, lz, world);
+        if (ly > -0.25 || ly < -1.1) continue;
+        dummy.position.set(lx, 0.04, lz);
+      }
+      dummy.rotation.set(0, floraRng() * Math.PI * 2, 0);
+      dummy.scale.setScalar(0.85 + floraRng() * 0.45);
+      dummy.updateMatrix();
+      lotusMatrices.push(dummy.matrix.clone());
+    }
+    if (lotusMatrices.length > 0) {
+      const lotusInst = new THREE.InstancedMesh(lotusGeo, lotusMat, lotusMatrices.length);
+      lotusMatrices.forEach((m, idx) => lotusInst.setMatrixAt(idx, m));
+      lotusInst.instanceMatrix.needsUpdate = true;
+      lotusInst.computeBoundingSphere();
+      islandGroup.add(lotusInst);
+    }
+    islandDisposables.push(lotusMat, lotusGeo);
 
     // 10. COASTAL REEDS, MINI GLOWING MUSHROOMS & BEACH PEBBLES
     const reedGeo = buildCoastalReedGeometry();
@@ -2713,6 +3828,7 @@ export function createThreeIslandGame(
       roughness: 0.88,
       vertexColors: true,
     });
+    activePebbleMat = pebbleMat;
     const pebbleMatrices: THREE.Matrix4[] = [];
     for (let i = 0; i < CONFIG.PROPS.PEBBLE_COUNT; i += 1) {
       const a = floraRng() * Math.PI * 2;
@@ -2735,6 +3851,78 @@ export function createThreeIslandGame(
       islandGroup.add(pebInst);
     }
     islandDisposables.push(pebbleMat, pebbleGeo);
+
+    // 10B. PRETTIER BEACHES: WEATHERED DRIFTWOOD LOGS & DECORATIVE STARFISH
+    const driftwoodGeo = buildDriftwoodLogGeometry(1.5);
+    const driftwoodMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.85,
+      metalness: 0.02,
+      vertexColors: true,
+    });
+    const driftwoodMatrices: THREE.Matrix4[] = [];
+    for (let i = 0; i < CONFIG.PROPS.DRIFTWOOD_COUNT; i += 1) {
+      const a = floraRng() * Math.PI * 2;
+      const r = 0.76 + floraRng() * 0.19;
+      const dx = Math.cos(a) * CONFIG.WORLD.ISLAND_RX * r;
+      const dz = Math.sin(a) * CONFIG.WORLD.ISLAND_RZ * r;
+      const dy = groundHeightAt(dx, dz, world);
+      if (dy < 0.1 || dy > 1.05 || !isClearOfStructures(dx, dz)) continue;
+      dummy.position.set(dx, dy - 0.02, dz);
+      dummy.rotation.set(0, floraRng() * Math.PI * 2, 0);
+      dummy.scale.setScalar(0.85 + floraRng() * 0.55);
+      dummy.updateMatrix();
+      driftwoodMatrices.push(dummy.matrix.clone());
+    }
+    if (driftwoodMatrices.length > 0) {
+      const dwInst = new THREE.InstancedMesh(driftwoodGeo, driftwoodMat, driftwoodMatrices.length);
+      driftwoodMatrices.forEach((m, idx) => dwInst.setMatrixAt(idx, m));
+      dwInst.instanceMatrix.needsUpdate = true;
+      dwInst.computeBoundingSphere();
+      islandGroup.add(dwInst);
+    }
+    islandDisposables.push(driftwoodGeo, driftwoodMat);
+
+    const starfishGeo = buildBeachStarfishGeometry();
+    const starfishMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.48,
+      metalness: 0.04,
+    });
+    const starfishPalette = [
+      new THREE.Color(0xff7256),
+      new THREE.Color(0xff9f3f),
+      new THREE.Color(0xff5978),
+      new THREE.Color(0xffc84a),
+    ];
+    const starfishMatrices: THREE.Matrix4[] = [];
+    const starfishColors: THREE.Color[] = [];
+    for (let i = 0; i < CONFIG.PROPS.STARFISH_PROP_COUNT; i += 1) {
+      const a = floraRng() * Math.PI * 2;
+      const r = 0.79 + floraRng() * 0.18;
+      const sx = Math.cos(a) * CONFIG.WORLD.ISLAND_RX * r;
+      const sz = Math.sin(a) * CONFIG.WORLD.ISLAND_RZ * r;
+      const sy = groundHeightAt(sx, sz, world);
+      if (sy < 0.05 || sy > 0.78) continue;
+      dummy.position.set(sx, sy + 0.015, sz);
+      dummy.rotation.set(0, floraRng() * Math.PI * 2, 0);
+      dummy.scale.setScalar(0.75 + floraRng() * 0.55);
+      dummy.updateMatrix();
+      starfishMatrices.push(dummy.matrix.clone());
+      starfishColors.push(starfishPalette[i % starfishPalette.length]);
+    }
+    if (starfishMatrices.length > 0) {
+      const sfInst = new THREE.InstancedMesh(starfishGeo, starfishMat, starfishMatrices.length);
+      starfishMatrices.forEach((m, idx) => {
+        sfInst.setMatrixAt(idx, m);
+        sfInst.setColorAt(idx, starfishColors[idx]);
+      });
+      sfInst.instanceMatrix.needsUpdate = true;
+      if (sfInst.instanceColor) sfInst.instanceColor.needsUpdate = true;
+      sfInst.computeBoundingSphere();
+      islandGroup.add(sfInst);
+    }
+    islandDisposables.push(starfishGeo, starfishMat);
 
     // 11. 32-SPECIES ISLAND WILDLIFE, COASTAL CRABS, MARINE FISH, NIGHT PREDATORS & STRANGE CREATURES
     for (const actor of survivalState.wildlife.actors) {
@@ -2812,6 +4000,8 @@ export function createThreeIslandGame(
     survivor.axeMesh.visible = false;
     survivor.spearMesh.visible = false;
     survivor.fireSpearMesh.visible = false;
+    survivor.bowMesh.visible = false;
+    survivor.hammerMesh.visible = false;
     survivor.rodGroup.visible = false;
     bobberMesh.visible = false;
     fishingLine.visible = false;
@@ -2822,6 +4012,7 @@ export function createThreeIslandGame(
     }
     camLookAt.set(playerState.x, playerState.y + CONFIG.CAMERA.LOOK_HEIGHT, playerState.z);
     harvestRingMesh.visible = false;
+    focusRingMesh.visible = false;
   };
 
   const loadSeedWorld = (seed: string) => {
@@ -2833,9 +4024,40 @@ export function createThreeIslandGame(
       timeParam === 'night' ? 0.88 : timeParam === 'dusk' ? 0.72 : timeParam === 'dawn' ? 0.22 : 0.38;
     survivalState = createSurvivalState(worldData, initialTime);
     const weatherParam = params?.get('weather');
-    if (weatherParam === 'rain' || weatherParam === 'fog' || weatherParam === 'clear') {
+    if (
+      weatherParam === 'rain' ||
+      weatherParam === 'storm' ||
+      weatherParam === 'fog' ||
+      weatherParam === 'clear'
+    ) {
       survivalState.weather = weatherParam;
       survivalState.weatherTimer = 30;
+      if (weatherParam === 'rain' || weatherParam === 'storm') {
+        survivalState.groundWetness = 0.92;
+      }
+    }
+    const eventParam = params?.get('event');
+    if (
+      eventParam === 'low_tide' ||
+      eventParam === 'tsunami' ||
+      eventParam === 'volcano_eruption' ||
+      eventParam === 'meteor_shower' ||
+      eventParam === 'fish_frenzy' ||
+      eventParam === 'autumn_breeze' ||
+      eventParam === 'winter_frost'
+    ) {
+      triggerWorldEvent(survivalState, eventParam, true);
+      if (eventParam === 'low_tide') {
+        survivalState.seaLevelOffset = CONFIG.SURVIVAL.WORLD_EVENTS.LOW_TIDE_OFFSET;
+      } else if (eventParam === 'tsunami') {
+        survivalState.seaLevelOffset = CONFIG.SURVIVAL.WORLD_EVENTS.TSUNAMI_OFFSET;
+      } else if (eventParam === 'autumn_breeze' || eventParam === 'winter_frost') {
+        survivalState.seasonMix = 1;
+      }
+    }
+    const seasonParam = params?.get('season');
+    if (seasonParam === 'autumn' || seasonParam === 'winter') {
+      triggerSeasonEvent(survivalState, seasonParam);
     }
     buildContinuousIslandScene(worldData);
     resetPlayerToSpawn();
@@ -2850,14 +4072,158 @@ export function createThreeIslandGame(
     callbacks.onScreenChange('title', { mode: currentMode, seed: currentSeed });
   }
 
+  let clickWalkTarget: {
+    x: number;
+    z: number;
+    kind?: FocusedTargetKind;
+    id?: string;
+    range: number;
+    markerTimer: number;
+  } | null = null;
+  let lastNotifiedOutcome: GameOutcome = 'playing';
+
   const onKeyDown = (e: KeyboardEvent) => {
     activeKeys.add(e.code);
+    soundEngine.unlockAndStartAmbience();
+    if (screenState === 'playing') {
+      if (e.code === 'KeyF' || e.code === 'Space') {
+        if (e.code === 'Space') e.preventDefault();
+        requestPlayerInteract(survivalState);
+      } else if (e.code === 'Digit1') {
+        if (selectWeapon(survivalState, 'axe')) emitHud(currentBiome);
+      } else if (e.code === 'Digit2') {
+        if (selectWeapon(survivalState, 'spear')) emitHud(currentBiome);
+      } else if (e.code === 'Digit3') {
+        if (selectWeapon(survivalState, 'bow')) emitHud(currentBiome);
+      } else if (e.code === 'Digit4') {
+        if (selectWeapon(survivalState, 'hammer')) emitHud(currentBiome);
+      }
+    }
   };
   const onKeyUp = (e: KeyboardEvent) => {
     activeKeys.delete(e.code);
   };
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
+
+  const raycaster = new THREE.Raycaster();
+  const ndcVec = new THREE.Vector2();
+  const fallbackPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  const planeHitVec = new THREE.Vector3();
+  let pointerDownX = 0;
+  let pointerDownY = 0;
+  const onCanvasPointerDown = (e: PointerEvent) => {
+    pointerDownX = e.clientX;
+    pointerDownY = e.clientY;
+    soundEngine.unlockAndStartAmbience();
+  };
+  const onCanvasPointerUp = (e: PointerEvent) => {
+    if (screenState !== 'playing' || survivalState.gameOutcome !== 'playing') return;
+    if (Math.hypot(e.clientX - pointerDownX, e.clientY - pointerDownY) >= 9) return;
+
+    const rect = renderer.domElement.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    ndcVec.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    ndcVec.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(ndcVec, camera);
+
+    let hx = playerState.x;
+    let hz = playerState.z;
+    let gotHit = false;
+    if (activeTerrainMesh) {
+      const hits = raycaster.intersectObject(activeTerrainMesh, false);
+      if (hits.length > 0) {
+        hx = hits[0].point.x;
+        hz = hits[0].point.z;
+        gotHit = true;
+      }
+    }
+    if (!gotHit) {
+      if (raycaster.ray.intersectPlane(fallbackPlane, planeHitVec)) {
+        hx = planeHitVec.x;
+        hz = planeHitVec.z;
+        gotHit = true;
+      }
+    }
+    if (!gotHit) return;
+
+    // Pick exact clicked 3D entity near (hx, hz)
+    let picked: { kind: FocusedTargetKind; id: string; x: number; z: number; range: number; score: number } | null = null;
+    const consider = (kind: FocusedTargetKind, id: string, tx: number, tz: number, range: number, maxClickDist: number, priorityBias = 0) => {
+      const d = Math.hypot(tx - hx, tz - hz);
+      if (d <= maxClickDist) {
+        const score = d - priorityBias;
+        if (!picked || score < picked.score) {
+          picked = { kind, id, x: tx, z: tz, range, score };
+        }
+      }
+    };
+
+    for (const sec of survivalState.secretSpots) {
+      if (survivalState.discoveredSecrets.includes(sec.id)) continue;
+      consider('secret', sec.id, sec.x, sec.z, CONFIG.SURVIVAL.HARVEST_RANGE_SECRET, 2.5, 0.35);
+    }
+    for (const pad of survivalState.buildPads) {
+      if (survivalState.buildings[pad.id]) continue;
+      consider('pad', pad.id, pad.x, pad.z, CONFIG.SURVIVAL.HARVEST_RANGE_BUILD, 2.5, 0.25);
+    }
+    for (const act of survivalState.wildlife.actors) {
+      if (!act.visible || act.koTimer > 0 || act.respawnTimer > 0) continue;
+      const spec = getAnimalSpecies(act.speciesId);
+      if (!spec?.huntable) continue;
+      consider('prey', act.id, act.x, act.z, CONFIG.SURVIVAL.HARVEST_RANGE_HUNT, 2.4, 0.3);
+    }
+    for (const node of survivalState.nodes) {
+      if (node.cooldownRemaining > 0) continue;
+      consider('node', node.id, node.x, node.z, node.range, node.kind === 'wood' ? 2.5 : 2.1, 0);
+    }
+
+    const bowEquipped = survivalState.equippedWeapon === 'bow' && survivalState.unlockedWeapons.bow;
+    if (bowEquipped && (!picked || (picked as { kind: FocusedTargetKind }).kind === 'prey')) {
+      const targetPreyId =
+        picked && (picked as { kind: FocusedTargetKind }).kind === 'prey'
+          ? (picked as { id: string }).id
+          : undefined;
+      requestBowShotAt(survivalState, hx, hz, targetPreyId);
+      clickRingMesh.position.set(hx, Math.max(0.06, groundHeightAt(hx, hz, worldData) + 0.08), hz);
+      clickRingMesh.visible = true;
+      clickWalkTarget = { x: playerState.x, z: playerState.z, range: 99, markerTimer: 0.45 };
+      return;
+    }
+
+    const hammerEquipped = survivalState.equippedWeapon === 'hammer' && survivalState.unlockedWeapons.hammer;
+    const distFromPlayer = Math.hypot(hx - playerState.x, hz - playerState.z);
+    if (hammerEquipped && !picked && distFromPlayer < 3.2) {
+      requestPlayerInteract(survivalState);
+      return;
+    }
+
+    if (picked) {
+      const p = picked as { kind: FocusedTargetKind; id: string; x: number; z: number; range: number };
+      const dist = Math.hypot(p.x - playerState.x, p.z - playerState.z);
+      if (dist <= p.range + 0.2) {
+        requestTargetInteract(survivalState, p.kind, p.id);
+        clickWalkTarget = null;
+      } else {
+        clickWalkTarget = {
+          x: p.x,
+          z: p.z,
+          kind: p.kind,
+          id: p.id,
+          range: Math.max(0.6, p.range - 0.15),
+          markerTimer: 0.9,
+        };
+      }
+      clickRingMesh.position.set(p.x, Math.max(0.06, groundHeightAt(p.x, p.z, worldData) + 0.08), p.z);
+      clickRingMesh.visible = true;
+    } else {
+      clickWalkTarget = { x: hx, z: hz, range: 0.48, markerTimer: 0.7 };
+      clickRingMesh.position.set(hx, Math.max(0.06, groundHeightAt(hx, hz, worldData) + 0.08), hz);
+      clickRingMesh.visible = true;
+    }
+  };
+  renderer.domElement.addEventListener('pointerdown', onCanvasPointerDown);
+  renderer.domElement.addEventListener('pointerup', onCanvasPointerUp);
 
   const onResize = () => {
     const w = Math.max(1, container.clientWidth);
@@ -2875,6 +4241,11 @@ export function createThreeIslandGame(
     event.preventDefault();
   };
   renderer.domElement.addEventListener('webglcontextlost', onContextLost, false);
+
+  let lightningFlash = 0;
+  let nextLightningTimer = 4.5;
+  let eventProjSpawnTimer = 0;
+  let castRodSoundQueued = false;
 
   let disposed = false;
   let elapsedTime = 0;
@@ -2910,7 +4281,9 @@ export function createThreeIslandGame(
                 ? emberMat
                 : kind === 'shell'
                   ? chipShellMat
-                  : emberMat;
+                  : kind === 'meat'
+                    ? chipMeatMat
+                    : emberMat;
     const count = kind === 'ember' ? 1 : kind === 'chipWood' ? 3 : 5;
     let spawned = 0;
     for (const p of harvestChipPool) {
@@ -2949,7 +4322,9 @@ export function createThreeIslandGame(
               ? stackShellGeo
               : kind === 'banana'
                 ? stackBananaGeo
-                : stackBerryGeo;
+                : kind === 'meat'
+                  ? stackMeatGeo
+                  : stackBerryGeo;
       arc.mesh.material = kind === 'berries' ? stackBerryMat : stackVertexMat;
       arc.mesh.scale.setScalar(kind === 'berries' ? 1.3 : 1.0);
       arc.mesh.position.copy(arc.start);
@@ -2972,6 +4347,7 @@ export function createThreeIslandGame(
         slot.berries.visible = false;
         slot.shell.visible = false;
         slot.banana.visible = false;
+        slot.meat.visible = false;
       } else {
         slot.group.visible = true;
         slot.wood.visible = item === 'wood';
@@ -2979,6 +4355,7 @@ export function createThreeIslandGame(
         slot.berries.visible = item === 'berries';
         slot.shell.visible = item === 'shell';
         slot.banana.visible = item === 'banana';
+        slot.meat.visible = item === 'meat';
       }
     }
   };
@@ -3049,6 +4426,10 @@ export function createThreeIslandGame(
       obeliskHalo.rotation.z -= dt * 1.1;
       obeliskHalo.scale.setScalar(1 + Math.sin(elapsedTime * 2.6) * 0.06);
     }
+    if (obeliskHaloInner) {
+      obeliskHaloInner.rotation.z += dt * 1.45;
+      obeliskHaloInner.rotation.y += dt * 0.6;
+    }
     if (lavaPoolMesh) {
       const m = lavaPoolMesh.material as THREE.ShaderMaterial;
       m.uniforms.uTime.value = elapsedTime;
@@ -3057,10 +4438,16 @@ export function createThreeIslandGame(
       const m = springWaterMesh.material as THREE.ShaderMaterial;
       m.uniforms.uTime.value = elapsedTime;
     }
+    if (waterfallMat) {
+      waterfallMat.uniforms.uTime.value = elapsedTime;
+    }
     if (beaconFlameMesh) {
       const m = beaconFlameMesh.material as THREE.MeshStandardMaterial;
       m.emissiveIntensity = 0.9 + Math.sin(elapsedTime * 5.0) * 0.28;
       beaconFlameMesh.scale.setScalar(1 + Math.sin(elapsedTime * 6.5) * 0.08);
+    }
+    if (beaconBeamMesh) {
+      beaconBeamMesh.rotation.y += dt * 0.85;
     }
     if (fireflyGroup) {
       fireflyGroup.rotation.y += dt * 0.22;
@@ -3070,33 +4457,63 @@ export function createThreeIslandGame(
         Math.sin(elapsedTime * 1.8) * 0.22;
     }
 
-    // Animate cozy survival campfire flames (scales with Fire Level!) & skewer
-    const fireLevelScale = 1 + (survivalState.fireLevel - 1) * 0.28;
+    // Animate cozy survival campfire flames (scales Lv 1..10!), glowing coal bed & 48 spiraling embers
+    const fireScaleCap = Math.min(2.6, 1 + (survivalState.fireLevel - 1) * 0.22);
     campFlames.forEach((flame, idx) => {
       const flicker = 1 + Math.sin(elapsedTime * (7.5 + idx * 2.1) + idx) * 0.14;
-      flame.scale.set(
-        (idx === 0 ? 0.95 : 0.6) * fireLevelScale,
-        (idx === 1 ? 0.78 : idx === 2 ? 0.68 : 1.05) * flicker * fireLevelScale,
-        (idx === 0 ? 0.95 : 0.6) * fireLevelScale
-      );
+      const baseXZ = idx === 0 ? 1.05 : idx === 4 ? 0.38 : 0.58;
+      const baseY = idx === 4 ? 0.56 : idx === 1 ? 0.88 : 1.08;
+      flame.scale.set(baseXZ * fireScaleCap, baseY * flicker * fireScaleCap, baseXZ * fireScaleCap);
       flame.rotation.y = elapsedTime * (idx % 2 === 0 ? 1.4 : -1.8);
     });
+    if (campCoalBed) {
+      const coalMat = campCoalBed.material as THREE.MeshStandardMaterial;
+      coalMat.emissiveIntensity = 1.2 + Math.sin(elapsedTime * 6.5) * 0.35 + (survivalState.fireLevel - 1) * 0.15;
+    }
+    if (campEmberInst) {
+      const activeEmbers = Math.min(campEmberSeeds.length, 16 + survivalState.fireLevel * 3);
+      for (let i = 0; i < campEmberSeeds.length; i += 1) {
+        if (i >= activeEmbers) {
+          seasonDummy.scale.setScalar(0);
+        } else {
+          const es = campEmberSeeds[i];
+          const prog = (elapsedTime * es.spd + es.phase) % 1;
+          const swirl = es.ang + prog * 4.2;
+          const rad = es.rad * (1 + prog * 0.9) * Math.min(1.6, 0.9 + survivalState.fireLevel * 0.08);
+          seasonDummy.position.set(
+            Math.cos(swirl) * rad,
+            0.2 + prog * (1.8 + survivalState.fireLevel * 0.24),
+            Math.sin(swirl) * rad
+          );
+          seasonDummy.scale.setScalar(Math.max(0.05, (1 - prog) * 1.15));
+        }
+        seasonDummy.rotation.set(0, 0, 0);
+        seasonDummy.updateMatrix();
+        campEmberInst.setMatrixAt(i, seasonDummy.matrix);
+      }
+      campEmberInst.instanceMatrix.needsUpdate = true;
+    }
     if (campAuraRing) {
       const mat = campAuraRing.material as THREE.MeshBasicMaterial;
       mat.opacity = survivalState.nearCampfire ? 0.56 + Math.sin(elapsedTime * 4) * 0.14 : 0.24;
-      campAuraRing.scale.setScalar(1 + (survivalState.fireLevel - 1) * 0.24);
+      mat.color.setHex(survivalState.fireLevel >= 5 ? 0x62f8ff : 0xffcf5c);
+      campAuraRing.scale.setScalar(1 + Math.min(6, survivalState.fireLevel - 1) * 0.2);
     }
-    if (campRoastGroup && campRoastFish && campRoastBanana) {
+    if (campRoastGroup && campRoastFish && campRoastBanana && campRoastMeat) {
       const roastFish = survivalState.nearCampfire && survivalState.carried.fish > 0;
+      const roastMeat = !roastFish && survivalState.nearCampfire && survivalState.carried.meat > 0;
       const roastBanana =
         !roastFish &&
+        !roastMeat &&
         survivalState.nearCampfire &&
         survivalState.fireLevel >= 2 &&
         survivalState.carried.banana > 0;
-      campRoastGroup.visible = roastFish || roastBanana;
+      campRoastGroup.visible = roastFish || roastMeat || roastBanana;
       campRoastFish.visible = roastFish;
+      campRoastMeat.visible = roastMeat;
       campRoastBanana.visible = roastBanana;
       if (roastFish) campRoastFish.rotation.x = elapsedTime * 2.6;
+      if (roastMeat) campRoastMeat.rotation.x = elapsedTime * 2.5;
       if (roastBanana) campRoastBanana.rotation.x = elapsedTime * 2.4;
     }
 
@@ -3129,7 +4546,11 @@ export function createThreeIslandGame(
       fIdx += 1;
     }
 
-    // Sync Day/Night Sky, Sun/Moon Lighting, Weather Rain & Fog!
+    // Sync Ocean Tide / Surge Level
+    oceanMat.uniforms.uSeaLevel.value = survivalState.seaLevelOffset;
+    oceanMesh.position.y = survivalState.seaLevelOffset;
+
+    // Sync Day/Night Sky, Sun/Moon Lighting, Wet Ground, Storm Lightning, Rain & Fog!
     const tDay = survivalState.timeOfDay;
     const sunAngle = (tDay - 0.25) * Math.PI * 2;
     const sunElev = Math.sin(sunAngle); // +1 noon, 0 horizon, -1 midnight
@@ -3149,10 +4570,21 @@ export function createThreeIslandGame(
     const skyTop = skyTopNight.clone().lerp(skyTopDay, dayAmount).lerp(skyTopDusk, twilightAmount * 0.65);
     const skyHor = skyHorNight.clone().lerp(skyHorDay, dayAmount).lerp(skyHorDusk, twilightAmount * 0.78);
 
-    // Overcast / Rain / Fog atmosphere blend
     const isRain = survivalState.weather === 'rain';
+    const isStorm = survivalState.weather === 'storm';
+    const isPrecipitation = isRain || isStorm;
     const isFog = survivalState.weather === 'fog';
-    if (isRain) {
+
+    if (isStorm) {
+      skyTop.lerp(new THREE.Color(0x212f42), 0.76);
+      skyHor.lerp(new THREE.Color(0x46586e), 0.76);
+      nextLightningTimer -= dt;
+      if (nextLightningTimer <= 0) {
+        nextLightningTimer = 4.5 + Math.random() * 6.5;
+        lightningFlash = 1.0;
+        if (screenState === 'playing') soundEngine.playThunder();
+      }
+    } else if (isRain) {
       skyTop.lerp(new THREE.Color(0x3a4f66), 0.55);
       skyHor.lerp(new THREE.Color(0x6b8299), 0.62);
     } else if (isFog) {
@@ -3160,10 +4592,16 @@ export function createThreeIslandGame(
       skyHor.lerp(new THREE.Color(0xd2e6ef), 0.68);
     }
 
+    if (lightningFlash > 0) {
+      lightningFlash = Math.max(0, lightningFlash - dt * 3.8);
+      skyTop.lerp(new THREE.Color(0xdcefff), lightningFlash * 0.65);
+      skyHor.lerp(new THREE.Color(0xeef7ff), lightningFlash * 0.65);
+    }
+
     skyDome.mat.uniforms.topColor.value.copy(skyTop);
     skyDome.mat.uniforms.horizonColor.value.copy(skyHor);
     skyDome.mat.uniforms.sunDir.value.set(sunHoriz, Math.max(-0.2, sunElev), 0.35).normalize();
-    skyDome.mat.uniforms.starMix.value = nightAmount * (isRain || isFog ? 0.2 : 1.0);
+    skyDome.mat.uniforms.starMix.value = nightAmount * (isPrecipitation || isFog ? 0.15 : 1.0);
     skyDome.mat.uniforms.uTime.value = elapsedTime;
 
     const moonAngle = sunAngle + Math.PI;
@@ -3175,7 +4613,15 @@ export function createThreeIslandGame(
     moonOrb.visible = nightAmount > 0.15;
 
     scene.background = skyHor;
-    const targetFogDensity = isFog ? 0.0115 : isRain ? 0.0054 : nightAmount > 0.5 ? 0.0042 : CONFIG.RENDER.FOG_DENSITY;
+    const targetFogDensity = isFog
+      ? 0.0115
+      : isStorm
+        ? 0.0072
+        : isRain
+          ? 0.0054
+          : nightAmount > 0.5
+            ? 0.0042
+            : CONFIG.RENDER.FOG_DENSITY;
     const expFog = scene.fog as THREE.FogExp2;
     expFog.color.copy(skyHor);
     expFog.density = THREE.MathUtils.lerp(expFog.density, targetFogDensity, Math.min(1, dt * 1.8));
@@ -3188,13 +4634,13 @@ export function createThreeIslandGame(
       .setHex(0x135975)
       .lerp(new THREE.Color(CONFIG.COLORS.SEA_SHALLOW), dayAmount);
 
-    const weatherDim = isRain ? 0.72 : isFog ? 0.82 : 1.0;
-    scene.environmentIntensity = (0.07 + dayAmount * 0.29) * weatherDim;
+    const weatherDim = isStorm ? 0.56 : isRain ? 0.72 : isFog ? 0.82 : 1.0;
+    scene.environmentIntensity = (0.07 + dayAmount * 0.29) * weatherDim + lightningFlash * 0.35;
     sunLight.color
       .setHex(0x7c9eff)
       .lerp(new THREE.Color(0xfff1d4), dayAmount)
       .lerp(new THREE.Color(0xffa45b), twilightAmount * 0.65);
-    sunLight.intensity = (0.24 + dayAmount * 1.66) * weatherDim;
+    sunLight.intensity = (0.24 + dayAmount * 1.66) * weatherDim + lightningFlash * 2.4;
     hemiLight.color.setHex(0x284378).lerp(new THREE.Color(0xdef5ff), dayAmount);
     hemiLight.groundColor.setHex(0x192830).lerp(new THREE.Color(0x769a5c), dayAmount);
     hemiLight.intensity = (0.24 + dayAmount * 0.66) * weatherDim;
@@ -3205,20 +4651,75 @@ export function createThreeIslandGame(
       Math.sin(elapsedTime * 9) * 0.35;
     campPointLight.distance = 24 + survivalState.fireLevel * 6;
 
-    // 3D Rain streaks around player
-    rainInst.visible = isRain;
-    if (isRain) {
+    // Wet Ground Shader / PBR Roughness Sheen during Rain & Storm!
+    const wet = survivalState.groundWetness;
+    if (activeTerrainMat) {
+      activeTerrainMat.roughness = THREE.MathUtils.lerp(0.88, 0.24, wet);
+      activeTerrainMat.metalness = THREE.MathUtils.lerp(0.02, 0.14, wet);
+      const dryShade = THREE.MathUtils.lerp(1.0, 0.78, wet);
+      activeTerrainMat.color.setRGB(dryShade * 0.98, dryShade, dryShade * 1.04);
+    }
+    if (activeRockMainMat) {
+      activeRockMainMat.roughness = THREE.MathUtils.lerp(0.92, 0.26, wet);
+      activeRockMainMat.color.setHex(CONFIG.COLORS.ROCK_MAIN).multiplyScalar(THREE.MathUtils.lerp(1.0, 0.74, wet));
+    }
+    if (activeRockLightMat) {
+      activeRockLightMat.roughness = THREE.MathUtils.lerp(0.88, 0.28, wet);
+      activeRockLightMat.color.setHex(CONFIG.COLORS.ROCK_LIGHT).multiplyScalar(THREE.MathUtils.lerp(1.0, 0.76, wet));
+    }
+    if (activePebbleMat) {
+      activePebbleMat.roughness = THREE.MathUtils.lerp(0.88, 0.22, wet);
+    }
+
+    // 3D Rain streaks + ground raindrop splash ripples around player
+    rainInst.visible = isPrecipitation;
+    rainRippleInst.visible = isPrecipitation || wet > 0.35;
+    if (isPrecipitation) {
+      const spdMult = isStorm ? 1.45 : 1.0;
+      const slant = isStorm ? 0.26 : 0.1;
       for (let i = 0; i < rainCount; i += 1) {
         const ro = rainOffsets[i];
-        ro.y -= ro.spd * dt;
+        ro.y -= ro.spd * spdMult * dt;
         if (ro.y < 0) ro.y = 18;
         rainDummy.position.set(playerState.x + ro.x, playerState.y + ro.y, playerState.z + ro.z);
-        rainDummy.rotation.set(0.08, 0, 0.1);
+        rainDummy.rotation.set(slant, 0, slant * 1.1);
+        rainDummy.scale.set(1, isStorm ? 1.35 : 1.0, 1);
         rainDummy.updateMatrix();
         rainInst.setMatrixAt(i, rainDummy.matrix);
       }
       rainInst.instanceMatrix.needsUpdate = true;
     }
+    if (rainRippleInst.visible) {
+      for (let i = 0; i < rippleCount; i += 1) {
+        const rp = ripplePool[i];
+        rp.age += dt;
+        if (rp.age >= rp.life) {
+          rp.age = 0;
+          const a = Math.random() * Math.PI * 2;
+          const rad = 1.2 + Math.random() * 14.0;
+          rp.x = playerState.x + Math.cos(a) * rad;
+          rp.z = playerState.z + Math.sin(a) * rad;
+          rp.y = Math.max(survivalState.seaLevelOffset + 0.04, groundHeightAt(rp.x, rp.z, worldData) + 0.04);
+        }
+        const t = rp.age / rp.life;
+        rainDummy.position.set(rp.x, rp.y, rp.z);
+        rainDummy.rotation.set(0, 0, 0);
+        rainDummy.scale.setScalar(0.35 + t * 1.5);
+        rainDummy.updateMatrix();
+        rainRippleInst.setMatrixAt(i, rainDummy.matrix);
+      }
+      rainRippleInst.instanceMatrix.needsUpdate = true;
+      rainRippleMat.opacity = isPrecipitation ? 0.44 : wet * 0.24;
+    }
+
+    // Update soundEngine ambient surf / birds / crickets / rain
+    soundEngine.updateAmbience(
+      dt,
+      survivalState.weather,
+      playerState.y < 1.1,
+      survivalState.isNight,
+      screenState === 'playing'
+    );
 
     emberTimer += dt;
     if (emberTimer >= 0.45) {
@@ -3272,7 +4773,116 @@ export function createThreeIslandGame(
       }
     }
 
-    if (screenState === 'playing') {
+    // Update Seasonal Shader Uniforms + Falling Leaves / Snowflakes
+    seasonUniformMix.value = survivalState.seasonMix;
+    seasonUniformKind.value =
+      survivalState.season === 'autumn' ? 1 : survivalState.season === 'winter' ? 2 : 0;
+    const showSeasonParticles = survivalState.season !== 'summer' && survivalState.seasonMix > 0.08;
+    leafSnowInst.visible = showSeasonParticles;
+    if (showSeasonParticles) {
+      const isAutumn = survivalState.season === 'autumn';
+      for (let i = 0; i < seasonParticleCount; i += 1) {
+        const sp = seasonParticleData[i];
+        sp.y -= sp.spd * (isAutumn ? 1.05 : 0.75) * dt;
+        if (sp.y < 0) sp.y = 14;
+        const driftX = Math.sin(elapsedTime * 1.4 + sp.phase) * (isAutumn ? 1.3 : 0.65);
+        const driftZ = Math.cos(elapsedTime * 1.1 + sp.phase) * (isAutumn ? 1.1 : 0.55);
+        seasonDummy.position.set(
+          playerState.x + sp.x + driftX,
+          playerState.y + sp.y,
+          playerState.z + sp.z + driftZ
+        );
+        seasonDummy.rotation.set(
+          elapsedTime * sp.spin,
+          elapsedTime * sp.spin * 0.7,
+          elapsedTime * sp.spin * 0.5
+        );
+        seasonDummy.scale.setScalar((isAutumn ? 1.15 : 0.85) * survivalState.seasonMix);
+        seasonDummy.updateMatrix();
+        leafSnowInst.setMatrixAt(i, seasonDummy.matrix);
+        leafSnowInst.setColorAt(i, isAutumn ? autumnPalette[sp.tintIdx] : winterColor);
+      }
+      leafSnowInst.instanceMatrix.needsUpdate = true;
+      if (leafSnowInst.instanceColor) leafSnowInst.instanceColor.needsUpdate = true;
+    }
+
+    // Animate Hidden Secret Place Chests (lid hinge + sparkles)
+    for (const [secId, sVis] of secretSpotVisuals.entries()) {
+      const discovered = survivalState.discoveredSecrets.includes(secId);
+      if (discovered && sVis.openAnim < 1) {
+        sVis.openAnim = Math.min(1, sVis.openAnim + dt * 2.8);
+      } else if (!discovered) {
+        sVis.openAnim = 0;
+      }
+      sVis.lid.rotation.x = -sVis.openAnim * Math.PI * 0.48;
+      const gMat = sVis.glowRing.material as THREE.MeshBasicMaterial;
+      gMat.opacity = discovered ? 0.14 : 0.58 + Math.sin(elapsedTime * 3.8) * 0.22;
+      sVis.sparkles.forEach((sp, kIdx) => {
+        sp.visible = !discovered;
+        if (!discovered) {
+          const ang = elapsedTime * 2.1 + (kIdx / 3) * Math.PI * 2;
+          sp.position.set(
+            Math.cos(ang) * 0.78,
+            1.0 + Math.sin(elapsedTime * 3 + kIdx) * 0.18,
+            Math.sin(ang) * 0.78
+          );
+        }
+      });
+    }
+
+    // Update Weapon Mastery 3D Glow Materials (Lv 2..5)
+    const applyWeaponGlow = (mat: THREE.MeshStandardMaterial, lvl: number, hex: number) => {
+      if (lvl <= 1) {
+        mat.emissiveIntensity = 0;
+      } else {
+        mat.emissive.setHex(hex);
+        mat.emissiveIntensity = 0.2 + (lvl - 2) * 0.32 + Math.sin(elapsedTime * 4) * 0.08;
+      }
+    };
+    applyWeaponGlow(survivor.toolMats.axe, survivalState.weaponLevels.axe, 0x3bf572);
+    applyWeaponGlow(
+      survivor.toolMats.spear,
+      survivalState.weaponLevels.spear,
+      survivalState.hasFireSpear ? 0xff5a1f : 0x42e3ff
+    );
+    applyWeaponGlow(survivor.toolMats.bow, survivalState.weaponLevels.bow, 0x9eff3d);
+    applyWeaponGlow(survivor.toolMats.hammer, survivalState.weaponLevels.hammer, 0xffc833);
+
+    // Update Lightning Bolts & Claw Slash Arcs
+    for (const bp of boltPool) {
+      if (!bp.active) continue;
+      bp.age += dt;
+      if (bp.age >= 0.28) {
+        bp.active = false;
+        bp.mesh.visible = false;
+      } else {
+        const s = 1 - bp.age / 0.28;
+        bp.mesh.scale.set(s, 1, s);
+      }
+    }
+    for (const cs of clawSlashPool) {
+      if (!cs.active) continue;
+      cs.age += dt;
+      const t = cs.age / 0.26;
+      if (t >= 1) {
+        cs.active = false;
+        cs.mesh.visible = false;
+      } else {
+        cs.mesh.scale.setScalar(0.85 + t * 0.7);
+        cs.mat.opacity = 0.95 * (1 - t);
+      }
+    }
+
+    // Update Click Target Ground Ring
+    if (clickWalkTarget && clickWalkTarget.markerTimer > 0) {
+      clickWalkTarget.markerTimer -= dt;
+      clickRingMesh.scale.setScalar(1 + Math.sin(elapsedTime * 10) * 0.14);
+      if (clickWalkTarget.markerTimer <= 0 && clickRingMesh.visible) {
+        clickRingMesh.visible = false;
+      }
+    }
+
+    if (screenState === 'playing' && survivalState.gameOutcome === 'playing') {
       let moveX = joystickInput.dx;
       let moveZ = joystickInput.dy;
 
@@ -3281,12 +4891,33 @@ export function createThreeIslandGame(
       if (activeKeys.has('KeyW') || activeKeys.has('ArrowUp')) moveZ -= 1;
       if (activeKeys.has('KeyS') || activeKeys.has('ArrowDown')) moveZ += 1;
 
-      const mag = Math.hypot(moveX, moveZ);
+      let mag = Math.hypot(moveX, moveZ);
+      if (mag > 0.05) {
+        clickWalkTarget = null;
+        clickRingMesh.visible = false;
+      } else if (clickWalkTarget) {
+        const dx = clickWalkTarget.x - playerState.x;
+        const dz = clickWalkTarget.z - playerState.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist <= clickWalkTarget.range) {
+          if (clickWalkTarget.kind && clickWalkTarget.id) {
+            requestTargetInteract(survivalState, clickWalkTarget.kind, clickWalkTarget.id);
+          }
+          clickWalkTarget = null;
+          clickRingMesh.visible = false;
+        } else {
+          moveX = dx / dist;
+          moveZ = dz / dist;
+          mag = 1;
+        }
+      }
+
       if (mag > 1) {
         moveX /= mag;
         moveZ /= mag;
       }
 
+      const prevSwimming = survivalState.isSwimming;
       const speedScale = getPlayerSpeedScale(survivalState);
       const nextPos = stepPlayerPhysics(
         { x: playerState.x, z: playerState.z },
@@ -3294,11 +4925,39 @@ export function createThreeIslandGame(
         moveZ,
         dt,
         worldData,
-        speedScale
+        speedScale,
+        survivalState.seaLevelOffset
       );
       playerState.x = nextPos.x;
       playerState.y = nextPos.y;
       playerState.z = nextPos.z;
+
+      if (!prevSwimming && nextPos.isSwimming) {
+        soundEngine.playSwimSplash();
+      }
+
+      // Gentle inward tsunami surf push if standing on low beach during tsunami active phase
+      if (
+        survivalState.activeEvent === 'tsunami' &&
+        survivalState.eventPhase === 'active' &&
+        playerState.y < 0.95
+      ) {
+        const distCenter = Math.hypot(playerState.x, playerState.z);
+        if (distCenter > 5) {
+          const pushPos = stepPlayerPhysics(
+            { x: playerState.x, z: playerState.z },
+            (-playerState.x / distCenter) * 0.38,
+            (-playerState.z / distCenter) * 0.38,
+            dt,
+            worldData,
+            0.55,
+            survivalState.seaLevelOffset
+          );
+          playerState.x = pushPos.x;
+          playerState.y = pushPos.y;
+          playerState.z = pushPos.z;
+        }
+      }
 
       const survivalRes = stepSurvivalSystem(
         survivalState,
@@ -3306,15 +4965,98 @@ export function createThreeIslandGame(
         playerState.z,
         nextPos.moved,
         dt,
-        worldData
+        worldData,
+        false,
+        nextPos.isSwimming
       );
 
-      // Update Harvest / Build Progress Ring
+      // Update Localized Hazard Warning Rings & Falling Projectiles
+      for (let i = 0; i < hazardVisPool.length; i += 1) {
+        const hv = hazardVisPool[i];
+        const hz = survivalState.hazardImpacts[i];
+        if (!hz) {
+          hv.ring.visible = false;
+          hv.disc.visible = false;
+          hv.proj.visible = false;
+          continue;
+        }
+        const hy = Math.max(survivalState.seaLevelOffset + 0.06, groundHeightAt(hz.x, hz.z, worldData) + 0.08);
+        const prog = 1 - Math.max(0, hz.delayTimer) / Math.max(0.1, hz.maxDelay);
+        const colorHex = hz.kind === 'lightning' ? 0x62f6ff : hz.kind === 'meteor' ? 0xc27aff : 0xff451a;
+        hv.ringMat.color.setHex(colorHex);
+        hv.discMat.color.setHex(colorHex);
+        hv.projMat.color.setHex(colorHex);
+
+        hv.ring.visible = !hz.resolved;
+        hv.disc.visible = !hz.resolved;
+        hv.ring.position.set(hz.x, hy, hz.z);
+        hv.disc.position.set(hz.x, hy - 0.01, hz.z);
+        hv.ring.scale.setScalar(hz.radius);
+        hv.disc.scale.setScalar(hz.radius * (0.2 + prog * 0.8));
+
+        if (!hz.resolved && hz.kind !== 'lightning') {
+          hv.proj.visible = true;
+          hv.proj.position.set(hz.x, hy + (1 - prog) * 18, hz.z);
+          hv.proj.scale.setScalar(0.85 + prog * 0.45);
+        } else {
+          hv.proj.visible = false;
+        }
+      }
+
+      // Trigger Lightning Bolt Flash & Impact Chips on Hazard Strikes
+      for (const hs of survivalRes.hazardStrikes) {
+        const sy = Math.max(survivalState.seaLevelOffset, groundHeightAt(hs.x, hs.z, worldData));
+        if (hs.kind === 'lightning') {
+          soundEngine.playLightningStrike();
+          lightningFlash = 0.85;
+          for (const bp of boltPool) {
+            if (!bp.active) {
+              bp.active = true;
+              bp.age = 0;
+              bp.mesh.position.set(hs.x, sy, hs.z);
+              bp.mesh.scale.set(1, 1, 1);
+              bp.mesh.visible = true;
+              break;
+            }
+          }
+        } else {
+          soundEngine.playHammerSlam();
+          spawnBurstChips(hs.x, sy + 0.3, hs.z, 'ember');
+        }
+      }
+
+      // Predator Melee Strikes & Damage Feedback
+      if (survivalRes.predatorStrikes.length > 0) {
+        const ps = survivalRes.predatorStrikes[0];
+        const clawY = Math.max(playerState.y, survivalState.seaLevelOffset) + 0.88;
+        for (const cs of clawSlashPool) {
+          if (!cs.active) {
+            cs.active = true;
+            cs.age = 0;
+            cs.mesh.position.set(playerState.x, clawY, playerState.z);
+            cs.mesh.rotation.y = Math.atan2(ps.x - playerState.x, ps.z - playerState.z);
+            cs.mesh.scale.setScalar(0.95);
+            cs.mat.opacity = 0.95;
+            cs.mesh.visible = true;
+            break;
+          }
+        }
+      }
+      if (survivalRes.damageTaken > 0) {
+        soundEngine.playHitDamage();
+        const pt = projectWorldToViewport(playerState.x, playerState.y + 1.45, playerState.z);
+        callbacks.onDamageTaken?.(Math.round(survivalRes.damageTaken), pt.x, pt.y);
+      }
+
+      // Update Harvest / Build / Hunt Progress Ring + Focus Target Reticle
       const activeNode = survivalState.activeNodeId
         ? survivalState.nodes.find((n) => n.id === survivalState.activeNodeId)
         : undefined;
       const activePad = survivalState.activeBuildId
         ? survivalState.buildPads.find((p) => p.id === survivalState.activeBuildId)
+        : undefined;
+      const activePrey = survivalState.activeHuntActorId
+        ? survivalState.wildlife.actors.find((a) => a.id === survivalState.activeHuntActorId)
         : undefined;
 
       if (activePad) {
@@ -3322,17 +5064,38 @@ export function createThreeIslandGame(
         harvestRingMesh.position.set(activePad.x, activePad.y + 0.08, activePad.z);
         harvestRingMat.uniforms.uProgress.value = survivalState.actionProgress;
         harvestRingMat.uniforms.uColor.value.setHex(0x63f28e);
+        focusRingMesh.visible = false;
       } else if (activeNode) {
         harvestRingMesh.visible = true;
         harvestRingMesh.position.set(activeNode.x, activeNode.y + 0.08, activeNode.z);
         harvestRingMat.uniforms.uProgress.value = survivalState.harvestProgress;
         harvestRingMat.uniforms.uColor.value.setHex(activeNode.kind === 'banana' ? 0xffe042 : 0xffe14d);
+        focusRingMesh.visible = false;
+      } else if (activePrey) {
+        harvestRingMesh.visible = true;
+        harvestRingMesh.position.set(activePrey.x, activePrey.y + 0.08, activePrey.z);
+        harvestRingMat.uniforms.uProgress.value = survivalState.huntProgress;
+        harvestRingMat.uniforms.uColor.value.setHex(0xff5e3a);
+        focusRingMesh.visible = false;
       } else {
         harvestRingMesh.visible = false;
+        const ft = survivalState.focusedTarget;
+        if (ft) {
+          focusRingMesh.visible = true;
+          focusRingMesh.position.set(ft.x, ft.y + 0.09, ft.z);
+          focusRingMesh.scale.setScalar(1 + Math.sin(elapsedTime * 5.2) * 0.08);
+          focusRingMat.color.setHex(
+            ft.blockedReason ? 0xff7854 : ft.kind === 'prey' ? 0xffcb45 : 0x52f2ff
+          );
+        } else {
+          focusRingMesh.visible = false;
+        }
       }
 
       if (survivalRes.harvested) {
         const h = survivalRes.harvested;
+        if (h.kind === 'fish') soundEngine.playSplash();
+        else soundEngine.playPickup();
         spawnBurstChips(h.x, h.y, h.z, h.kind);
         spawnFlyingPropToBack(h.kind, h.x, h.y, h.z);
         const treeBind = treeNodeVisuals.get(h.nodeId);
@@ -3352,29 +5115,146 @@ export function createThreeIslandGame(
         }
       }
 
-      if (survivalRes.cookedCount > 0 && callbacks.onResourceFly) {
-        const campY = groundHeightAt(CONFIG.ISLAND.CAMPFIRE.CX, CONFIG.ISLAND.CAMPFIRE.CZ, worldData);
-        const pt = projectWorldToViewport(CONFIG.ISLAND.CAMPFIRE.CX, campY + 1.1, CONFIG.ISLAND.CAMPFIRE.CZ);
-        callbacks.onResourceFly({
-          id: flyEventSeq++,
-          kind: 'cookedFish',
-          startX: pt.x,
-          startY: pt.y,
-        });
+      if (survivalRes.arrowShot) {
+        soundEngine.playBowShot();
+        const ar = survivalRes.arrowShot;
+        for (const p of arrowPool) {
+          if (!p.active) {
+            p.active = true;
+            p.age = 0;
+            p.duration = 0.22;
+            p.start.set(ar.fromX, ar.fromY, ar.fromZ);
+            p.end.set(ar.toX, ar.toY, ar.toZ);
+            p.mesh.position.copy(p.start);
+            p.mesh.lookAt(p.end);
+            p.mesh.visible = true;
+            break;
+          }
+        }
       }
 
-      if (survivalRes.roastedBananaCount > 0 && callbacks.onResourceFly) {
-        const campY = groundHeightAt(CONFIG.ISLAND.CAMPFIRE.CX, CONFIG.ISLAND.CAMPFIRE.CZ, worldData);
-        const pt = projectWorldToViewport(CONFIG.ISLAND.CAMPFIRE.CX, campY + 1.1, CONFIG.ISLAND.CAMPFIRE.CZ);
-        callbacks.onResourceFly({
-          id: flyEventSeq++,
-          kind: 'roastedBanana',
-          startX: pt.x,
-          startY: pt.y,
-        });
+      if (survivalRes.hammerSlam) {
+        soundEngine.playHammerSlam();
+        const hs = survivalRes.hammerSlam;
+        hammerWaveAge = 0;
+        hammerRingMesh.position.set(hs.x, playerState.y + 0.14, hs.z);
+        hammerRingMesh.scale.setScalar(0.6);
+        hammerRingMesh.visible = true;
+        spawnBurstChips(hs.x, playerState.y + 0.1, hs.z, 'chipWood');
+        if (hs.lightningStrike) {
+          soundEngine.playLightningStrike();
+          for (const bp of boltPool) {
+            if (!bp.active) {
+              bp.active = true;
+              bp.age = 0;
+              bp.mesh.position.set(hs.x, playerState.y, hs.z);
+              bp.mesh.scale.set(1, 1, 1);
+              bp.mesh.visible = true;
+              break;
+            }
+          }
+        }
+      }
+
+      if (survivalRes.fishingMissed) {
+        soundEngine.playFishEscape();
+        callbacks.onNotice?.(survivalRes.fishingMissed.notice);
+      }
+
+      if (survivalRes.openedSecret) {
+        const sec = survivalRes.openedSecret;
+        soundEngine.playSecretOpen();
+        spawnBurstChips(sec.x, sec.y + 0.6, sec.z, 'ember');
+        callbacks.onNotice?.(`گنج مخفی کشف شد: ${sec.nameFa} (+۱۵ سکه و ۱ امتیاز مهارت)`);
+        if (callbacks.onResourceFly) {
+          const pt = projectWorldToViewport(sec.x, sec.y + 1.2, sec.z);
+          callbacks.onResourceFly({
+            id: flyEventSeq++,
+            kind: 'coin',
+            startX: pt.x,
+            startY: pt.y,
+          });
+        }
+      }
+
+      if (survivalRes.playerLevelUp !== undefined) {
+        soundEngine.playLevelUp();
+        callbacks.onNotice?.(
+          `تبریک! سطح ماجراجو به ${toPersianDigits(survivalRes.playerLevelUp)} ارتقا یافت!`
+        );
+      }
+
+      if (survivalRes.weaponLevelUps.length > 0) {
+        soundEngine.playLevelUp();
+        const up = survivalRes.weaponLevelUps[0];
+        const wSpec = CONFIG.WEAPON_SPECS.find((w) => w.id === up.weaponId);
+        if (wSpec) {
+          callbacks.onNotice?.(
+            `سلاح ${wSpec.nameFa} به سطح مهارت ${toPersianDigits(up.newLevel)} رسید!`
+          );
+        }
+      }
+
+      if (survivalRes.hunted) {
+        const ht = survivalRes.hunted;
+        soundEngine.playPickup();
+        spawnBurstChips(ht.x, ht.y + 0.2, ht.z, 'meat');
+        spawnFlyingPropToBack('meat', ht.x, ht.y + 0.2, ht.z);
+        if (callbacks.onResourceFly) {
+          const pt = projectWorldToViewport(ht.x, ht.y + 0.9, ht.z);
+          callbacks.onResourceFly({
+            id: flyEventSeq++,
+            kind: 'meat',
+            startX: pt.x,
+            startY: pt.y,
+          });
+        }
+      }
+
+      if (survivalRes.cookedCount > 0) {
+        soundEngine.playCook();
+        if (callbacks.onResourceFly) {
+          const campY = groundHeightAt(CONFIG.ISLAND.CAMPFIRE.CX, CONFIG.ISLAND.CAMPFIRE.CZ, worldData);
+          const pt = projectWorldToViewport(CONFIG.ISLAND.CAMPFIRE.CX, campY + 1.1, CONFIG.ISLAND.CAMPFIRE.CZ);
+          callbacks.onResourceFly({
+            id: flyEventSeq++,
+            kind: 'cookedFish',
+            startX: pt.x,
+            startY: pt.y,
+          });
+        }
+      }
+
+      if (survivalRes.cookedMeatCount > 0) {
+        soundEngine.playCook();
+        if (callbacks.onResourceFly) {
+          const campY = groundHeightAt(CONFIG.ISLAND.CAMPFIRE.CX, CONFIG.ISLAND.CAMPFIRE.CZ, worldData);
+          const pt = projectWorldToViewport(CONFIG.ISLAND.CAMPFIRE.CX, campY + 1.1, CONFIG.ISLAND.CAMPFIRE.CZ);
+          callbacks.onResourceFly({
+            id: flyEventSeq++,
+            kind: 'cookedMeat',
+            startX: pt.x,
+            startY: pt.y,
+          });
+        }
+      }
+
+      if (survivalRes.roastedBananaCount > 0) {
+        soundEngine.playCook();
+        if (callbacks.onResourceFly) {
+          const campY = groundHeightAt(CONFIG.ISLAND.CAMPFIRE.CX, CONFIG.ISLAND.CAMPFIRE.CZ, worldData);
+          const pt = projectWorldToViewport(CONFIG.ISLAND.CAMPFIRE.CX, campY + 1.1, CONFIG.ISLAND.CAMPFIRE.CZ);
+          callbacks.onResourceFly({
+            id: flyEventSeq++,
+            kind: 'roastedBanana',
+            startX: pt.x,
+            startY: pt.y,
+          });
+        }
       }
 
       if (survivalRes.builtUpgrade) {
+        soundEngine.playLevelUp();
         const b = survivalRes.builtUpgrade;
         spawnBurstChips(b.x, b.y + 0.4, b.z, 'chipWood');
       }
@@ -3390,10 +5270,105 @@ export function createThreeIslandGame(
         });
       }
 
+      if (survivalRes.eventStarted) {
+        soundEngine.playEventAlert(survivalRes.eventStarted.kind);
+        callbacks.onNotice?.(survivalRes.eventStarted.notice);
+      }
+      if (survivalRes.eventEndedNotice) {
+        callbacks.onNotice?.(survivalRes.eventEndedNotice);
+      }
+      if (survivalRes.boatVoyageNotice) {
+        soundEngine.playSplash();
+        callbacks.onNotice?.(survivalRes.boatVoyageNotice);
+      }
+
       if (survivalRes.discoveredSpecies.length > 0 && callbacks.onNotice) {
         const sp = getAnimalSpecies(survivalRes.discoveredSpecies[0]);
         if (sp) {
           callbacks.onNotice(`گونه جدید کشف شد: ${sp.nameFa}`);
+        }
+      }
+
+      // Animate Arrow Projectiles, Hammer Shockwave & World Event Projectiles (Meteors / Lava Bombs)
+      for (const ar of arrowPool) {
+        if (!ar.active) continue;
+        ar.age += dt;
+        const t = ar.age / ar.duration;
+        if (t >= 1) {
+          ar.active = false;
+          ar.mesh.visible = false;
+        } else {
+          ar.mesh.position.lerpVectors(ar.start, ar.end, t);
+          ar.mesh.position.y += Math.sin(t * Math.PI) * 0.42;
+        }
+      }
+      if (hammerWaveAge >= 0) {
+        hammerWaveAge += dt;
+        const ht = hammerWaveAge / 0.42;
+        if (ht >= 1) {
+          hammerWaveAge = -1;
+          hammerRingMesh.visible = false;
+        } else {
+          hammerRingMesh.scale.setScalar(0.6 + ht * CONFIG.SURVIVAL.HAMMER_AOE_RANGE);
+          hammerRingMat.opacity = 0.85 * (1 - ht);
+        }
+      }
+
+      if (
+        survivalState.eventPhase === 'active' &&
+        (survivalState.activeEvent === 'volcano_eruption' ||
+          survivalState.activeEvent === 'meteor_shower')
+      ) {
+        eventProjSpawnTimer -= dt;
+        if (eventProjSpawnTimer <= 0) {
+          eventProjSpawnTimer = survivalState.activeEvent === 'volcano_eruption' ? 0.28 : 0.35;
+          for (const ep of eventProjPool) {
+            if (ep.active) continue;
+            ep.active = true;
+            ep.age = 0;
+            if (survivalState.activeEvent === 'volcano_eruption') {
+              ep.mesh.material = lavaBombMat;
+              ep.life = 1.6;
+              ep.gravity = 12.5;
+              const a = Math.random() * Math.PI * 2;
+              const spd = 4.5 + Math.random() * 5.5;
+              const volcY = groundHeightAt(CONFIG.ISLAND.VOLCANO.CX, CONFIG.ISLAND.VOLCANO.CZ, worldData);
+              ep.mesh.position.set(CONFIG.ISLAND.VOLCANO.CX, volcY + 2.2, CONFIG.ISLAND.VOLCANO.CZ);
+              ep.vx = Math.cos(a) * spd;
+              ep.vy = 11.5 + Math.random() * 4.5;
+              ep.vz = Math.sin(a) * spd;
+            } else {
+              ep.mesh.material = meteorMat;
+              ep.life = 1.1;
+              ep.gravity = 0;
+              ep.mesh.position.set(
+                playerState.x + (Math.random() - 0.5) * 42,
+                22,
+                playerState.z + (Math.random() - 0.5) * 32
+              );
+              ep.vx = -10.5;
+              ep.vy = -17.5;
+              ep.vz = 5.5;
+            }
+            ep.mesh.scale.setScalar(1.0);
+            ep.mesh.visible = true;
+            break;
+          }
+        }
+      }
+      for (const ep of eventProjPool) {
+        if (!ep.active) continue;
+        ep.age += dt;
+        const t = ep.age / ep.life;
+        if (t >= 1) {
+          ep.active = false;
+          ep.mesh.visible = false;
+        } else {
+          ep.vy -= ep.gravity * dt;
+          ep.mesh.position.x += ep.vx * dt;
+          ep.mesh.position.y += ep.vy * dt;
+          ep.mesh.position.z += ep.vz * dt;
+          ep.mesh.scale.setScalar(Math.max(0.25, 1.15 - t * 0.75));
         }
       }
 
@@ -3412,7 +5387,8 @@ export function createThreeIslandGame(
         }
       }
 
-      // Sync 32-Species Wildlife Visual Rigs (gait, wings, claws, sleeping tags, day/night visibility)
+      // Sync 32-Species Wildlife Visual Rigs (articulated legs, heads, tails, attack windup/lunge, KO topple, sleeping tags)
+      let predRingIdx = 0;
       for (const actor of survivalState.wildlife.actors) {
         const rig = animalRigBindings.get(actor.id);
         const spec = getAnimalSpecies(actor.speciesId);
@@ -3423,16 +5399,75 @@ export function createThreeIslandGame(
         rig.group.position.set(actor.x, actor.y, actor.z);
         rig.group.rotation.y = actor.yaw;
 
+        if (actor.koTimer > 0) {
+          const koT = 1 - actor.koTimer / 0.55;
+          rig.bodyGroup.rotation.z = koT * Math.PI * 0.48;
+          rig.bodyGroup.position.y = -koT * 0.08;
+          rig.bodyGroup.scale.setScalar(Math.max(0.15, 1 - koT * 0.72));
+          if (rig.sleepTag) rig.sleepTag.visible = false;
+          continue;
+        }
+        rig.bodyGroup.rotation.z = 0;
+
+        if (actor.attackState === 'windup' && predRingIdx < predWarnPool.length) {
+          const wr = predWarnPool[predRingIdx];
+          predRingIdx += 1;
+          wr.visible = true;
+          wr.position.set(actor.x, actor.y + 0.08, actor.z);
+          wr.scale.setScalar(0.95 + Math.sin(elapsedTime * 22) * 0.16);
+        }
+
         if (actor.sleeping) {
           rig.bodyGroup.scale.set(1.08, 0.72, 1.08);
           rig.bodyGroup.position.y = -0.05;
+          for (const leg of rig.legs) leg.rotation.x = 0;
           if (rig.sleepTag) {
             rig.sleepTag.visible = true;
-            rig.sleepTag.position.y = 0.68 + Math.sin(elapsedTime * 2.5 + actor.phase) * 0.08;
+            rig.sleepTag.position.y = 0.72 + Math.sin(elapsedTime * 2.5 + actor.phase) * 0.08;
           }
         } else {
-          rig.bodyGroup.scale.set(1, 1, 1);
+          if (actor.attackState === 'windup') {
+            rig.bodyGroup.scale.set(1.14, 0.82, 1.12);
+            rig.bodyGroup.rotation.x = -0.22;
+            rig.bodyGroup.position.x = Math.sin(elapsedTime * 42) * 0.04;
+          } else if (actor.attackState === 'strike') {
+            rig.bodyGroup.scale.set(0.94, 1.1, 1.18);
+            rig.bodyGroup.rotation.x = 0.28;
+            rig.bodyGroup.position.x = 0;
+          } else {
+            rig.bodyGroup.scale.set(1, 1, 1);
+            rig.bodyGroup.rotation.x = 0;
+            rig.bodyGroup.position.x = 0;
+          }
           if (rig.sleepTag) rig.sleepTag.visible = false;
+          const stride = Math.sin(actor.phase * 2.6);
+          if (rig.legs.length > 0 && spec.archetype !== 'crab' && spec.archetype !== 'scorpion' && spec.archetype !== 'golem') {
+            rig.legs.forEach((leg, lIdx) => {
+              const phaseFlip = lIdx === 0 || lIdx === 3 ? 1 : -1;
+              leg.rotation.x = stride * 0.48 * phaseFlip;
+            });
+          } else if (rig.legs.length > 0 && (spec.archetype === 'crab' || spec.archetype === 'scorpion')) {
+            rig.legs.forEach((leg, lIdx) => {
+              leg.rotation.z = (lIdx % 2 === 0 ? 1 : -1) * Math.sin(actor.phase * 4.0 + lIdx) * 0.24;
+            });
+          } else if (rig.legs.length > 0 && spec.archetype === 'golem') {
+            rig.legs.forEach((arm, aIdx) => {
+              arm.rotation.x = Math.sin(actor.phase * 1.8 + aIdx * Math.PI) * 0.35;
+            });
+          }
+
+          if (rig.headGroup) {
+            rig.headGroup.rotation.x = Math.sin(actor.phase * 1.4) * 0.1;
+            rig.headGroup.rotation.y = Math.cos(actor.phase * 0.85) * 0.12;
+          }
+          if (rig.tailGroup) {
+            rig.tailGroup.rotation.y = Math.sin(actor.phase * 3.1) * 0.28;
+          }
+          if (rig.haloGroup) {
+            rig.haloGroup.rotation.y += dt * 1.6;
+            rig.haloGroup.position.y = 1.32 + Math.sin(elapsedTime * 2.8 + actor.phase) * 0.08;
+          }
+
           if (spec.archetype === 'rabbit') {
             rig.bodyGroup.position.y = Math.abs(Math.sin(actor.phase * 2.2)) * 0.22;
           } else if (spec.archetype === 'crab') {
@@ -3448,6 +5483,9 @@ export function createThreeIslandGame(
             rig.bodyGroup.position.y = Math.abs(Math.sin(actor.phase * 2.2)) * 0.06;
           }
         }
+      }
+      for (let i = predRingIdx; i < predWarnPool.length; i += 1) {
+        predWarnPool[i].visible = false;
       }
 
       // Sync Back Stack 3D Models
@@ -3542,6 +5580,18 @@ export function createThreeIslandGame(
                   -Math.sin(treeBind.fallDirAngle) * fallAngle
                 );
                 treeDummy.scale.setScalar(treeScale);
+
+                // Sync tree shadow while toppling/sinking!
+                const shDummy = new THREE.Object3D();
+                shDummy.position.set(
+                  p.x + treeBind.shadowOffsetX * p.scale,
+                  p.y + 0.05,
+                  p.z + treeBind.shadowOffsetZ * p.scale
+                );
+                shDummy.scale.setScalar(treeScale);
+                shDummy.updateMatrix();
+                treeBind.shadowMesh.setMatrixAt(treeBind.index, shDummy.matrix);
+                treeBind.shadowMesh.instanceMatrix.needsUpdate = true;
               } else if (node.cooldownRemaining < 1.4) {
                 // Phase 3: Fresh young sapling sprouts smoothly back to full height!
                 const regrowT = 1 - node.cooldownRemaining / 1.4;
@@ -3549,17 +5599,42 @@ export function createThreeIslandGame(
                 treeDummy.position.set(p.x, p.y - 0.14, p.z);
                 treeDummy.rotation.set(0, p.rotationY, 0);
                 treeDummy.scale.setScalar(p.scale * Math.max(0.05, spring));
+
+                const shDummy = new THREE.Object3D();
+                shDummy.position.set(
+                  p.x + treeBind.shadowOffsetX * p.scale,
+                  p.y + 0.05,
+                  p.z + treeBind.shadowOffsetZ * p.scale
+                );
+                shDummy.scale.setScalar(p.scale * Math.max(0.05, spring));
+                shDummy.updateMatrix();
+                treeBind.shadowMesh.setMatrixAt(treeBind.index, shDummy.matrix);
+                treeBind.shadowMesh.instanceMatrix.needsUpdate = true;
               } else {
                 treeDummy.scale.setScalar(0);
+                treeDummy.updateMatrix();
+                treeBind.shadowMesh.setMatrixAt(treeBind.index, treeDummy.matrix);
+                treeBind.shadowMesh.instanceMatrix.needsUpdate = true;
               }
               treeDummy.updateMatrix();
               treeBind.dirty = true;
             } else {
-              // Hide stump when tree is back upright
+              // Hide stump when tree is back upright & restore shadow
               treeDummy.scale.setScalar(0);
               treeDummy.updateMatrix();
               treeBind.stumpMesh.setMatrixAt(treeBind.stumpIndex, treeDummy.matrix);
               treeBind.stumpMesh.instanceMatrix.needsUpdate = true;
+
+              const shDummy = new THREE.Object3D();
+              shDummy.position.set(
+                p.x + treeBind.shadowOffsetX * p.scale,
+                p.y + 0.05,
+                p.z + treeBind.shadowOffsetZ * p.scale
+              );
+              shDummy.scale.setScalar(p.scale);
+              shDummy.updateMatrix();
+              treeBind.shadowMesh.setMatrixAt(treeBind.index, shDummy.matrix);
+              treeBind.shadowMesh.instanceMatrix.needsUpdate = true;
 
               const amp = isHarvestingThis ? 0.075 : treeBind.wobble * 0.14;
               const tilt = Math.sin(elapsedTime * 28) * amp;
@@ -3589,16 +5664,64 @@ export function createThreeIslandGame(
         currentBiome = nextBiome;
         emitHud(nextBiome);
       }
+      if (survivalState.gameOutcome !== lastNotifiedOutcome) {
+        lastNotifiedOutcome = survivalState.gameOutcome;
+        activeKeys.clear();
+        joystickInput.dx = 0;
+        joystickInput.dy = 0;
+        clickWalkTarget = null;
+        if (survivalState.gameOutcome === 'victory') {
+          soundEngine.playLevelUp();
+        } else if (survivalState.gameOutcome === 'defeat') {
+          soundEngine.playHitDamage();
+        }
+        callbacks.onOutcomeChange?.(survivalState.gameOutcome);
+      }
 
-      // Realistic Character Pose, Movement, Banana Climbing, & Spear/Axe Animations
+      // Realistic Character Pose, Swimming, Movement, Banana Climbing, & Spear/Axe Animations
       const action = survivalState.activeAction;
       const climbBoostY =
         action === 'climb' && !nextPos.moved
           ? Math.sin(Math.min(1, survivalState.actionProgress) * Math.PI) * 1.48
           : 0;
-      survivor.root.position.set(playerState.x, playerState.y + climbBoostY, playerState.z);
+      const swimSurfaceY = survivalState.isSwimming
+        ? Math.max(playerState.y, survivalState.seaLevelOffset - 0.56 + Math.sin(elapsedTime * 3.8) * 0.04)
+        : playerState.y + climbBoostY;
+      survivor.root.position.set(playerState.x, swimSurfaceY, playerState.z);
 
-      if (nextPos.moved && mag > 0.05) {
+      if (survivalState.isSwimming) {
+        if (nextPos.moved && mag > 0.05) {
+          const targetYaw = Math.atan2(moveX, moveZ);
+          let diff = targetYaw - playerState.yaw;
+          while (diff > Math.PI) diff -= Math.PI * 2;
+          while (diff < -Math.PI) diff += Math.PI * 2;
+          playerState.yaw += diff * (1 - Math.exp(-CONFIG.PLAYER.TURN_DAMP * dt));
+          survivor.root.rotation.y = playerState.yaw;
+        }
+        const stroke = nextPos.moved ? Math.sin(elapsedTime * 7.2) : Math.sin(elapsedTime * 2.8) * 0.35;
+        const kick = nextPos.moved ? Math.sin(elapsedTime * 11.2) * 0.55 : Math.sin(elapsedTime * 3.2) * 0.18;
+        survivor.bodyPivot.rotation.x = 1.12;
+        survivor.bodyPivot.rotation.z = stroke * 0.12;
+        survivor.bodyPivot.position.y = 0.08;
+        survivor.leftArm.rotation.x = -1.35 + stroke * 1.05;
+        survivor.rightArm.rotation.x = -1.35 - stroke * 1.05;
+        survivor.leftLeg.rotation.x = kick;
+        survivor.rightLeg.rotation.x = -kick;
+        survivor.headGroup.rotation.z = 0;
+        survivor.axeMesh.visible = false;
+        survivor.spearMesh.visible = false;
+        survivor.fireSpearMesh.visible = false;
+        survivor.bowMesh.visible = false;
+        survivor.hammerMesh.visible = false;
+        survivor.rodGroup.visible = false;
+        bobberMesh.visible = false;
+        fishingLine.visible = false;
+        dustTimer += dt;
+        if (dustTimer >= (nextPos.moved ? 0.16 : 0.42)) {
+          dustTimer = 0;
+          spawnBurstChips(playerState.x, survivalState.seaLevelOffset + 0.03, playerState.z, 'fish');
+        }
+      } else if (nextPos.moved && mag > 0.05) {
         const targetYaw = Math.atan2(moveX, moveZ);
         let diff = targetYaw - playerState.yaw;
         while (diff > Math.PI) diff -= Math.PI * 2;
@@ -3620,18 +5743,22 @@ export function createThreeIslandGame(
         survivor.bodyPivot.rotation.z = Math.cos(playerState.walkPhase) * 0.055;
         survivor.headGroup.rotation.z = -Math.cos(playerState.walkPhase) * 0.045;
 
-        survivor.axeMesh.visible = false;
-        survivor.spearMesh.visible = survivalState.hasSpear && !survivalState.hasFireSpear;
-        survivor.fireSpearMesh.visible = survivalState.hasFireSpear;
+        const eq = survivalState.equippedWeapon;
+        survivor.axeMesh.visible = eq === 'axe';
+        survivor.spearMesh.visible = eq === 'spear' && survivalState.hasSpear && !survivalState.hasFireSpear;
+        survivor.fireSpearMesh.visible = eq === 'spear' && survivalState.hasFireSpear;
+        survivor.bowMesh.visible = eq === 'bow' && survivalState.unlockedWeapons.bow;
+        survivor.hammerMesh.visible = eq === 'hammer' && survivalState.unlockedWeapons.hammer;
         survivor.rodGroup.visible = false;
         bobberMesh.visible = false;
         fishingLine.visible = false;
+        castRodSoundQueued = false;
 
         dustTimer += dt;
         if (dustTimer >= 0.14) {
           dustTimer = 0;
-          if (playerState.y < 0.02) {
-            spawnBurstChips(playerState.x, 0.02, playerState.z, 'fish');
+          if (playerState.y < survivalState.seaLevelOffset + 0.02) {
+            spawnBurstChips(playerState.x, survivalState.seaLevelOffset + 0.02, playerState.z, 'fish');
           } else {
             spawnDustPuff(
               playerState.x - Math.sin(playerState.yaw) * 0.2,
@@ -3659,10 +5786,20 @@ export function createThreeIslandGame(
           survivor.root.rotation.y = playerState.yaw;
         }
 
+        if (action !== 'cast_fish') {
+          castRodSoundQueued = false;
+        }
+
         if (action === 'chop' || action === 'build') {
-          survivor.axeMesh.visible = true;
+          const useHammer =
+            action === 'build' &&
+            survivalState.equippedWeapon === 'hammer' &&
+            survivalState.unlockedWeapons.hammer;
+          survivor.axeMesh.visible = !useHammer;
+          survivor.hammerMesh.visible = useHammer;
           survivor.spearMesh.visible = false;
           survivor.fireSpearMesh.visible = false;
+          survivor.bowMesh.visible = false;
           survivor.rodGroup.visible = false;
           bobberMesh.visible = false;
           fishingLine.visible = false;
@@ -3675,15 +5812,21 @@ export function createThreeIslandGame(
           survivor.bodyPivot.position.y = Math.abs(strike) * 0.04;
 
           chopSwingChipCooldown -= dt;
-          if (strike > 0.85 && chopSwingChipCooldown <= 0 && activeNode) {
+          if (strike > 0.85 && chopSwingChipCooldown <= 0) {
             chopSwingChipCooldown = 0.28;
-            spawnBurstChips(activeNode.x, activeNode.y + 0.4, activeNode.z, 'chipWood');
+            if (useHammer) soundEngine.playWeaponStrike();
+            else soundEngine.playChop();
+            if (activeNode) {
+              spawnBurstChips(activeNode.x, activeNode.y + 0.4, activeNode.z, 'chipWood');
+            }
           }
         } else if (action === 'climb') {
           // Climbing Banana Tree trunk!
           survivor.axeMesh.visible = false;
           survivor.spearMesh.visible = false;
           survivor.fireSpearMesh.visible = false;
+          survivor.bowMesh.visible = false;
+          survivor.hammerMesh.visible = false;
           survivor.rodGroup.visible = false;
           bobberMesh.visible = false;
           fishingLine.visible = false;
@@ -3694,11 +5837,54 @@ export function createThreeIslandGame(
           survivor.leftLeg.rotation.x = cl * 0.6;
           survivor.rightLeg.rotation.x = -cl * 0.6;
           survivor.bodyPivot.rotation.x = 0.18;
+        } else if (action === 'cast_fish') {
+          // Rod fishing with bobber & curved fishing line in ocean water!
+          survivor.axeMesh.visible = false;
+          survivor.spearMesh.visible = false;
+          survivor.fireSpearMesh.visible = false;
+          survivor.bowMesh.visible = false;
+          survivor.hammerMesh.visible = false;
+          survivor.rodGroup.visible = true;
+
+          if (!castRodSoundQueued) {
+            castRodSoundQueued = true;
+            soundEngine.playCastRod();
+          }
+
+          const rodLift = -0.82 + Math.sin(elapsedTime * 3.4) * 0.08;
+          survivor.rightArm.rotation.x = rodLift;
+          survivor.leftArm.rotation.x = -0.35;
+          survivor.bodyPivot.rotation.x = 0.08;
+
+          survivor.root.updateMatrixWorld(true);
+          tipWorldVec.copy(survivor.rodTipLocal);
+          survivor.rodGroup.localToWorld(tipWorldVec);
+
+          const bobY = survivalState.seaLevelOffset + 0.04 + Math.sin(elapsedTime * 5.2) * 0.045;
+          bobberMesh.position.set(survivalState.actionTargetX, bobY, survivalState.actionTargetZ);
+          bobberMesh.visible = true;
+
+          const posArr = fishingLineGeo.attributes.position.array as Float32Array;
+          for (let i = 0; i < 12; i += 1) {
+            const t = i / 11;
+            const lx = THREE.MathUtils.lerp(tipWorldVec.x, bobberMesh.position.x, t);
+            const lz = THREE.MathUtils.lerp(tipWorldVec.z, bobberMesh.position.z, t);
+            const ly =
+              THREE.MathUtils.lerp(tipWorldVec.y, bobberMesh.position.y, t) -
+              Math.sin(t * Math.PI) * 0.35;
+            posArr[i * 3] = lx;
+            posArr[i * 3 + 1] = ly;
+            posArr[i * 3 + 2] = lz;
+          }
+          fishingLineGeo.attributes.position.needsUpdate = true;
+          fishingLine.visible = true;
         } else if (action === 'spear_fish') {
           // Wading in shallow surf and thrusting 3D Spear toward offshore fish!
           survivor.axeMesh.visible = false;
           survivor.spearMesh.visible = !survivalState.hasFireSpear;
           survivor.fireSpearMesh.visible = survivalState.hasFireSpear;
+          survivor.bowMesh.visible = false;
+          survivor.hammerMesh.visible = false;
           survivor.rodGroup.visible = false;
           bobberMesh.visible = false;
           fishingLine.visible = false;
@@ -3712,12 +5898,35 @@ export function createThreeIslandGame(
           chopSwingChipCooldown -= dt;
           if (thrust > 0.86 && chopSwingChipCooldown <= 0) {
             chopSwingChipCooldown = 0.35;
-            spawnBurstChips(survivalState.actionTargetX, 0.05, survivalState.actionTargetZ, 'fish');
+            soundEngine.playWeaponStrike();
+            spawnBurstChips(
+              survivalState.actionTargetX,
+              survivalState.seaLevelOffset + 0.05,
+              survivalState.actionTargetZ,
+              'fish'
+            );
           }
+        } else if (action === 'hunt') {
+          survivor.axeMesh.visible = false;
+          survivor.spearMesh.visible = survivalState.hasSpear && !survivalState.hasFireSpear;
+          survivor.fireSpearMesh.visible = survivalState.hasFireSpear;
+          survivor.bowMesh.visible = false;
+          survivor.hammerMesh.visible = false;
+          survivor.rodGroup.visible = false;
+          bobberMesh.visible = false;
+          fishingLine.visible = false;
+
+          const jab = Math.sin(elapsedTime * 11.5);
+          survivor.rightArm.rotation.x = -0.95 + Math.max(0, jab) * 0.85;
+          survivor.leftArm.rotation.x = -0.45 - Math.max(0, jab) * 0.25;
+          survivor.bodyPivot.rotation.x = 0.2 + Math.max(0, jab) * 0.16;
+          survivor.bodyPivot.position.y = Math.abs(jab) * 0.05;
         } else if (action === 'forage') {
           survivor.axeMesh.visible = false;
           survivor.spearMesh.visible = false;
           survivor.fireSpearMesh.visible = false;
+          survivor.bowMesh.visible = false;
+          survivor.hammerMesh.visible = false;
           survivor.rodGroup.visible = false;
           bobberMesh.visible = false;
           fishingLine.visible = false;
@@ -3727,9 +5936,12 @@ export function createThreeIslandGame(
           survivor.bodyPivot.rotation.x = 0.24;
           survivor.bodyPivot.position.y = -0.04;
         } else {
-          survivor.axeMesh.visible = false;
-          survivor.spearMesh.visible = survivalState.hasSpear && !survivalState.hasFireSpear;
-          survivor.fireSpearMesh.visible = survivalState.hasFireSpear;
+          const eq = survivalState.equippedWeapon;
+          survivor.axeMesh.visible = eq === 'axe';
+          survivor.spearMesh.visible = eq === 'spear' && survivalState.hasSpear && !survivalState.hasFireSpear;
+          survivor.fireSpearMesh.visible = eq === 'spear' && survivalState.hasFireSpear;
+          survivor.bowMesh.visible = eq === 'bow' && survivalState.unlockedWeapons.bow;
+          survivor.hammerMesh.visible = eq === 'hammer' && survivalState.unlockedWeapons.hammer;
           survivor.rodGroup.visible = false;
           bobberMesh.visible = false;
           fishingLine.visible = false;
@@ -3746,13 +5958,24 @@ export function createThreeIslandGame(
       desiredCamPos.set(camLookAt.x, camLookAt.y + camHeightOffset, camLookAt.z + camDepthOffset);
       camera.position.copy(desiredCamPos);
       camera.lookAt(camLookAt);
+    } else if (screenState === 'playing' && survivalState.gameOutcome !== 'playing') {
+      // Frozen outcome beat while Victory/Defeat modal is displayed
+      targetLookAt.set(playerState.x, playerState.y + CONFIG.CAMERA.LOOK_HEIGHT, playerState.z);
+      const followAlpha = 1 - Math.exp(-CONFIG.CAMERA.FOLLOW_DAMP * dt);
+      camLookAt.lerp(targetLookAt, followAlpha);
+      desiredCamPos.set(camLookAt.x, camLookAt.y + camHeightOffset, camLookAt.z + camDepthOffset);
+      camera.position.copy(desiredCamPos);
+      camera.lookAt(camLookAt);
     } else {
       survivor.axeMesh.visible = false;
       survivor.spearMesh.visible = false;
       survivor.fireSpearMesh.visible = false;
+      survivor.bowMesh.visible = false;
+      survivor.hammerMesh.visible = false;
       survivor.rodGroup.visible = false;
       bobberMesh.visible = false;
       fishingLine.visible = false;
+      focusRingMesh.visible = false;
 
       const orbitAngle = elapsedTime * CONFIG.CAMERA.TITLE_ORBIT_SPEED + 0.35;
       const orbitDist = CONFIG.CAMERA.TITLE_DISTANCE * 1.12;
@@ -3831,25 +6054,38 @@ export function createThreeIslandGame(
         survivalState = createSurvivalState(worldData);
         resetPlayerToSpawn();
       }
+      lastNotifiedOutcome = 'playing';
+      clickWalkTarget = null;
+      clickRingMesh.visible = false;
       lastStackSignature = '';
       syncSurvivorBackStack();
       screenState = 'playing';
       emitHud(currentBiome);
+      callbacks.onOutcomeChange?.('playing');
       callbacks.onScreenChange('playing', { mode: currentMode, seed: currentSeed });
     },
     returnToMenu: () => {
       screenState = 'title';
+      lastNotifiedOutcome = 'playing';
+      clickWalkTarget = null;
+      clickRingMesh.visible = false;
       joystickInput.dx = 0;
       joystickInput.dy = 0;
+      callbacks.onOutcomeChange?.('playing');
       callbacks.onScreenChange('title', { mode: currentMode, seed: currentSeed });
     },
     setJoystickInput: (dx: number, dy: number) => {
       joystickInput.dx = dx;
       joystickInput.dy = dy;
     },
+    interact: () => {
+      soundEngine.unlockAndStartAmbience();
+      requestPlayerInteract(survivalState);
+    },
     eatFood: () => {
       const res = eatBestFoodFromInventory(survivalState);
       if (res.ate) {
+        soundEngine.playPickup();
         lastStackSignature = '';
         syncSurvivorBackStack();
         emitHud(currentBiome);
@@ -3859,27 +6095,56 @@ export function createThreeIslandGame(
     craftSpear: () => {
       const ok = craftSpear(survivalState);
       if (ok) {
+        soundEngine.playLevelUp();
         lastStackSignature = '';
         syncSurvivorBackStack();
         emitHud(currentBiome);
-        callbacks.onNotice?.('نیزه ماهی‌گیری ساخته شد! در آب کم‌عمق ماهی بگیر');
+        callbacks.onNotice?.('نیزه شکار ساخته شد! در ساحل ماهی بگیر یا جانوران بزرگ را شکار کن');
+      }
+      return ok;
+    },
+    selectWeapon: (id: WeaponId) => {
+      const ok = selectWeapon(survivalState, id);
+      if (ok) {
+        soundEngine.playClick();
+        emitHud(currentBiome);
+      }
+      return ok;
+    },
+    upgradeWeapon: (id: WeaponId) => {
+      const ok = upgradeWeapon(survivalState, id);
+      if (ok) {
+        soundEngine.playLevelUp();
+        lastStackSignature = '';
+        syncSurvivorBackStack();
+        emitHud(currentBiome);
       }
       return ok;
     },
     stokeFire: () => {
       const ok = stokeCampfire(survivalState);
       if (ok) {
+        soundEngine.playLevelUp();
         lastStackSignature = '';
         syncSurvivorBackStack();
         const campY = groundHeightAt(CONFIG.ISLAND.CAMPFIRE.CX, CONFIG.ISLAND.CAMPFIRE.CZ, worldData);
         spawnBurstChips(CONFIG.ISLAND.CAMPFIRE.CX, campY + 0.5, CONFIG.ISLAND.CAMPFIRE.CZ, 'ember');
         emitHud(currentBiome);
+        const lv = survivalState.fireLevel;
         const unlockMsg =
-          survivalState.fireLevel === 2
+          lv === 2
             ? 'آتش سطح ۲: کباب‌کردن موز باز شد!'
-            : survivalState.fireLevel === 3
-              ? 'آتش سطح ۳: دفع شکارچیان و سرعت بیشتر!'
-              : 'آتش جاودان (سطح ۴): +۵۰٪ امتیاز مهارت!';
+            : lv === 3
+              ? 'آتش سطح ۳: کمان صیاد باز شد + دفع شکارچیان!'
+              : lv === 4
+                ? 'آتش سطح ۴: چکش توفان باز شد + ۱.۵ برابر تجربه!'
+                : lv === 5
+                  ? 'آتش سطح ۵: ساخت قایق چوبی کنار کمپ باز شد!'
+                  : lv === 7
+                    ? 'آتش سطح ۷: شعله باستانی (+۷۵٪ تجربه)!'
+                    : lv === CONFIG.SURVIVAL.MAX_FIRE_LEVEL
+                      ? 'آتش به اوج اسطوره‌ای سطح ۱۰ رسید!'
+                      : `شعله کمپ به سطح ${toPersianDigits(lv)} ارتقا یافت!`;
         callbacks.onNotice?.(unlockMsg);
       }
       return ok;
@@ -3887,6 +6152,7 @@ export function createThreeIslandGame(
     upgradeSkill: (skillId: SkillId) => {
       const ok = upgradeSkill(survivalState, skillId);
       if (ok) {
+        soundEngine.playLevelUp();
         lastStackSignature = '';
         syncSurvivorBackStack();
         emitHud(currentBiome);
@@ -3896,12 +6162,42 @@ export function createThreeIslandGame(
     triggerLandmark: (id: StrangeLandmarkId) => {
       const res = activateLandmarkPower(survivalState, id);
       if (res.triggered) {
+        soundEngine.playLevelUp();
         lastStackSignature = '';
         syncSurvivorBackStack();
         emitHud(currentBiome);
         callbacks.onNotice?.(res.label);
       }
       return res;
+    },
+    triggerLandmarkSpecial: (id: StrangeLandmarkId) => {
+      const res = activateLandmarkSpecial(survivalState, id);
+      if (res.triggered) {
+        soundEngine.playPickup();
+        lastStackSignature = '';
+        syncSurvivorBackStack();
+        emitHud(currentBiome);
+      }
+      if (res.label) {
+        callbacks.onNotice?.(res.label);
+      }
+      return res;
+    },
+    triggerVictoryVoyage: () => {
+      const ok = triggerVictoryVoyage(survivalState);
+      if (ok) {
+        lastNotifiedOutcome = 'victory';
+        soundEngine.playLevelUp();
+        emitHud(currentBiome);
+        callbacks.onOutcomeChange?.('victory');
+      }
+      return ok;
+    },
+    toggleMute: () => {
+      return soundEngine.toggleMute();
+    },
+    isMuted: () => {
+      return soundEngine.isMuted();
     },
     destroy: () => {
       disposed = true;
@@ -3910,6 +6206,8 @@ export function createThreeIslandGame(
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('resize', onResize);
       resizeObserver.disconnect();
+      renderer.domElement.removeEventListener('pointerdown', onCanvasPointerDown);
+      renderer.domElement.removeEventListener('pointerup', onCanvasPointerUp);
       renderer.domElement.removeEventListener('webglcontextlost', onContextLost);
       disposeIslandMeshes();
       for (const item of disposables) {

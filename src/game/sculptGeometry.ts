@@ -25,7 +25,7 @@ function safeMerge(parts: THREE.BufferGeometry[], fallback: THREE.BufferGeometry
   const allIndexed = parts.every((p) => Boolean(p.index));
 
   const normalized = parts.map((orig) => {
-    const g = allIndexed ? orig : orig.toNonIndexed();
+    const g = allIndexed ? orig : orig.index ? orig.toNonIndexed() : orig;
     if (!g.attributes.normal) g.computeVertexNormals();
     if (!g.attributes.uv) {
       const count = g.attributes.position.count;
@@ -162,12 +162,12 @@ export function buildSculptedBoulderGeometry(
   return geo;
 }
 
-export function buildCurvedPalmFrondMeshGeometry(
+function buildSerratedPalmFrondMeshGeometry(
   length: number,
   width: number,
   droop: number
 ): THREE.BufferGeometry {
-  const segments = 8;
+  const segments = 12;
   const positions: number[] = [];
   const uvs: number[] = [];
   const colors: number[] = [];
@@ -177,19 +177,21 @@ export function buildCurvedPalmFrondMeshGeometry(
   for (let i = 0; i <= segments; i += 1) {
     const t = i / segments;
     const x = t * length;
-    const y = Math.sin(t * Math.PI * 0.65) * 0.42 - Math.pow(t, 1.9) * droop;
-    const halfW = width * Math.sin(Math.pow(t, 0.62) * Math.PI * 0.92 + 0.14);
-    const sagY = y - halfW * 0.24;
+    const y = Math.sin(t * Math.PI * 0.65) * 0.44 - Math.pow(t, 1.92) * droop;
+    // Alternating leaflet serration notches along the frond edge for natural palm silhouette
+    const notch = i > 1 && i < segments ? (i % 2 === 0 ? 1.08 : 0.68) : 1.0;
+    const halfW = width * Math.sin(Math.pow(t, 0.58) * Math.PI * 0.94 + 0.12) * notch;
+    const sagY = y - halfW * 0.34;
 
     positions.push(x, sagY, -halfW);
-    positions.push(x, y + 0.045, 0);
+    positions.push(x, y + 0.055, 0);
     positions.push(x, sagY, halfW);
     uvs.push(t, 0, t, 0.5, t, 1);
 
-    c.setRGB(0.68 + t * 0.28, 0.85 + t * 0.14, 0.72 + t * 0.08, THREE.SRGBColorSpace);
-    colors.push(c.r * 0.94, c.g * 0.94, c.b * 0.94);
-    colors.push(c.r * 1.04, c.g * 1.04, c.b);
-    colors.push(c.r * 0.94, c.g * 0.94, c.b * 0.94);
+    c.setRGB(0.62 + t * 0.32, 0.84 + t * 0.15, 0.64 + t * 0.1, THREE.SRGBColorSpace);
+    colors.push(c.r * 0.9, c.g * 0.9, c.b * 0.9);
+    colors.push(c.r * 1.06, c.g * 1.06, c.b);
+    colors.push(c.r * 0.9, c.g * 0.9, c.b * 0.9);
 
     if (i < segments) {
       const base = i * 3;
@@ -210,20 +212,48 @@ export function buildCurvedPalmFrondMeshGeometry(
   return geo;
 }
 
+export function buildCurvedPalmFrondMeshGeometry(
+  length: number,
+  width: number,
+  droop: number
+): THREE.BufferGeometry {
+  return buildSerratedPalmFrondMeshGeometry(length, width, droop);
+}
+
 export function buildCurvedPalmTrunkGeometry(): THREE.BufferGeometry {
-  return buildTaperedCurveTube(
-    [
-      new THREE.Vector3(0, 0, 0),
-      new THREE.Vector3(0.14, 1.15, 0),
-      new THREE.Vector3(0.42, 2.55, 0),
-      new THREE.Vector3(0.74, 3.84, 0),
-    ],
-    0.34,
-    0.16,
-    12,
-    10,
-    0.045
+  const parts: THREE.BufferGeometry[] = [];
+  parts.push(
+    buildTaperedCurveTube(
+      [
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(0.14, 1.15, 0.04),
+        new THREE.Vector3(0.42, 2.55, -0.04),
+        new THREE.Vector3(0.74, 3.84, 0),
+      ],
+      0.35,
+      0.15,
+      13,
+      10,
+      0.048
+    )
   );
+  // Subtle exposed basal roots
+  for (let i = 0; i < 4; i += 1) {
+    const a = (i / 4) * Math.PI * 2 + 0.35;
+    const r = buildTaperedCurveTube(
+      [
+        new THREE.Vector3(Math.cos(a) * 0.56, -0.05, Math.sin(a) * 0.56),
+        new THREE.Vector3(Math.cos(a) * 0.3, 0.16, Math.sin(a) * 0.3),
+        new THREE.Vector3(Math.cos(a) * 0.14, 0.42, Math.sin(a) * 0.14),
+      ],
+      0.11,
+      0.06,
+      4,
+      6
+    );
+    parts.push(r);
+  }
+  return safeMerge(parts, new THREE.CapsuleGeometry(0.24, 3.6, 5, 8));
 }
 
 export function buildPalmCanopyGeometry(): THREE.BufferGeometry {
@@ -231,24 +261,20 @@ export function buildPalmCanopyGeometry(): THREE.BufferGeometry {
   const crownX = 0.74;
   const crownY = 3.82;
 
-  const bud = new THREE.SphereGeometry(0.24, 10, 8);
-  setLinearAttrColors(bud, 0.74, 0.9, 0.74);
-  bud.translate(crownX, crownY + 0.08, 0);
-  parts.push(bud);
-
-  for (let i = 0; i < 6; i += 1) {
-    const yaw = (i / 6) * Math.PI * 2 + 0.12;
-    const blade = buildCurvedPalmFrondMeshGeometry(2.45, 0.56, 1.18);
+  for (let i = 0; i < 7; i += 1) {
+    const yaw = (i / 7) * Math.PI * 2 + (i % 2) * 0.14;
+    const blade = buildSerratedPalmFrondMeshGeometry(2.38 + (i % 3) * 0.14, 0.56, 1.16 + (i % 2) * 0.16);
+    blade.rotateX((i % 2 === 0 ? 1 : -1) * 0.06);
     blade.rotateY(yaw);
     blade.translate(crownX, crownY, 0);
     parts.push(blade);
   }
-  for (let i = 0; i < 4; i += 1) {
-    const yaw = (i / 4) * Math.PI * 2 + 0.52;
-    const blade = buildCurvedPalmFrondMeshGeometry(1.78, 0.45, 0.55);
-    blade.rotateZ(0.24);
+  for (let i = 0; i < 5; i += 1) {
+    const yaw = (i / 5) * Math.PI * 2 + 0.48;
+    const blade = buildSerratedPalmFrondMeshGeometry(1.75, 0.44, 0.52);
+    blade.rotateZ(0.26);
     blade.rotateY(yaw);
-    blade.translate(crownX, crownY + 0.12, 0);
+    blade.translate(crownX, crownY + 0.1, 0);
     parts.push(blade);
   }
 
@@ -269,141 +295,269 @@ export function buildCoconutClusterGeometry(): THREE.BufferGeometry {
   return safeMerge(parts, new THREE.SphereGeometry(0.16, 8, 7));
 }
 
-export function buildJungleTrunkGeometry(): THREE.BufferGeometry {
-  const main = buildTaperedCurveTube(
-    [
-      new THREE.Vector3(0, 0, 0),
-      new THREE.Vector3(0.06, 0.9, 0.04),
-      new THREE.Vector3(-0.04, 1.85, -0.02),
-      new THREE.Vector3(0.02, 2.55, 0),
-    ],
-    0.42,
-    0.2,
-    9,
-    9
-  );
-  const branchA = buildTaperedCurveTube(
-    [
-      new THREE.Vector3(-0.02, 1.45, 0.02),
-      new THREE.Vector3(-0.32, 1.95, 0.14),
-      new THREE.Vector3(-0.62, 2.38, 0.24),
-    ],
-    0.19,
-    0.1,
-    6,
-    7
-  );
-  const branchB = buildTaperedCurveTube(
-    [
-      new THREE.Vector3(0.02, 1.5, -0.02),
-      new THREE.Vector3(0.32, 1.98, -0.15),
-      new THREE.Vector3(0.58, 2.42, -0.22),
-    ],
-    0.18,
-    0.1,
-    6,
-    7
-  );
-  return safeMerge([main, branchA, branchB], new THREE.CapsuleGeometry(0.3, 2.0, 6, 10));
-}
-
-export function buildJungleCanopyGeometry(): THREE.BufferGeometry {
-  const parts: THREE.BufferGeometry[] = [];
-  const lobes = [
-    { x: 0, y: 2.9, z: 0, r: 1.28 },
-    { x: -0.78, y: 2.48, z: 0.35, r: 0.94 },
-    { x: 0.72, y: 2.54, z: -0.25, r: 0.96 },
-    { x: 0.12, y: 2.44, z: 0.78, r: 0.86 },
-    { x: -0.22, y: 3.38, z: -0.25, r: 0.9 },
-  ];
-  for (let i = 0; i < lobes.length; i += 1) {
-    const l = lobes[i];
-    const puff = buildSculptedBoulderGeometry(l.r, i * 2.1);
-    puff.scale(1.12, 0.82, 1.08);
-    puff.translate(l.x, l.y, l.z);
-    parts.push(puff);
-  }
-  return safeMerge(parts, new THREE.SphereGeometry(1.3, 12, 10));
-}
-
-// Organic sculpted pine bough clusters — zero geometric cones!
-export function buildPineTrunkGeometry(): THREE.BufferGeometry {
-  return buildTaperedCurveTube(
-    [
-      new THREE.Vector3(0, 0, 0),
-      new THREE.Vector3(0.05, 0.9, 0.03),
-      new THREE.Vector3(-0.04, 1.85, -0.02),
-      new THREE.Vector3(0, 2.7, 0),
-    ],
-    0.34,
-    0.15,
-    8,
-    9
-  );
-}
-
-function buildSculptedBoughTier(
+// Organic multi-leaf ruffled foliage tuft (replaces round geometric spheres on trees!)
+function buildOrganicLeafSprayTuple(
   radius: number,
-  height: number,
-  lobes: number,
   seed: number,
-  srgb: [number, number, number]
+  leafBlades = 9,
+  flatness = 0.64
 ): THREE.BufferGeometry {
-  const geo = new THREE.SphereGeometry(1, 22, 14);
-  const pos = geo.attributes.position;
+  const parts: THREE.BufferGeometry[] = [];
+  // Irregular crinkled inner foliage core
+  const core = new THREE.IcosahedronGeometry(radius * 0.72, 1);
+  const pos = core.attributes.position;
   const cols = new Float32Array(pos.count * 3);
-  const tmpColor = new THREE.Color();
-
+  const c = new THREE.Color();
   for (let i = 0; i < pos.count; i += 1) {
     const x = pos.getX(i);
     const y = pos.getY(i);
     const z = pos.getZ(i);
+    const n =
+      0.86 +
+      0.24 * Math.sin(x * 4.5 + seed) * Math.cos(z * 4.1 - seed) +
+      0.14 * Math.cos(y * 5.2 + seed * 1.7);
+    const ny = y * flatness * n;
+    pos.setXYZ(i, x * n * 1.08, ny, z * n * 1.04);
+    const shade = 0.74 + THREE.MathUtils.clamp((ny / Math.max(0.1, radius) + 0.8) * 0.25, 0, 0.34);
+    c.setRGB(shade * 0.94, shade * 1.02, shade * 0.9, THREE.SRGBColorSpace);
+    cols[i * 3] = c.r;
+    cols[i * 3 + 1] = c.g;
+    cols[i * 3 + 2] = c.b;
+  }
+  core.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+  core.computeVertexNormals();
+  parts.push(core);
 
-    const phi = Math.atan2(z, x);
-    // y in [-1, 1] -> t in [0 (bottom), 1 (top)]
-    const t = (y + 1) * 0.5;
-    // Soft organic teardrop / flared bell silhouette with scalloped pine bough lobes
-    const bellTaper = Math.pow(Math.max(0.02, 1 - t * 0.86), 0.72);
-    const radialLobe = 1 + 0.16 * Math.cos(phi * lobes + seed) + 0.08 * Math.sin(phi * (lobes + 2) - seed);
-    const skirtSag = t < 0.35 ? (0.35 - t) * 0.25 * Math.cos(phi * lobes + seed) : 0;
-
-    const nx = x * radius * bellTaper * radialLobe;
-    const nz = z * radius * bellTaper * radialLobe;
-    const ny = (y * 0.5 + 0.5) * height - skirtSag;
-
-    pos.setXYZ(i, nx, ny, nz);
-
-    const light = 0.84 + t * 0.26;
-    tmpColor.setRGB(
-      Math.min(1, srgb[0] * light),
-      Math.min(1, srgb[1] * light),
-      Math.min(1, srgb[2] * light),
-      THREE.SRGBColorSpace
+  // Overlapping curved organic leaf sprays jutting outward for ragged leafy edge silhouettes
+  for (let i = 0; i < leafBlades; i += 1) {
+    const a = (i / leafBlades) * Math.PI * 2 + seed * 0.65;
+    const tier = i % 3;
+    const bladeLen = radius * (0.78 + (i % 2) * 0.24);
+    const blade = buildCurvedLeafStrip(radius * 0.44, bladeLen, radius * 0.28, 4);
+    const bPos = blade.attributes.position;
+    const bCols = new Float32Array(bPos.count * 3);
+    for (let v = 0; v < bPos.count; v += 1) {
+      const t = THREE.MathUtils.clamp(bPos.getY(v) / Math.max(0.1, bladeLen), 0, 1);
+      c.setRGB(0.8 + t * 0.22, 0.88 + t * 0.14, 0.76 + t * 0.1, THREE.SRGBColorSpace);
+      bCols[v * 3] = c.r;
+      bCols[v * 3 + 1] = c.g;
+      bCols[v * 3 + 2] = c.b;
+    }
+    blade.setAttribute('color', new THREE.BufferAttribute(bCols, 3));
+    blade.rotateZ(0.65 + tier * 0.24);
+    blade.rotateY(a);
+    blade.translate(
+      Math.cos(a) * radius * 0.32,
+      (tier - 1) * radius * 0.22,
+      Math.sin(a) * radius * 0.32
     );
-    cols[i * 3] = tmpColor.r;
-    cols[i * 3 + 1] = tmpColor.g;
-    cols[i * 3 + 2] = tmpColor.b;
+    parts.push(blade);
   }
 
-  geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
-  geo.computeVertexNormals();
-  return geo;
+  return safeMerge(parts, core);
+}
+
+export function buildJungleTrunkGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  parts.push(
+    buildTaperedCurveTube(
+      [
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(0.08, 0.85, 0.05),
+        new THREE.Vector3(-0.07, 1.78, -0.03),
+        new THREE.Vector3(0.04, 2.62, 0.02),
+      ],
+      0.42,
+      0.18,
+      10,
+      9
+    )
+  );
+  // Exposed gnarled buttress roots
+  for (let i = 0; i < 4; i += 1) {
+    const a = (i / 4) * Math.PI * 2 + 0.5;
+    parts.push(
+      buildTaperedCurveTube(
+        [
+          new THREE.Vector3(Math.cos(a) * 0.68, -0.05, Math.sin(a) * 0.68),
+          new THREE.Vector3(Math.cos(a) * 0.38, 0.24, Math.sin(a) * 0.38),
+          new THREE.Vector3(Math.cos(a) * 0.16, 0.65, Math.sin(a) * 0.16),
+        ],
+        0.13,
+        0.07,
+        5,
+        6
+      )
+    );
+  }
+  // Forked gnarled branches + secondary sub-limbs
+  parts.push(
+    buildTaperedCurveTube(
+      [
+        new THREE.Vector3(-0.04, 1.38, 0.02),
+        new THREE.Vector3(-0.42, 1.92, 0.2),
+        new THREE.Vector3(-0.88, 2.48, 0.36),
+      ],
+      0.18,
+      0.08,
+      7,
+      7
+    ),
+    buildTaperedCurveTube(
+      [
+        new THREE.Vector3(0.04, 1.52, -0.03),
+        new THREE.Vector3(0.44, 2.02, -0.22),
+        new THREE.Vector3(0.86, 2.55, -0.34),
+      ],
+      0.17,
+      0.08,
+      7,
+      7
+    ),
+    buildTaperedCurveTube(
+      [
+        new THREE.Vector3(0.0, 1.72, 0.04),
+        new THREE.Vector3(0.18, 2.18, 0.44),
+        new THREE.Vector3(0.32, 2.54, 0.82),
+      ],
+      0.14,
+      0.06,
+      6,
+      6
+    )
+  );
+  return safeMerge(parts, new THREE.CapsuleGeometry(0.3, 2.0, 6, 10));
+}
+
+export function buildJungleCanopyGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const clusters = [
+    { x: -0.08, y: 2.95, z: 0.04, r: 1.18, blades: 10 },
+    { x: -0.92, y: 2.55, z: 0.38, r: 0.88, blades: 8 },
+    { x: 0.88, y: 2.62, z: -0.34, r: 0.92, blades: 8 },
+    { x: 0.34, y: 2.58, z: 0.84, r: 0.82, blades: 7 },
+    { x: -0.32, y: 3.45, z: -0.28, r: 0.84, blades: 8 },
+    { x: 0.42, y: 3.22, z: 0.25, r: 0.72, blades: 7 },
+  ];
+  clusters.forEach((cl, idx) => {
+    const spray = buildOrganicLeafSprayTuple(cl.r, idx * 1.9 + 0.4, cl.blades, 0.58);
+    spray.rotateY(idx * 0.85);
+    spray.translate(cl.x, cl.y, cl.z);
+    parts.push(spray);
+  });
+  return safeMerge(parts, new THREE.SphereGeometry(1.3, 12, 10));
+}
+
+export function buildJungleCanopyVariantBGeometry(): THREE.BufferGeometry {
+  // Taller, wind-swept rainforest twin-crown silhouette for canopy diversity
+  const parts: THREE.BufferGeometry[] = [];
+  const clusters = [
+    { x: 0.14, y: 3.42, z: -0.08, r: 1.08, blades: 10 },
+    { x: -0.82, y: 2.75, z: 0.28, r: 0.84, blades: 8 },
+    { x: 0.76, y: 2.35, z: 0.35, r: 0.82, blades: 8 },
+    { x: -0.18, y: 3.92, z: 0.16, r: 0.78, blades: 7 },
+    { x: 0.24, y: 2.86, z: -0.78, r: 0.84, blades: 7 },
+  ];
+  clusters.forEach((cl, idx) => {
+    const spray = buildOrganicLeafSprayTuple(cl.r, idx * 2.3 + 4.1, cl.blades, 0.54);
+    spray.rotateY(idx * 1.15);
+    spray.translate(cl.x, cl.y, cl.z);
+    parts.push(spray);
+  });
+  return safeMerge(parts, new THREE.SphereGeometry(1.2, 10, 8));
+}
+
+// Organic gnarled pine tree — irregular wind-swept needle bough pads (zero cones!)
+export function buildPineTrunkGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  parts.push(
+    buildTaperedCurveTube(
+      [
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(0.08, 0.95, 0.04),
+        new THREE.Vector3(-0.07, 2.0, -0.05),
+        new THREE.Vector3(0.06, 3.15, 0.03),
+      ],
+      0.34,
+      0.11,
+      9,
+      8
+    )
+  );
+  // Root flare & two gnarled lower branch stubs
+  for (let i = 0; i < 3; i += 1) {
+    const a = (i / 3) * Math.PI * 2 + 0.2;
+    parts.push(
+      buildTaperedCurveTube(
+        [
+          new THREE.Vector3(Math.cos(a) * 0.55, -0.04, Math.sin(a) * 0.55),
+          new THREE.Vector3(Math.cos(a) * 0.18, 0.38, Math.sin(a) * 0.18),
+        ],
+        0.1,
+        0.05,
+        4,
+        5
+      )
+    );
+  }
+  return safeMerge(parts, new THREE.CapsuleGeometry(0.24, 2.6, 5, 8));
+}
+
+function buildAsymmetricPineBoughPad(
+  radius: number,
+  seed: number,
+  srgb: [number, number, number]
+): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const needleFans = 7;
+  const c = new THREE.Color();
+  for (let i = 0; i < needleFans; i += 1) {
+    const a = (i / needleFans) * Math.PI * 2 + seed * 0.4;
+    const len = radius * (0.85 + Math.sin(i * 2.1 + seed) * 0.22);
+    const fan = buildCurvedLeafStrip(radius * 0.52, len, radius * 0.3, 4);
+    const pos = fan.attributes.position;
+    const cols = new Float32Array(pos.count * 3);
+    for (let v = 0; v < pos.count; v += 1) {
+      const t = THREE.MathUtils.clamp(pos.getY(v) / Math.max(0.1, len), 0, 1);
+      const lit = 0.8 + t * 0.3;
+      c.setRGB(
+        Math.min(1, srgb[0] * lit),
+        Math.min(1, srgb[1] * lit),
+        Math.min(1, srgb[2] * lit),
+        THREE.SRGBColorSpace
+      );
+      cols[v * 3] = c.r;
+      cols[v * 3 + 1] = c.g;
+      cols[v * 3 + 2] = c.b;
+    }
+    fan.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+    fan.rotateZ(1.08 + (i % 2) * 0.18);
+    fan.rotateY(a);
+    parts.push(fan);
+  }
+  const hub = buildOrganicLeafSprayTuple(radius * 0.55, seed, 5, 0.48);
+  setLinearAttrColors(hub, srgb[0] * 0.92, srgb[1] * 0.95, srgb[2] * 0.92);
+  parts.push(hub);
+  return safeMerge(parts, new THREE.SphereGeometry(radius * 0.5, 8, 6));
 }
 
 export function buildPineCanopyGeometry(): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
-  const tiers: Array<{ y: number; r: number; h: number; lobes: number; shade: [number, number, number] }> = [
-    { y: 1.5, r: 1.52, h: 1.55, lobes: 7, shade: [0.22, 0.56, 0.26] },
-    { y: 2.38, r: 1.24, h: 1.42, lobes: 6, shade: [0.27, 0.63, 0.27] },
-    { y: 3.18, r: 0.94, h: 1.28, lobes: 5, shade: [0.33, 0.7, 0.29] },
-    { y: 3.86, r: 0.62, h: 1.05, lobes: 4, shade: [0.4, 0.76, 0.31] },
+  const pads: Array<{ x: number; y: number; z: number; r: number; rot: number; shade: [number, number, number] }> = [
+    { x: -0.22, y: 1.72, z: 0.14, r: 1.38, rot: 0.2, shade: [0.22, 0.54, 0.26] },
+    { x: 0.24, y: 2.18, z: -0.18, r: 1.24, rot: 1.4, shade: [0.25, 0.59, 0.27] },
+    { x: -0.14, y: 2.68, z: -0.1, r: 1.12, rot: 2.6, shade: [0.28, 0.64, 0.28] },
+    { x: 0.16, y: 3.16, z: 0.12, r: 0.94, rot: 0.7, shade: [0.33, 0.69, 0.29] },
+    { x: -0.05, y: 3.64, z: 0.02, r: 0.72, rot: 1.9, shade: [0.38, 0.75, 0.32] },
+    { x: 0.04, y: 4.05, z: 0.02, r: 0.48, rot: 3.1, shade: [0.43, 0.8, 0.34] },
   ];
-  tiers.forEach((t, idx) => {
-    const bough = buildSculptedBoughTier(t.r, t.h, t.lobes, idx * 1.4, t.shade);
-    bough.translate(0, t.y, 0);
-    parts.push(bough);
+  pads.forEach((p, idx) => {
+    const pad = buildAsymmetricPineBoughPad(p.r, idx * 1.7 + 0.8, p.shade);
+    pad.rotateY(p.rot);
+    pad.translate(p.x, p.y, p.z);
+    parts.push(pad);
   });
-  return safeMerge(parts, new THREE.SphereGeometry(1.1, 14, 10));
+  return safeMerge(parts, new THREE.SphereGeometry(1.1, 12, 8));
 }
 
 // Organic bioluminescent crystal pods (curved mineral bulbs, zero pyramid cones!)
@@ -638,20 +792,21 @@ export function buildFernTuftGeometry(): THREE.BufferGeometry {
 export function buildGrassClumpGeometry(): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
   const tmpColor = new THREE.Color();
-  for (let i = 0; i < 5; i += 1) {
-    const a = (i / 5) * Math.PI * 2 + (i % 2) * 0.22;
-    const h = 0.36 + (i % 3) * 0.09;
-    const blade = buildCurvedLeafStrip(0.09, h, 0.12, 4);
+  for (let i = 0; i < 7; i += 1) {
+    const a = (i / 7) * Math.PI * 2 + (i % 2) * 0.26;
+    const h = 0.34 + (i % 3) * 0.12;
+    const blade = buildCurvedLeafStrip(0.085, h, 0.14 + (i % 2) * 0.05, 4);
     const pos = blade.attributes.position;
     const cols = new Float32Array(pos.count * 3);
     for (let v = 0; v < pos.count; v += 1) {
       const t = THREE.MathUtils.clamp(pos.getY(v) / h, 0, 1);
-      tmpColor.setRGB(0.2 + t * 0.34, 0.5 + t * 0.36, 0.16 + t * 0.1, THREE.SRGBColorSpace);
+      tmpColor.setRGB(0.22 + t * 0.36, 0.52 + t * 0.38, 0.16 + t * 0.12, THREE.SRGBColorSpace);
       cols[v * 3] = tmpColor.r;
       cols[v * 3 + 1] = tmpColor.g;
       cols[v * 3 + 2] = tmpColor.b;
     }
     blade.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+    blade.rotateZ(0.14 + (i % 2) * 0.1);
     blade.rotateY(a);
     blade.translate(Math.cos(a) * 0.06, 0, Math.sin(a) * 0.06);
     parts.push(blade);
@@ -659,42 +814,222 @@ export function buildGrassClumpGeometry(): THREE.BufferGeometry {
   return safeMerge(parts, buildCurvedLeafStrip(0.1, 0.35, 0.1));
 }
 
+export function buildCloverPatchGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const spots = [
+    { x: 0, z: 0, y: 0.09, s: 1.0, rot: 0.2 },
+    { x: 0.16, z: 0.1, y: 0.07, s: 0.82, rot: 1.3 },
+    { x: -0.14, z: 0.12, y: 0.08, s: 0.88, rot: 2.4 },
+  ];
+  for (const sp of spots) {
+    for (let l = 0; l < 3; l += 1) {
+      const a = (l / 3) * Math.PI * 2 + sp.rot;
+      const leaflet = buildCurvedLeafStrip(0.11 * sp.s, 0.14 * sp.s, 0.04, 2);
+      leaflet.rotateX(1.22);
+      leaflet.rotateY(a);
+      leaflet.translate(sp.x, sp.y, sp.z);
+      setLinearAttrColors(leaflet, 0.26, 0.68 + (l % 2) * 0.08, 0.24);
+      parts.push(leaflet);
+    }
+  }
+  return safeMerge(parts, new THREE.SphereGeometry(0.12, 6, 5));
+}
+
+export function buildSavannaPlumeGrassGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const tmpColor = new THREE.Color();
+  for (let i = 0; i < 4; i += 1) {
+    const a = (i / 4) * Math.PI * 2 + 0.35;
+    const h = 0.72 + (i % 2) * 0.24;
+    const stalk = buildCurvedLeafStrip(0.065, h, 0.28, 5);
+    const pos = stalk.attributes.position;
+    const cols = new Float32Array(pos.count * 3);
+    for (let v = 0; v < pos.count; v += 1) {
+      const t = THREE.MathUtils.clamp(pos.getY(v) / h, 0, 1);
+      // Green base transitioning to sunlit golden plume tips
+      tmpColor.setRGB(
+        THREE.MathUtils.lerp(0.32, 0.96, Math.pow(t, 1.5)),
+        THREE.MathUtils.lerp(0.62, 0.86, t),
+        THREE.MathUtils.lerp(0.2, 0.42, Math.pow(t, 1.8)),
+        THREE.SRGBColorSpace
+      );
+      cols[v * 3] = tmpColor.r;
+      cols[v * 3 + 1] = tmpColor.g;
+      cols[v * 3 + 2] = tmpColor.b;
+    }
+    stalk.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+    stalk.rotateZ(0.12);
+    stalk.rotateY(a);
+    stalk.translate(Math.cos(a) * 0.07, 0, Math.sin(a) * 0.07);
+    parts.push(stalk);
+  }
+  return safeMerge(parts, buildCurvedLeafStrip(0.08, 0.7, 0.2));
+}
+
 export function buildWildflowerGeometry(): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
 
   const stemA = buildTaperedCurveTube(
-    [new THREE.Vector3(0, 0, 0), new THREE.Vector3(0.02, 0.18, 0), new THREE.Vector3(0, 0.35, 0)],
-    0.028,
-    0.018,
+    [new THREE.Vector3(0, 0, 0), new THREE.Vector3(0.03, 0.2, 0.01), new THREE.Vector3(0, 0.4, 0)],
+    0.024,
+    0.016,
     4,
     5
   );
   setLinearAttrColors(stemA, 0.26, 0.62, 0.22);
   parts.push(stemA);
 
-  const leafL = buildCurvedLeafStrip(0.09, 0.18, 0.06, 3);
-  leafL.rotateZ(0.92);
-  leafL.translate(-0.02, 0.1, 0);
-  setLinearAttrColors(leafL, 0.3, 0.68, 0.24);
-  parts.push(leafL);
+  for (const s of [-1, 1]) {
+    const leaf = buildCurvedLeafStrip(0.085, 0.18, 0.06, 3);
+    leaf.rotateZ(s * 0.95);
+    leaf.translate(s * 0.02, 0.1 + (s > 0 ? 0.03 : 0), 0);
+    setLinearAttrColors(leaf, 0.3, 0.68, 0.24);
+    parts.push(leaf);
+  }
 
-  for (let i = 0; i < 5; i += 1) {
-    const a = (i / 5) * Math.PI * 2;
-    const petal = new THREE.SphereGeometry(0.085, 7, 5);
-    petal.scale(1.15, 0.35, 0.8);
-    petal.rotateY(-a);
-    petal.translate(Math.cos(a) * 0.095, 0.35, Math.sin(a) * 0.095);
+  for (let i = 0; i < 6; i += 1) {
+    const a = (i / 6) * Math.PI * 2;
+    const petal = buildCurvedLeafStrip(0.075, 0.14, 0.035, 3);
+    petal.rotateX(1.32);
+    petal.rotateY(a);
+    petal.translate(0, 0.39, 0);
     setLinearAttrColors(petal, 0.98, 0.98, 0.98);
     parts.push(petal);
   }
 
-  const center = new THREE.SphereGeometry(0.06, 7, 5);
+  const center = new THREE.SphereGeometry(0.052, 7, 5);
   center.scale(1, 0.65, 1);
-  center.translate(0, 0.36, 0);
+  center.translate(0, 0.4, 0);
   setLinearAttrColors(center, 0.98, 0.82, 0.22);
   parts.push(center);
 
   return safeMerge(parts, new THREE.SphereGeometry(0.15, 6, 5));
+}
+
+export function buildTropicalHibiscusGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const stem = buildTaperedCurveTube(
+    [new THREE.Vector3(0, 0, 0), new THREE.Vector3(-0.02, 0.22, 0.02), new THREE.Vector3(0, 0.42, 0)],
+    0.028,
+    0.018,
+    4,
+    5
+  );
+  setLinearAttrColors(stem, 0.22, 0.56, 0.2);
+  parts.push(stem);
+
+  for (let i = 0; i < 3; i += 1) {
+    const la = (i / 3) * Math.PI * 2 + 0.4;
+    const leaf = buildCurvedLeafStrip(0.11, 0.2, 0.07, 3);
+    leaf.rotateZ(1.05);
+    leaf.rotateY(la);
+    leaf.translate(0, 0.14, 0);
+    setLinearAttrColors(leaf, 0.24, 0.64, 0.22);
+    parts.push(leaf);
+  }
+
+  for (let i = 0; i < 5; i += 1) {
+    const a = (i / 5) * Math.PI * 2;
+    const petal = buildCurvedLeafStrip(0.13, 0.18, 0.06, 3);
+    petal.rotateX(1.08);
+    petal.rotateY(a);
+    petal.translate(0, 0.41, 0);
+    setLinearAttrColors(petal, 0.98, 0.96, 0.98);
+    parts.push(petal);
+  }
+
+  const stamen = buildTaperedCurveTube(
+    [new THREE.Vector3(0, 0.41, 0), new THREE.Vector3(0.02, 0.56, 0)],
+    0.02,
+    0.014,
+    3,
+    5
+  );
+  setLinearAttrColors(stamen, 1.0, 0.85, 0.28);
+  parts.push(stamen);
+
+  return safeMerge(parts, new THREE.SphereGeometry(0.16, 6, 5));
+}
+
+export function buildBellflowerSpikeGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const stalk = buildTaperedCurveTube(
+    [
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(0.04, 0.3, 0.02),
+      new THREE.Vector3(0.11, 0.62, 0),
+    ],
+    0.026,
+    0.012,
+    6,
+    5
+  );
+  setLinearAttrColors(stalk, 0.24, 0.58, 0.24);
+  parts.push(stalk);
+
+  for (let i = 0; i < 4; i += 1) {
+    const t = 0.35 + i * 0.17;
+    const a = i * 1.9;
+    const bell = new THREE.SphereGeometry(0.068 - i * 0.008, 7, 6, 0, Math.PI * 2, 0, Math.PI * 0.65);
+    bell.rotateX(Math.PI * 0.78);
+    bell.rotateY(a);
+    bell.translate(0.04 + t * 0.08 + Math.cos(a) * 0.06, t * 0.62, Math.sin(a) * 0.06);
+    setLinearAttrColors(bell, 0.96, 0.94, 1.0);
+    parts.push(bell);
+  }
+  return safeMerge(parts, new THREE.CapsuleGeometry(0.04, 0.5, 4, 5));
+}
+
+export function buildLotusBloomGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const pad = new THREE.CylinderGeometry(0.42, 0.42, 0.03, 14, 1, false, 0.2, Math.PI * 1.82);
+  setLinearAttrColors(pad, 0.24, 0.72, 0.34);
+  parts.push(pad);
+
+  for (let ring = 0; ring < 2; ring += 1) {
+    const count = ring === 0 ? 7 : 5;
+    for (let i = 0; i < count; i += 1) {
+      const a = (i / count) * Math.PI * 2 + ring * 0.3;
+      const petal = buildCurvedLeafStrip(0.1, ring === 0 ? 0.22 : 0.16, 0.05, 3);
+      petal.rotateX(ring === 0 ? 1.05 : 0.68);
+      petal.rotateY(a);
+      petal.translate(0, 0.04, 0);
+      setLinearAttrColors(petal, 1.0, 0.74 + ring * 0.14, 0.86 + ring * 0.1);
+      parts.push(petal);
+    }
+  }
+  const core = new THREE.SphereGeometry(0.065, 8, 6);
+  core.translate(0, 0.09, 0);
+  setLinearAttrColors(core, 1.0, 0.86, 0.24);
+  parts.push(core);
+  return safeMerge(parts, new THREE.CylinderGeometry(0.35, 0.35, 0.05, 10));
+}
+
+export function buildSporeBloomGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const stem = buildTaperedCurveTube(
+    [new THREE.Vector3(0, 0, 0), new THREE.Vector3(0.03, 0.18, 0), new THREE.Vector3(0, 0.34, 0)],
+    0.025,
+    0.018,
+    4,
+    5
+  );
+  setLinearAttrColors(stem, 0.26, 0.72, 0.76);
+  parts.push(stem);
+  for (let i = 0; i < 4; i += 1) {
+    const a = (i / 4) * Math.PI * 2;
+    const petal = buildCurvedLeafStrip(0.11, 0.2, 0.08, 3);
+    petal.rotateX(0.85);
+    petal.rotateY(a);
+    petal.translate(0, 0.32, 0);
+    setLinearAttrColors(petal, 0.62, 0.96, 1.0);
+    parts.push(petal);
+  }
+  const glow = new THREE.SphereGeometry(0.058, 7, 6);
+  glow.translate(0, 0.4, 0);
+  setLinearAttrColors(glow, 1.0, 0.54, 0.92);
+  parts.push(glow);
+  return safeMerge(parts, new THREE.SphereGeometry(0.14, 6, 5));
 }
 
 export function buildCoastalReedGeometry(): THREE.BufferGeometry {
@@ -1011,21 +1346,25 @@ export function buildSeashellGeometry(): THREE.BufferGeometry {
 export function buildCanopyBlossomsGeometry(): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
   const spots: Array<[number, number, number, number, [number, number, number]]> = [
-    [0.58, 3.85, 0.56, 0.28, [1.0, 0.48, 0.68]],
-    [-0.86, 3.22, 0.72, 0.26, [1.0, 0.84, 0.3]],
-    [0.98, 3.24, -0.45, 0.27, [1.0, 0.56, 0.76]],
-    [-0.25, 4.18, -0.32, 0.25, [1.0, 0.94, 0.58]],
-    [0.14, 3.28, 1.38, 0.24, [1.0, 0.52, 0.72]],
-    [-1.22, 2.95, -0.32, 0.25, [1.0, 0.8, 0.28]],
-    [0.05, 4.02, 0.42, 0.23, [0.98, 0.64, 0.95]],
+    [0.58, 3.68, 0.56, 1.15, [1.0, 0.48, 0.68]],
+    [-0.86, 3.05, 0.72, 1.05, [1.0, 0.84, 0.3]],
+    [0.98, 3.1, -0.45, 1.1, [1.0, 0.56, 0.76]],
+    [-0.25, 3.92, -0.32, 1.0, [1.0, 0.94, 0.58]],
+    [0.14, 3.12, 1.24, 1.0, [1.0, 0.52, 0.72]],
+    [-1.12, 2.86, -0.32, 1.05, [1.0, 0.8, 0.28]],
+    [0.05, 3.82, 0.42, 0.95, [0.98, 0.64, 0.95]],
   ];
-  for (const [x, y, z, r, rgb] of spots) {
-    const blossom = new THREE.SphereGeometry(r, 9, 8);
-    blossom.scale(1.15, 0.85, 1.15);
-    blossom.translate(x, y, z);
-    setLinearAttrColors(blossom, rgb[0], rgb[1], rgb[2]);
-    parts.push(blossom);
-  }
+  spots.forEach(([x, y, z, s, rgb], sIdx) => {
+    for (let p = 0; p < 5; p += 1) {
+      const a = (p / 5) * Math.PI * 2 + sIdx * 0.5;
+      const petal = buildCurvedLeafStrip(0.14 * s, 0.26 * s, 0.06, 3);
+      petal.rotateX(1.18);
+      petal.rotateY(a);
+      petal.translate(x, y, z);
+      setLinearAttrColors(petal, rgb[0], rgb[1], rgb[2]);
+      parts.push(petal);
+    }
+  });
   return safeMerge(parts, new THREE.SphereGeometry(0.24, 8, 6));
 }
 
@@ -1238,34 +1577,47 @@ export function buildBananaBunchGeometry(): THREE.BufferGeometry {
   return safeMerge(parts, new THREE.SphereGeometry(0.2, 8, 6));
 }
 
-// Sprawling Banyan Tree with hanging aerial roots & wide layered canopy
+// Sprawling Banyan Tree with hanging aerial roots & irregular layered organic leaf boughs
 export function buildBanyanTrunkGeometry(): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
   const main = buildTaperedCurveTube(
     [
       new THREE.Vector3(0, 0, 0),
-      new THREE.Vector3(-0.08, 0.95, 0.06),
-      new THREE.Vector3(0.05, 1.95, -0.04),
-      new THREE.Vector3(0, 2.75, 0),
+      new THREE.Vector3(-0.1, 0.95, 0.08),
+      new THREE.Vector3(0.08, 1.95, -0.05),
+      new THREE.Vector3(-0.02, 2.75, 0.02),
     ],
     0.58,
-    0.28,
+    0.26,
     10,
     9
   );
   parts.push(main);
 
-  // Aerial roots anchoring outward
+  // Sweeping horizontal boughs + aerial prop roots anchoring outward
   for (let i = 0; i < 4; i += 1) {
-    const a = (i / 4) * Math.PI * 2 + 0.4;
+    const a = (i / 4) * Math.PI * 2 + 0.45;
+    const bough = buildTaperedCurveTube(
+      [
+        new THREE.Vector3(0, 1.9, 0),
+        new THREE.Vector3(Math.cos(a) * 0.65, 2.35, Math.sin(a) * 0.65),
+        new THREE.Vector3(Math.cos(a) * 1.18, 2.68, Math.sin(a) * 1.18),
+      ],
+      0.18,
+      0.08,
+      6,
+      6
+    );
+    parts.push(bough);
+
     const root = buildTaperedCurveTube(
       [
-        new THREE.Vector3(Math.cos(a) * 0.82, 0, Math.sin(a) * 0.82),
-        new THREE.Vector3(Math.cos(a) * 0.65, 1.15, Math.sin(a) * 0.65),
-        new THREE.Vector3(Math.cos(a) * 0.45, 2.15, Math.sin(a) * 0.45),
+        new THREE.Vector3(Math.cos(a) * 0.92, -0.05, Math.sin(a) * 0.92),
+        new THREE.Vector3(Math.cos(a) * 0.72, 1.15, Math.sin(a) * 0.72),
+        new THREE.Vector3(Math.cos(a) * 0.62, 2.28, Math.sin(a) * 0.62),
       ],
-      0.11,
-      0.08,
+      0.1,
+      0.065,
       6,
       6
     );
@@ -1276,60 +1628,85 @@ export function buildBanyanTrunkGeometry(): THREE.BufferGeometry {
 
 export function buildBanyanCanopyGeometry(): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
-  const lobes = [
-    { x: 0, y: 3.1, z: 0, r: 1.55 },
-    { x: -1.18, y: 2.65, z: 0.45, r: 1.05 },
-    { x: 1.15, y: 2.7, z: -0.35, r: 1.08 },
-    { x: 0.25, y: 2.6, z: 1.1, r: 0.98 },
-    { x: -0.35, y: 2.75, z: -1.05, r: 0.95 },
-    { x: 0.1, y: 3.72, z: -0.1, r: 1.02 },
+  const clusters = [
+    { x: 0, y: 3.12, z: 0, r: 1.42, blades: 11 },
+    { x: -1.16, y: 2.68, z: 0.44, r: 0.98, blades: 8 },
+    { x: 1.14, y: 2.74, z: -0.36, r: 1.0, blades: 8 },
+    { x: 0.25, y: 2.64, z: 1.08, r: 0.94, blades: 7 },
+    { x: -0.34, y: 2.78, z: -1.04, r: 0.92, blades: 7 },
+    { x: 0.14, y: 3.68, z: -0.1, r: 0.95, blades: 8 },
   ];
-  for (let i = 0; i < lobes.length; i += 1) {
-    const l = lobes[i];
-    const puff = buildSculptedBoulderGeometry(l.r, i * 3.1 + 1.4);
-    puff.scale(1.24, 0.72, 1.18);
-    puff.translate(l.x, l.y, l.z);
-    parts.push(puff);
-  }
+  clusters.forEach((cl, idx) => {
+    const spray = buildOrganicLeafSprayTuple(cl.r, idx * 2.7 + 1.4, cl.blades, 0.5);
+    spray.rotateY(idx * 0.9);
+    spray.translate(cl.x, cl.y, cl.z);
+    parts.push(spray);
+  });
   return safeMerge(parts, new THREE.SphereGeometry(1.5, 12, 10));
 }
 
-// Luminous Mystic Willow Tree (drooping cascading leaf curtains near Crystal Spring & Mushroom Grove)
+// Luminous Mystic Willow Tree (twisted gnarled trunk + irregular crown & cascading leaf curtains)
 export function buildWillowTrunkGeometry(): THREE.BufferGeometry {
-  return buildTaperedCurveTube(
-    [
-      new THREE.Vector3(0, 0, 0),
-      new THREE.Vector3(-0.12, 1.0, 0.08),
-      new THREE.Vector3(0.08, 2.1, -0.05),
-      new THREE.Vector3(0, 3.05, 0),
-    ],
-    0.36,
-    0.16,
-    9,
-    8
+  const parts: THREE.BufferGeometry[] = [];
+  parts.push(
+    buildTaperedCurveTube(
+      [
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(-0.14, 1.0, 0.1),
+        new THREE.Vector3(0.12, 2.1, -0.08),
+        new THREE.Vector3(0.02, 3.05, 0.04),
+      ],
+      0.38,
+      0.15,
+      10,
+      8
+    )
   );
+  for (let i = 0; i < 3; i += 1) {
+    const a = (i / 3) * Math.PI * 2 + 0.3;
+    parts.push(
+      buildTaperedCurveTube(
+        [
+          new THREE.Vector3(0.02, 2.25, 0),
+          new THREE.Vector3(Math.cos(a) * 0.55, 2.8, Math.sin(a) * 0.55),
+          new THREE.Vector3(Math.cos(a) * 0.95, 3.12, Math.sin(a) * 0.95),
+        ],
+        0.13,
+        0.06,
+        5,
+        6
+      )
+    );
+  }
+  return safeMerge(parts, new THREE.CapsuleGeometry(0.28, 2.4, 5, 8));
 }
 
 export function buildWillowCanopyGeometry(): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
-  const crown = buildSculptedBoulderGeometry(1.18, 4.2);
-  crown.scale(1.28, 0.68, 1.28);
-  crown.translate(0, 3.25, 0);
-  parts.push(crown);
+  const crownA = buildOrganicLeafSprayTuple(1.08, 4.2, 9, 0.52);
+  crownA.translate(0.1, 3.25, 0);
+  setLinearAttrColors(crownA, 0.42, 0.86, 0.74);
+  parts.push(crownA);
 
-  for (let i = 0; i < 8; i += 1) {
-    const a = (i / 8) * Math.PI * 2;
-    const vine = buildCurvedLeafStrip(0.36, 1.85, 0.22, 5);
+  const crownB = buildOrganicLeafSprayTuple(0.86, 7.1, 7, 0.55);
+  crownB.translate(-0.48, 3.02, 0.32);
+  setLinearAttrColors(crownB, 0.48, 0.92, 0.8);
+  parts.push(crownB);
+
+  for (let i = 0; i < 12; i += 1) {
+    const a = (i / 12) * Math.PI * 2 + (i % 2) * 0.14;
+    const rad = 0.92 + (i % 3) * 0.22;
+    const vine = buildCurvedLeafStrip(0.32, 1.85 + (i % 2) * 0.35, 0.24, 5);
     vine.rotateX(Math.PI * 0.94);
     vine.rotateY(a);
-    vine.translate(Math.cos(a) * 1.18, 3.15, Math.sin(a) * 1.18);
-    setLinearAttrColors(vine, 0.45, 0.88, 0.78);
+    vine.translate(Math.cos(a) * rad, 3.15, Math.sin(a) * rad);
+    setLinearAttrColors(vine, 0.44 + (i % 2) * 0.08, 0.88, 0.78);
     parts.push(vine);
   }
   return safeMerge(parts, new THREE.SphereGeometry(1.1, 10, 8));
 }
 
-// 3D Wooden/Shell Spear & Fire Spear for Ocean Spearfishing!
+// 3D Wooden/Shell Spear & Fire Spear for Ocean Spearfishing & Hunting!
 export function buildSpearToolGeometry(isFireSpear = false): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
   const shaft = buildTaperedCurveTube(
@@ -1346,14 +1723,12 @@ export function buildSpearToolGeometry(isFireSpear = false): THREE.BufferGeometr
   setLinearAttrColors(shaft, 0.56, 0.34, 0.16);
   parts.push(shaft);
 
-  // Lash binding
   const wrap = new THREE.SphereGeometry(0.055, 8, 6);
   wrap.scale(1, 1.4, 1);
   wrap.translate(0, 1.42, 0);
   setLinearAttrColors(wrap, 0.92, 0.8, 0.54);
   parts.push(wrap);
 
-  // Sculpted leaf-shaped spearhead (bone/shell or glowing ember!)
   const tip = new THREE.SphereGeometry(0.095, 10, 8);
   const pos = tip.attributes.position;
   for (let i = 0; i < pos.count; i += 1) {
@@ -1375,4 +1750,391 @@ export function buildSpearToolGeometry(isFireSpear = false): THREE.BufferGeometr
 
   return safeMerge(parts, new THREE.CapsuleGeometry(0.03, 1.8, 5, 7));
 }
+
+// Sculpted bone-in meat cut for hunting rewards & campfire roasting
+export function buildMeatCutGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const bone = new THREE.CapsuleGeometry(0.032, 0.24, 4, 6);
+  bone.rotateZ(Math.PI / 2);
+  bone.translate(-0.14, 0, 0);
+  setLinearAttrColors(bone, 0.96, 0.92, 0.82);
+  parts.push(bone);
+
+  const knob = new THREE.SphereGeometry(0.048, 7, 6);
+  knob.translate(-0.26, 0.015, 0);
+  setLinearAttrColors(knob, 0.96, 0.92, 0.82);
+  parts.push(knob);
+
+  const haunch = new THREE.SphereGeometry(0.135, 11, 9);
+  haunch.scale(1.28, 0.88, 0.94);
+  haunch.translate(0.06, 0.01, 0);
+  setLinearAttrColors(haunch, 0.86, 0.28, 0.22);
+  parts.push(haunch);
+
+  return safeMerge(parts, new THREE.SphereGeometry(0.14, 8, 6));
+}
+
+// Landmark decorative forge anvil & ship anchor & temple brazier
+export function buildAnvilGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const base = buildSculptedStoneSlabGeometry(0.95, 0.36, 0.65, 1.4);
+  base.translate(0, 0.18, 0);
+  const waist = buildSculptedStoneSlabGeometry(0.54, 0.42, 0.44, 2.1);
+  waist.translate(0, 0.52, 0);
+  const top = buildSculptedStoneSlabGeometry(1.18, 0.28, 0.52, 3.2);
+  top.translate(0.08, 0.82, 0);
+  const horn = buildOrganicBasaltCragGeometry(0.2, 0.55, 1.1);
+  horn.rotateZ(-Math.PI * 0.48);
+  horn.translate(0.58, 0.82, 0);
+  parts.push(base, waist, top, horn);
+  return safeMerge(parts, new THREE.CapsuleGeometry(0.4, 0.7, 5, 8));
+}
+
+export function buildBrazierGeometry(): THREE.BufferGeometry {
+  const pts = [
+    new THREE.Vector2(0.0, 0.0),
+    new THREE.Vector2(0.48, 0.05),
+    new THREE.Vector2(0.32, 0.35),
+    new THREE.Vector2(0.26, 0.72),
+    new THREE.Vector2(0.56, 0.98),
+    new THREE.Vector2(0.42, 0.92),
+    new THREE.Vector2(0.0, 0.84),
+  ];
+  const geo = new THREE.LatheGeometry(pts, 12);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+export function buildAnchorGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const shank = new THREE.CapsuleGeometry(0.065, 1.1, 4, 7);
+  shank.translate(0, 0.65, 0);
+  const stock = new THREE.CapsuleGeometry(0.05, 0.68, 4, 6);
+  stock.rotateZ(Math.PI / 2);
+  stock.translate(0, 1.08, 0);
+  const flukeArc = new THREE.TorusGeometry(0.45, 0.065, 7, 14, Math.PI);
+  flukeArc.rotateZ(Math.PI);
+  flukeArc.translate(0, 0.52, 0);
+  const ring = new THREE.TorusGeometry(0.14, 0.04, 6, 12);
+  ring.translate(0, 1.34, 0);
+  parts.push(shank, stock, flukeArc, ring);
+  return safeMerge(parts, new THREE.CapsuleGeometry(0.2, 1.0, 4, 6));
+}
+
+// Camp Wooden Sailboat resting on timber cradle beside the campfire (Campfire Lv 5 reward!)
+export function buildBoatCradleGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+
+  // Timber chocks supporting the hull
+  for (const zOff of [-0.85, 0.85]) {
+    const chock = buildSculptedStoneSlabGeometry(1.35, 0.24, 0.28, zOff + 2.0);
+    chock.translate(0, 0.14, zOff);
+    setLinearAttrColors(chock, 0.44, 0.26, 0.12);
+    parts.push(chock);
+  }
+
+  // Sculpted curved wooden boat hull
+  const hull = new THREE.SphereGeometry(0.95, 16, 12, 0, Math.PI * 2, Math.PI * 0.48, Math.PI * 0.52);
+  const pos = hull.attributes.position;
+  for (let i = 0; i < pos.count; i += 1) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    const keelT = THREE.MathUtils.clamp(Math.abs(z) / 0.95, 0, 1);
+    const bowTaper = 1 - Math.pow(keelT, 1.8) * 0.86;
+    const sheerLift = Math.pow(keelT, 1.7) * 0.24;
+    pos.setXYZ(i, x * 0.88 * bowTaper, y * 0.72 + sheerLift, z * 1.85);
+  }
+  hull.computeVertexNormals();
+  hull.translate(0, 0.84, 0);
+  setLinearAttrColors(hull, 0.68, 0.42, 0.21);
+  parts.push(hull);
+
+  // Gunwale rim planks & benches
+  const rim = new THREE.TorusGeometry(0.84, 0.065, 6, 20);
+  rim.rotateX(Math.PI / 2);
+  rim.scale(0.84, 1, 1.76);
+  rim.translate(0, 0.96, 0);
+  setLinearAttrColors(rim, 0.82, 0.56, 0.3);
+  parts.push(rim);
+
+  for (const zSeat of [-0.45, 0.35]) {
+    const bench = buildSculptedStoneSlabGeometry(1.12, 0.1, 0.26, zSeat + 5);
+    bench.translate(0, 0.78, zSeat);
+    setLinearAttrColors(bench, 0.78, 0.52, 0.28);
+    parts.push(bench);
+  }
+
+  // Wooden mast & yardarm
+  const mast = new THREE.CapsuleGeometry(0.065, 2.35, 5, 8);
+  mast.translate(0, 1.78, 0.15);
+  setLinearAttrColors(mast, 0.52, 0.31, 0.15);
+  parts.push(mast);
+
+  const boom = new THREE.CapsuleGeometry(0.042, 1.38, 4, 7);
+  boom.rotateZ(Math.PI / 2);
+  boom.translate(0, 2.55, 0.18);
+  setLinearAttrColors(boom, 0.56, 0.35, 0.18);
+  parts.push(boom);
+
+  // Billowing warm cream sail
+  const sail = buildCurvedLeafStrip(1.32, 1.55, 0.26, 7);
+  sail.rotateX(-Math.PI * 0.46);
+  sail.translate(0, 1.78, 0.28);
+  setLinearAttrColors(sail, 0.98, 0.93, 0.8);
+  parts.push(sail);
+
+  // Bow lantern & pair of oars
+  const lantern = new THREE.SphereGeometry(0.15, 9, 8);
+  lantern.translate(0, 1.15, 1.52);
+  setLinearAttrColors(lantern, 1.0, 0.86, 0.38);
+  parts.push(lantern);
+
+  for (const side of [-1, 1]) {
+    const oar = new THREE.CapsuleGeometry(0.03, 1.25, 4, 6);
+    oar.rotateX(Math.PI * 0.45);
+    oar.rotateZ(side * 0.18);
+    oar.translate(side * 0.54, 0.9, -0.2);
+    setLinearAttrColors(oar, 0.74, 0.48, 0.24);
+    parts.push(oar);
+  }
+
+  return safeMerge(parts, new THREE.CapsuleGeometry(0.7, 2.0, 6, 8));
+}
+
+// Hunting Bow, Arrow, and Storm Hammer for the 4-Weapon Arsenal
+export function buildBowToolGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const stave = buildTaperedCurveTube(
+    [
+      new THREE.Vector3(0, -0.58, -0.18),
+      new THREE.Vector3(0, -0.28, 0.16),
+      new THREE.Vector3(0, 0, 0.24),
+      new THREE.Vector3(0, 0.28, 0.16),
+      new THREE.Vector3(0, 0.58, -0.18),
+    ],
+    0.036,
+    0.028,
+    10,
+    7
+  );
+  setLinearAttrColors(stave, 0.64, 0.38, 0.16);
+  parts.push(stave);
+
+  const grip = new THREE.CapsuleGeometry(0.044, 0.22, 4, 7);
+  grip.translate(0, 0, 0.23);
+  setLinearAttrColors(grip, 0.86, 0.66, 0.34);
+  parts.push(grip);
+
+  const bowString = new THREE.CapsuleGeometry(0.011, 1.14, 3, 6);
+  bowString.translate(0, 0, -0.18);
+  setLinearAttrColors(bowString, 0.96, 0.94, 0.86);
+  parts.push(bowString);
+
+  return safeMerge(parts, new THREE.CapsuleGeometry(0.04, 1.1, 4, 6));
+}
+
+export function buildArrowGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const shaft = new THREE.CapsuleGeometry(0.022, 0.72, 4, 6);
+  shaft.rotateX(Math.PI / 2);
+  setLinearAttrColors(shaft, 0.68, 0.44, 0.2);
+  parts.push(shaft);
+
+  const tip = new THREE.SphereGeometry(0.068, 8, 6);
+  tip.scale(0.65, 0.42, 1.65);
+  tip.translate(0, 0, 0.42);
+  setLinearAttrColors(tip, 0.92, 0.96, 1.0);
+  parts.push(tip);
+
+  const fletch = new THREE.SphereGeometry(0.06, 6, 5);
+  fletch.scale(0.28, 0.85, 1.4);
+  fletch.translate(0, 0, -0.34);
+  setLinearAttrColors(fletch, 0.98, 0.35, 0.21);
+  parts.push(fletch);
+
+  return safeMerge(parts, new THREE.CapsuleGeometry(0.025, 0.7, 4, 6));
+}
+
+export function buildHammerToolGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const handle = new THREE.CapsuleGeometry(0.04, 1.18, 5, 7);
+  handle.translate(0, 0.5, 0);
+  setLinearAttrColors(handle, 0.56, 0.34, 0.16);
+  parts.push(handle);
+
+  const head = buildSculptedStoneSlabGeometry(0.28, 0.26, 0.54, 4.2);
+  head.translate(0, 1.08, 0);
+  setLinearAttrColors(head, 0.54, 0.62, 0.74);
+  parts.push(head);
+
+  const goldBand = new THREE.TorusGeometry(0.14, 0.032, 6, 12);
+  goldBand.translate(0, 1.08, 0);
+  setLinearAttrColors(goldBand, 0.98, 0.78, 0.24);
+  parts.push(goldBand);
+
+  return safeMerge(parts, new THREE.CapsuleGeometry(0.06, 1.1, 4, 6));
+}
+
+// Weathered Driftwood Log & Coastal Starfish for Prettier Beaches
+export function buildDriftwoodLogGeometry(seed = 1): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const main = buildTaperedCurveTube(
+    [
+      new THREE.Vector3(-0.62, 0.08, -0.06),
+      new THREE.Vector3(-0.1, 0.11, 0.04),
+      new THREE.Vector3(0.56, 0.09, -0.04),
+    ],
+    0.11,
+    0.075,
+    8,
+    7,
+    seed * 0.03
+  );
+  setLinearAttrColors(main, 0.76, 0.67, 0.56);
+  parts.push(main);
+
+  const snag = buildTaperedCurveTube(
+    [
+      new THREE.Vector3(0.08, 0.1, 0.02),
+      new THREE.Vector3(0.28, 0.22, 0.18),
+    ],
+    0.055,
+    0.025,
+    5,
+    6
+  );
+  setLinearAttrColors(snag, 0.72, 0.62, 0.52);
+  parts.push(snag);
+
+  return safeMerge(parts, new THREE.CapsuleGeometry(0.09, 1.0, 4, 6));
+}
+
+export function buildBeachStarfishGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  for (let i = 0; i < 5; i += 1) {
+    const a = (i / 5) * Math.PI * 2;
+    const arm = buildTaperedCurveTube(
+      [
+        new THREE.Vector3(0, 0.035, 0),
+        new THREE.Vector3(Math.sin(a) * 0.12, 0.03, Math.cos(a) * 0.12),
+        new THREE.Vector3(Math.sin(a) * 0.23, 0.015, Math.cos(a) * 0.23),
+      ],
+      0.045,
+      0.015,
+      4,
+      6
+    );
+    parts.push(arm);
+  }
+  const hub = new THREE.SphereGeometry(0.062, 8, 6);
+  hub.scale(1.1, 0.55, 1.1);
+  hub.translate(0, 0.032, 0);
+  parts.push(hub);
+  return safeMerge(parts, new THREE.SphereGeometry(0.14, 8, 6));
+}
+
+// Hidden Secret Place Treasure Shrine (Sculpted Stone Pedestal + Carved Wooden Chest Base & Hinged Lid)
+export function buildSecretChestBaseGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const plinth = buildSculptedStoneSlabGeometry(1.35, 0.24, 1.05, 5.4);
+  plinth.translate(0, 0.12, 0);
+  setLinearAttrColors(plinth, 0.45, 0.48, 0.52);
+  parts.push(plinth);
+
+  const chestBody = buildSculptedStoneSlabGeometry(0.92, 0.42, 0.64, 2.7);
+  chestBody.translate(0, 0.45, 0);
+  setLinearAttrColors(chestBody, 0.56, 0.32, 0.14);
+  parts.push(chestBody);
+
+  for (const xOff of [-0.32, 0.32]) {
+    const band = buildSculptedStoneSlabGeometry(0.08, 0.44, 0.67, xOff + 3);
+    band.translate(xOff, 0.45, 0);
+    setLinearAttrColors(band, 0.96, 0.78, 0.28);
+    parts.push(band);
+  }
+
+  const lock = new THREE.SphereGeometry(0.09, 8, 6);
+  lock.scale(1.0, 1.2, 0.6);
+  lock.translate(0, 0.54, 0.34);
+  setLinearAttrColors(lock, 1.0, 0.86, 0.32);
+  parts.push(lock);
+
+  return safeMerge(parts, new THREE.CapsuleGeometry(0.45, 0.6, 5, 8));
+}
+
+export function buildSecretChestLidGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const dome = new THREE.CylinderGeometry(0.32, 0.32, 0.92, 10, 1, false, 0, Math.PI);
+  dome.rotateZ(Math.PI / 2);
+  dome.rotateX(-Math.PI / 2);
+  dome.scale(1, 0.68, 1);
+  dome.translate(0, 0.0, 0.32);
+  setLinearAttrColors(dome, 0.64, 0.36, 0.16);
+  parts.push(dome);
+
+  for (const xOff of [-0.32, 0.32]) {
+    const strap = new THREE.TorusGeometry(0.33, 0.032, 5, 10, Math.PI);
+    strap.rotateY(Math.PI / 2);
+    strap.scale(1, 0.68, 1);
+    strap.translate(xOff, 0.0, 0.32);
+    setLinearAttrColors(strap, 0.98, 0.8, 0.3);
+    parts.push(strap);
+  }
+
+  return safeMerge(parts, new THREE.CapsuleGeometry(0.25, 0.7, 4, 7));
+}
+
+// Predator 3D Claw Slash Crescent Arc
+export function buildClawSlashGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  for (let i = -1; i <= 1; i += 1) {
+    const arc = buildTaperedCurveTube(
+      [
+        new THREE.Vector3(-0.75, i * 0.24, -0.35),
+        new THREE.Vector3(0, i * 0.2, 0.28),
+        new THREE.Vector3(0.75, i * 0.24, -0.35),
+      ],
+      0.045,
+      0.015,
+      8,
+      6
+    );
+    setLinearAttrColors(arc, 1.0, 0.28, 0.24);
+    parts.push(arc);
+  }
+  return safeMerge(parts, new THREE.TorusGeometry(0.6, 0.04, 6, 12, Math.PI));
+}
+
+// Falling Autumn Leaf / Winter Snowflake Diamond Quad
+export function buildLeafSnowQuadGeometry(): THREE.BufferGeometry {
+  const shape = new THREE.Shape();
+  shape.moveTo(0, 0.14);
+  shape.bezierCurveTo(0.09, 0.08, 0.11, -0.02, 0, -0.14);
+  shape.bezierCurveTo(-0.11, -0.02, -0.09, 0.08, 0, 0.14);
+  const geo = new THREE.ShapeGeometry(shape, 4);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// Jagged 3D Lightning Bolt for Storms & Storm Hammer
+export function buildLightningBoltGeometry(): THREE.BufferGeometry {
+  const bolt = buildTaperedCurveTube(
+    [
+      new THREE.Vector3(0, 14.0, 0),
+      new THREE.Vector3(0.75, 10.5, -0.4),
+      new THREE.Vector3(-0.65, 7.2, 0.45),
+      new THREE.Vector3(0.45, 3.8, -0.2),
+      new THREE.Vector3(0, 0.0, 0),
+    ],
+    0.26,
+    0.08,
+    12,
+    6
+  );
+  setLinearAttrColors(bolt, 0.82, 0.96, 1.0);
+  return bolt;
+}
+
+
 

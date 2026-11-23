@@ -152,7 +152,7 @@ export function VirtualJoystick({ enabled, onChange }: VirtualJoystickProps) {
           />
         </div>
       ) : (
-        <div className="pointer-events-none absolute bottom-6 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5 opacity-85">
+        <div className="pointer-events-none absolute bottom-[108px] sm:bottom-6 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5 opacity-85">
           <div className="w-16 h-16 rounded-full border-2 border-dashed border-white/75 bg-white/12 flex items-center justify-center">
             <div className="w-7 h-7 rounded-full bg-white/85 shadow-md" />
           </div>
