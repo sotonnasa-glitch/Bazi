@@ -2025,7 +2025,7 @@ export function createThreeIslandGame(
       natureTreeAssets = assets;
       // Rebuild the current seed with the GLB trees; procedural trees remain as a safe fallback.
       buildArchipelagoGeometry(worldData);
-      resetPlayerToSpawn();
+      // Keep the player's current position when the replacement models finish loading.
     })
     .catch((error: unknown) => {
       console.warn('[Nature Kit] Could not load tree models; keeping procedural trees.', error);
