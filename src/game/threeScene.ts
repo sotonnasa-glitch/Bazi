@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { CONFIG, type AppScreenState, type BiomeId, type GameMode } from './config';
 import { createProceduralTextureSet } from './textures';
 import { createSeededRandom, getSeedForMode, resetNormalSeed } from './utils';
@@ -523,6 +524,121 @@ interface FloatingParticle {
   baseScale: number;
 }
 
+
+interface NatureTreeModelPart {
+  geometry: THREE.BufferGeometry;
+  material: THREE.Material | THREE.Material[];
+}
+
+interface NatureTreeModel {
+  parts: NatureTreeModelPart[];
+}
+
+interface NatureTreeAssets {
+  palms: NatureTreeModel[];
+  jungle: NatureTreeModel[];
+  dispose: () => void;
+}
+
+async function loadNatureTreeModel(fileName: string): Promise<NatureTreeModel> {
+  const response = await fetch(`/assets/nature/${fileName}`);
+  if (!response.ok) {
+    throw new Error(`Nature Kit asset request failed (${response.status}): ${fileName}`);
+  }
+  const compressed = await response.arrayBuffer();
+  const decompressedStream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('gzip'));
+  const glbData = await new Response(decompressedStream).arrayBuffer();
+  const loader = new GLTFLoader();
+  const gltf = await loader.parseAsync(glbData, '/assets/nature/');
+  gltf.scene.updateMatrixWorld(true);
+
+  const bounds = new THREE.Box3().setFromObject(gltf.scene);
+  if (bounds.isEmpty()) {
+    throw new Error(`Nature Kit model is empty: ${fileName}`);
+  }
+
+  const centerX = (bounds.min.x + bounds.max.x) * 0.5;
+  const centerZ = (bounds.min.z + bounds.max.z) * 0.5;
+  const normalize = new THREE.Matrix4().makeTranslation(-centerX, -bounds.min.y, -centerZ);
+  const parts: NatureTreeModelPart[] = [];
+  const originalGeometries = new Set<THREE.BufferGeometry>();
+
+  gltf.scene.traverse((node) => {
+    if (!(node instanceof THREE.Mesh)) return;
+    originalGeometries.add(node.geometry);
+
+    const geometry = node.geometry.clone();
+    geometry.applyMatrix4(normalize.clone().multiply(node.matrixWorld));
+    geometry.computeBoundingSphere();
+    parts.push({ geometry, material: node.material });
+  });
+
+  for (const geometry of originalGeometries) geometry.dispose();
+  if (parts.length === 0) {
+    throw new Error(`Nature Kit model contains no meshes: ${fileName}`);
+  }
+
+  return { parts };
+}
+
+async function loadNatureTreeAssets(): Promise<NatureTreeAssets> {
+  const files = ['tree_palm.glb.gz', 'tree_default.glb.gz'];
+  const loaded: NatureTreeModel[] = [];
+  try {
+    for (const file of files) {
+      loaded.push(await loadNatureTreeModel(file));
+    }
+  } catch (error) {
+    const materials = new Set<THREE.Material>();
+    for (const model of loaded) {
+      for (const part of model.parts) {
+        part.geometry.dispose();
+        const list = Array.isArray(part.material) ? part.material : [part.material];
+        list.forEach((material) => materials.add(material));
+      }
+    }
+    const textures = new Set<THREE.Texture>();
+    for (const material of materials) {
+      for (const value of Object.values(material)) {
+        if (value && typeof value === 'object' && (value as THREE.Texture).isTexture) {
+          textures.add(value as THREE.Texture);
+        }
+      }
+      material.dispose();
+    }
+    textures.forEach((texture) => texture.dispose());
+    throw error;
+  }
+
+  const allMaterials = new Set<THREE.Material>();
+  for (const model of loaded) {
+    for (const part of model.parts) {
+      const list = Array.isArray(part.material) ? part.material : [part.material];
+      list.forEach((material) => allMaterials.add(material));
+    }
+  }
+
+  return {
+    palms: loaded.slice(0, 1),
+    jungle: loaded.slice(1, 2),
+    dispose: () => {
+      const textures = new Set<THREE.Texture>();
+      for (const material of allMaterials) {
+        for (const value of Object.values(material)) {
+          if (value && typeof value === 'object' && (value as THREE.Texture).isTexture) {
+            textures.add(value as THREE.Texture);
+          }
+        }
+        material.dispose();
+      }
+      textures.forEach((texture) => texture.dispose());
+      for (const model of loaded) {
+        for (const part of model.parts) part.geometry.dispose();
+      }
+    },
+  };
+}
+
 export function createThreeIslandGame(
   container: HTMLElement,
   callbacks: ThreeSceneCallbacks,
@@ -666,6 +782,7 @@ export function createThreeIslandGame(
   let beaconFlameMesh: THREE.Mesh | null = null;
   let fireflyGroup: THREE.Group | null = null;
   let islandDisposables: Array<{ dispose: () => void }> = [];
+  let natureTreeAssets: NatureTreeAssets | null = null;
 
   // Survivor Rig + Pooled Dust / Steam Particles
   const survivor = buildCartoonSurvivor(
@@ -1486,6 +1603,7 @@ export function createThreeIslandGame(
     // 7. Weird Landmarks (Obelisk, Volcano Lava/Crystals, Giant Mushrooms, Shipwreck, Ribcage, Beacon, Sea Stacks)
     buildWeirdLandmarks(world);
 
+    if (!natureTreeAssets) {
     // 8. Instanced Tropical Palms (Curved V-Blade Fronds!)
     const palmProps = world.props.filter((p) => p.kind === 'palm');
     if (palmProps.length > 0) {
@@ -1595,6 +1713,61 @@ export function createThreeIslandGame(
 
       islandGroup.add(jShadowInst, jTrunkInst, jCanopyInst);
       islandDisposables.push(jTrunkGeo, jCanopyGeo, jShadowGeo);
+    }
+
+    } else {
+      const addInstancedNatureTrees = (
+        props: IslandProp[],
+        models: NatureTreeModel[],
+        heightScale: number
+      ) => {
+        if (props.length === 0) return;
+
+        for (let variant = 0; variant < models.length; variant += 1) {
+          const selected = props.filter((prop) => prop.variant % models.length === variant);
+          if (selected.length === 0) continue;
+
+          for (const part of models[variant].parts) {
+            const instanced = new THREE.InstancedMesh(part.geometry, part.material, selected.length);
+            instanced.castShadow = !isSoftwareGl;
+            instanced.receiveShadow = true;
+            instanced.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+
+            const dummy = new THREE.Object3D();
+            selected.forEach((prop, index) => {
+              dummy.position.set(prop.x, prop.y - 0.025, prop.z);
+              dummy.rotation.set(0, prop.rotationY, 0);
+              dummy.scale.setScalar(prop.scale * heightScale);
+              dummy.updateMatrix();
+              instanced.setMatrixAt(index, dummy.matrix);
+            });
+
+            instanced.instanceMatrix.needsUpdate = true;
+            instanced.computeBoundingSphere();
+            islandGroup.add(instanced);
+          }
+        }
+
+        const shadowGeo = new THREE.CircleGeometry(1.05, 12);
+        shadowGeo.rotateX(-Math.PI / 2);
+        const shadows = new THREE.InstancedMesh(shadowGeo, shadowDiscMat, props.length);
+        shadows.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+        const dummy = new THREE.Object3D();
+        props.forEach((prop, index) => {
+          dummy.position.set(prop.x + 0.12 * prop.scale, prop.y + 0.018, prop.z);
+          dummy.rotation.set(0, 0, 0);
+          dummy.scale.setScalar(prop.scale * 1.12);
+          dummy.updateMatrix();
+          shadows.setMatrixAt(index, dummy.matrix);
+        });
+        shadows.instanceMatrix.needsUpdate = true;
+        shadows.computeBoundingSphere();
+        islandGroup.add(shadows);
+        islandDisposables.push(shadowGeo);
+      };
+
+      addInstancedNatureTrees(palmProps, natureTreeAssets.palms, 3.05);
+      addInstancedNatureTrees(jungleProps, natureTreeAssets.jungle, 3.0);
     }
 
     // 10. Sculpted Displaced Rocks with Vertex Ambient Shading
@@ -1843,6 +2016,20 @@ export function createThreeIslandGame(
   renderer.domElement.addEventListener('webglcontextlost', onContextLost, false);
 
   let disposed = false;
+  void loadNatureTreeAssets()
+    .then((assets) => {
+      if (disposed) {
+        assets.dispose();
+        return;
+      }
+      natureTreeAssets = assets;
+      // Rebuild the current seed with the GLB trees; procedural trees remain as a safe fallback.
+      buildArchipelagoGeometry(worldData);
+      resetPlayerToSpawn();
+    })
+    .catch((error: unknown) => {
+      console.warn('[Nature Kit] Could not load tree models; keeping procedural trees.', error);
+    });
   let elapsedTime = 0;
   let lastTimeMs = performance.now();
   let rafId = 0;
@@ -2140,6 +2327,8 @@ export function createThreeIslandGame(
       resizeObserver.disconnect();
       renderer.domElement.removeEventListener('webglcontextlost', onContextLost);
       disposeIslandMeshes();
+      natureTreeAssets?.dispose();
+      natureTreeAssets = null;
       for (const item of disposables) {
         item.dispose();
       }
