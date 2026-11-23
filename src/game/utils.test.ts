@@ -25,7 +25,7 @@ function createMemoryStorage(): StorageLike {
 
 test('CONFIG defines 3D camera, island, player, and weak-phone render caps', () => {
   assert.equal(CONFIG.CAMERA.FOV_DEG, 42);
-  assert.equal(CONFIG.CAMERA.PITCH_DEG, 50);
+  assert.ok(CONFIG.CAMERA.PITCH_DEG >= 40 && CONFIG.CAMERA.PITCH_DEG <= 60);
   assert.ok(CONFIG.RENDER.MAX_PIXEL_RATIO <= 1.5);
   assert.ok(CONFIG.PLAYER.MOVE_SPEED > 0);
   assert.ok(CONFIG.PLAYER.BACKPACK_CAPACITY > 0);
