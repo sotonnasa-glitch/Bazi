@@ -1603,9 +1603,11 @@ export function createThreeIslandGame(
     // 7. Weird Landmarks (Obelisk, Volcano Lava/Crystals, Giant Mushrooms, Shipwreck, Ribcage, Beacon, Sea Stacks)
     buildWeirdLandmarks(world);
 
+    const palmProps = world.props.filter((p) => p.kind === 'palm');
+    const jungleProps = world.props.filter((p) => p.kind === 'jungle');
+
     if (!natureTreeAssets) {
     // 8. Instanced Tropical Palms (Curved V-Blade Fronds!)
-    const palmProps = world.props.filter((p) => p.kind === 'palm');
     if (palmProps.length > 0) {
       const trunkGeo = buildCurvedPalmTrunkGeometry();
       const frondGeo = buildPalmCanopyGeometry();
@@ -1665,7 +1667,6 @@ export function createThreeIslandGame(
     }
 
     // 9. Instanced Broadleaf Jungle Trees
-    const jungleProps = world.props.filter((p) => p.kind === 'jungle');
     if (jungleProps.length > 0) {
       const jTrunkGeo = buildJungleTrunkGeometry();
       const jCanopyGeo = buildJungleCanopyGeometry();
