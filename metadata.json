@@ -1,0 +1,6 @@
+{
+  "name": "جزیره بقا",
+  "description": "بازی موبایل‌محور سه‌بعدی بقا روی جزیره کارتونی با چالش روزانه، ساخته شده با Three.js",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
