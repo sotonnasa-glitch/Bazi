@@ -44,7 +44,7 @@ jobs:
         uses: hatamiarash7/ar-ec-action@v1
         with:
           auth: ${{ secrets.ARVAN_API_KEY }}
-          app: jazireh-baga
+          app: jazireh-bagha
           file: arvan-edge-worker.js
 
       - name: Note missing Arvan API key
