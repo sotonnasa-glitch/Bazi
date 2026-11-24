@@ -15,53 +15,127 @@ jobs:
     env:
       ARVAN_API_KEY: ${{ secrets.ARVAN_API_KEY }}
     steps:
-      - name: Checkout source
+      - name: 1. Checkout source
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: 2a. Set up Bun and Node.js
+        uses: oven-sh/setup-bun@v2
+      - name: 2b. Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      - name: Install dependencies
-        run: npm install --legacy-peer-deps --no-audit --no-fund
+      - name: 2c. Install dependencies using bun.lock
+        run: bun install --frozen-lockfile
 
-      - name: Build production game
+      - name: 3. Build production game
         run: npm run build
 
-      - name: Publish static files to the Arvan origin branch
+      - name: 4. Prepare static files and build Arvan Edge JS bundle
+        run: npm run build:arvan
+
+      - name: 5. Verify Arvan Edge bundle, assets, and Fetch runtime compatibility
+        run: node scripts/verify-arvan-bundle.mjs
+
+      - name: 6a. Publish clean static files to arvan-static branch
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./dist
+          publish_dir: ./dist-arvan
           publish_branch: arvan-static
           force_orphan: true
-          commit_message: "deploy: publish static game build"
+          commit_message: "deploy: publish clean static game build"
 
-      - name: Deploy edge worker to Arvan
+      - name: 6b. Package clean build artifacts
+        run: |
+          (cd dist-arvan && zip -r ../bazi-arvan-dist.zip .)
+          ls -lh dist/arvan-edge-worker.js bazi-arvan-dist.zip
+
+      - name: 6c. Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bazi-arvan-dist
+          path: |
+            bazi-arvan-dist.zip
+            dist/arvan-edge-worker.js
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: 7a. Prepare masked Arvan API token
+        if: ${{ env.ARVAN_API_KEY != '' }}
+        id: arvan-auth
+        shell: bash
+        run: |
+          RAW="${ARVAN_API_KEY}"
+          CLEAN="$(printf '%s' "$RAW" | tr -d '\r\n' | sed -E 's/^[[:space:]]*[Aa][Pp][Ii][Kk][Ee][Yy][[:space:]]+//; s/^[[:space:]]+//; s/[[:space:]]+$//')"
+          echo "::add-mask::$CLEAN"
+          echo "token=$CLEAN" >> "$GITHUB_OUTPUT"
+
+      - name: 7b. Deploy Edge bundle to jazireh-bagha
         if: ${{ env.ARVAN_API_KEY != '' }}
         id: arvan-deploy
         uses: hatamiarash7/ar-ec-action@v1
         with:
-          auth: ${{ secrets.ARVAN_API_KEY }}
+          auth: ${{ steps.arvan-auth.outputs.token }}
           app: jazireh-bagha
           file: arvan-edge-worker.js
+          working-directory: dist
+
+      - name: Diagnose Arvan deployment failure (without exposing secrets)
+        if: ${{ failure() && env.ARVAN_API_KEY != '' }}
+        shell: bash
+        run: |
+          CLEAN="${{ steps.arvan-auth.outputs.token }}"
+          STATUS="$(curl -s -o /tmp/arvan_diag.json -w '%{http_code}' \
+            -H "Authorization: Apikey ${CLEAN}" \
+            -H "Accept: application/json" \
+            "https://napi.arvancloud.ir/ec/v1/edge-computes")"
+          echo "Arvan EC API GET /edge-computes HTTP status: ${STATUS}"
+          if [ "$STATUS" = "401" ]; then
+            echo "::error::ARVAN_API_KEY was rejected (HTTP 401 Unauthorized). Generate a new Machine User API Key in ArvanCloud Panel -> Profile -> API Keys."
+          elif [ "$STATUS" = "403" ]; then
+            echo "::error::ARVAN_API_KEY lacks Edge Computing / CDN permissions (HTTP 403 Forbidden)."
+          else
+            echo "::notice::Arvan API status ${STATUS}. Check that Edge app 'jazireh-bagha' exists under this account and that deployment payload was accepted."
+          fi
+
+      - name: 8. Verify Deployment status and live Edge URL
+        if: ${{ env.ARVAN_API_KEY != '' }}
+        shell: bash
+        run: |
+          echo "Deployment ID: ${{ steps.arvan-deploy.outputs.id }}"
+          echo "Deployment Status: ${{ steps.arvan-deploy.outputs.status }}"
+          echo "Created At: ${{ steps.arvan-deploy.outputs.created-at }}"
+
+          BASE_URL="https://jazireh-bagha.mahdihatami2024-wzzyv.arvanedge.ir"
+          HEALTH_OK=0
+          for i in 1 2 3 4 5 6; do
+            BODY="$(curl -fsS --max-time 10 "${BASE_URL}/healthz" || true)"
+            echo "Attempt $i /healthz: $BODY"
+            if printf '%s' "$BODY" | grep -q '"self-contained-edge"'; then
+              HEALTH_OK=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "$HEALTH_OK" -ne 1 ]; then
+            echo "::error::Live edge endpoint did not switch to self-contained-edge within 30s."
+            exit 1
+          fi
+
+          curl -fsSI --compressed --max-time 10 "${BASE_URL}/" | tee /tmp/edge_headers.txt
+          if grep -qi "sandbox" /tmp/edge_headers.txt; then
+            echo "::error::Detected sandbox CSP header on live edge response!"
+            exit 1
+          fi
+          curl -fsS --compressed --max-time 10 "${BASE_URL}/" > /tmp/edge_index.html
+          grep -q '<div id="root"></div>' /tmp/edge_index.html
+
+          for asset in $(grep -oE '/assets/[^"'\'']+' /tmp/edge_index.html); do
+            echo "Checking live asset: ${BASE_URL}${asset}"
+            curl -fsSI --compressed --max-time 10 "${BASE_URL}${asset}" | head -n 5
+          done
 
       - name: Note missing Arvan API key
         if: ${{ env.ARVAN_API_KEY == '' }}
         run: echo "::notice title=Arvan deployment skipped::Add ARVAN_API_KEY in repository Actions secrets to enable deployment."
-
-      - name: Package static build for upload
-        run: |
-          cd dist
-          zip -r ../bazi-arvan-dist.zip .
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: bazi-arvan-dist
-          path: bazi-arvan-dist.zip
-          if-no-files-found: error
-          retention-days: 7
-
-# Trigger a fresh deployment after configuring repository secrets.

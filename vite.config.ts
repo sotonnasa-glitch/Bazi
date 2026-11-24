@@ -34,6 +34,25 @@ export default defineConfig(() => {
         '@': path.resolve(__dirname, '.'),
       },
     },
+    build: {
+      chunkSizeWarningLimit: 800,
+      rolldownOptions: {
+        output: {
+          codeSplitting: {
+            groups: [
+              {
+                name: 'three-vendor',
+                test: /node_modules[\\/]three/,
+              },
+              {
+                name: 'react-vendor',
+                test: /node_modules[\\/](react|react-dom|scheduler)/,
+              },
+            ],
+          },
+        },
+      },
+    },
     server: {
       host: '0.0.0.0',
       port: 3000,
