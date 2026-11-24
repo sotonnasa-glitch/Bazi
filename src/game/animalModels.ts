@@ -18,6 +18,8 @@ export interface AnimalVisualRig {
   clawL?: THREE.Object3D;
   clawR?: THREE.Object3D;
   haloGroup?: THREE.Object3D;
+  segments?: THREE.Object3D[];
+  tongueGroup?: THREE.Object3D;
   sleepTag?: THREE.Mesh;
   dispose: () => void;
 }
@@ -357,6 +359,8 @@ export function buildSculptedAnimalRig(
   let clawL: THREE.Object3D | undefined;
   let clawR: THREE.Object3D | undefined;
   let haloGroup: THREE.Object3D | undefined;
+  const segments: THREE.Object3D[] = [];
+  let tongueGroup: THREE.Object3D | undefined;
 
   const arch = spec.archetype;
 
@@ -677,24 +681,41 @@ export function buildSculptedAnimalRig(
       }
     }
   } else if (arch === 'serpent') {
-    // Sinuous multi-segment lizard/snake/salamander body + dorsal spines + tapered tail + sculpted head
+    // Articulated sinuous snake/lizard/salamander body with slithering segments, cobra hood, venom fangs & forked tongue
     const isIguana = spec.id === 'iguana';
     const isSalamander = spec.id === 'lava_salamander';
-    const segCount = 6;
+    const isTrueSnake = !isIguana && !isSalamander;
+    const isVenomSnake = spec.id === 'venomous_snake';
+    const isCobra = spec.id === 'jungle_cobra' || spec.id === 'night_viper' || isVenomSnake;
+    const segCount = isTrueSnake ? 9 : 6;
     for (let s = 0; s < segCount; s += 1) {
-      const seg = new THREE.Mesh(geoLib.smallSphere, s % 2 === 0 ? primaryMat : secondaryMat);
-      const rScale = 1.08 - s * 0.14;
-      seg.scale.set(rScale, rScale * 0.72, 1.35 * rScale);
-      seg.position.set(Math.sin(s * 1.15) * 0.09, 0.13, 0.24 - s * 0.17);
+      const segPivot = new THREE.Group();
+      const zPos = (isTrueSnake ? 0.34 : 0.24) - s * (isTrueSnake ? 0.145 : 0.17);
+      segPivot.position.set(0, isTrueSnake ? 0.085 : 0.13, zPos);
+
+      const t = s / Math.max(1, segCount - 1);
+      const rScale = isTrueSnake ? 0.96 - t * 0.66 : 1.08 - s * 0.14;
+      const segMat = s % 2 === 0 ? primaryMat : secondaryMat;
+      const seg = new THREE.Mesh(geoLib.smallSphere, segMat);
+      seg.scale.set(rScale * (isTrueSnake ? 0.85 : 1.0), rScale * 0.7, (isTrueSnake ? 1.45 : 1.35) * rScale);
       seg.castShadow = true;
-      bodyGroup.add(seg);
+      segPivot.add(seg);
+
+      if (isTrueSnake && s % 2 === 1 && s < segCount - 1) {
+        const band = new THREE.Mesh(geoLib.smallSphere, accentMat);
+        band.scale.set(rScale * 0.9, rScale * 0.55, rScale * 0.6);
+        band.position.y = 0.02;
+        segPivot.add(band);
+      }
 
       if ((isIguana || isSalamander) && s < 4) {
         const spine = new THREE.Mesh(geoLib.earCap, isSalamander ? accentMat : secondaryMat);
         spine.scale.set(0.35, 0.55 - s * 0.06, 0.45);
-        spine.position.set(Math.sin(s * 1.15) * 0.09, 0.25, 0.24 - s * 0.17);
-        bodyGroup.add(spine);
+        spine.position.set(0, 0.12, 0);
+        segPivot.add(spine);
       }
+      bodyGroup.add(segPivot);
+      segments.push(segPivot);
     }
 
     if (isIguana || isSalamander) {
@@ -713,16 +734,48 @@ export function buildSculptedAnimalRig(
     }
 
     const headPivot = new THREE.Group();
-    headPivot.position.set(0, 0.2, 0.36);
+    headPivot.position.set(0, isTrueSnake ? 0.24 : 0.2, isTrueSnake ? 0.44 : 0.36);
     const head = new THREE.Mesh(geoLib.snoutGeo, primaryMat);
-    head.scale.set(1.05, 0.88, 1.18);
+    head.scale.set(1.08, 0.82, 1.22);
     head.castShadow = true;
     headPivot.add(head);
-    if (spec.id === 'night_viper') {
-      const hood = new THREE.Mesh(geoLib.smallSphere, secondaryMat);
-      hood.scale.set(1.45, 0.42, 0.85);
-      hood.position.set(0, 0.01, -0.06);
+    if (isCobra) {
+      const hood = new THREE.Mesh(geoLib.smallSphere, isVenomSnake ? accentMat : secondaryMat);
+      hood.scale.set(isVenomSnake ? 1.85 : 1.65, 0.48, 0.98);
+      hood.position.set(0, -0.02, -0.08);
       headPivot.add(hood);
+    }
+    if (isVenomSnake) {
+      const fangMat = new THREE.MeshBasicMaterial({ color: 0xbef264 });
+      const fangGeo = new THREE.ConeGeometry(0.02, 0.095, 6);
+      disposables.push(fangMat, fangGeo);
+      for (const sx of [-1, 1]) {
+        const fang = new THREE.Mesh(fangGeo, fangMat);
+        fang.rotation.x = Math.PI + 0.18;
+        fang.position.set(sx * 0.056, -0.045, 0.145);
+        headPivot.add(fang);
+      }
+    }
+    if (isTrueSnake) {
+      const tongueMat = new THREE.MeshBasicMaterial({ color: isVenomSnake ? 0xa3e635 : 0xff2b4f });
+      disposables.push(tongueMat);
+      const tongue = new THREE.Group();
+      tongue.position.set(0, -0.02, 0.16);
+      const tStem = new THREE.Mesh(geoLib.earCap, tongueMat);
+      tStem.rotation.x = Math.PI * 0.5;
+      tStem.scale.set(0.24, 0.55, 0.24);
+      tStem.position.set(0, 0, 0.05);
+      const forkL = new THREE.Mesh(geoLib.earCap, tongueMat);
+      forkL.rotation.set(Math.PI * 0.5, 0.42, 0);
+      forkL.scale.set(0.18, 0.3, 0.18);
+      forkL.position.set(-0.022, 0, 0.11);
+      const forkR = new THREE.Mesh(geoLib.earCap, tongueMat);
+      forkR.rotation.set(Math.PI * 0.5, -0.42, 0);
+      forkR.scale.set(0.18, 0.3, 0.18);
+      forkR.position.set(0.022, 0, 0.11);
+      tongue.add(tStem, forkL, forkR);
+      headPivot.add(tongue);
+      tongueGroup = tongue;
     }
     for (const sx of [-1, 1]) {
       addLayeredEye(headPivot, sx * 0.08, 0.055, 0.075, 0.92);
@@ -1066,6 +1119,8 @@ export function buildSculptedAnimalRig(
     clawL,
     clawR,
     haloGroup,
+    segments,
+    tongueGroup,
     sleepTag,
     dispose: () => {
       for (const d of disposables) d.dispose();

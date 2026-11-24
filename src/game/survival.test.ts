@@ -5,13 +5,20 @@ import {
   activateLandmarkPower,
   activateLandmarkSpecial,
   craftSpear,
+  craftWorkshopItem,
   createSurvivalState,
   eatBestFoodFromInventory,
+  exportSavedRunSnapshot,
   getBackpackUsed,
   getFishingSpeedMultiplier,
   getPlayerSpeedScale,
   getSurvivalHudView,
+  inspectAncientBones,
+  lightCampfire,
+  openBuriedTempleDoor,
   openSecretSpot,
+  restoreSavedRunSnapshot,
+  salvagePlaneWreck,
   selectWeapon,
   stepSurvivalSystem,
   stokeCampfire,
@@ -20,7 +27,9 @@ import {
   triggerWorldEvent,
   upgradeSkill,
   upgradeWeapon,
+  useAntidote,
 } from './survival';
+import { stepWildlifeSystem } from './wildlife';
 import { generateIslandWorld } from './world';
 
 test('survival state creates nodes for trees, banana trees, bushes, shells, and fishing spots with 4 build pads and 5 landmarks', () => {
@@ -143,18 +152,27 @@ test('rod fishing works immediately without spear, rain boosts fishing speed & y
   assert.equal(f2.harvested.amount, 2, 'rain weather grants bonus fish');
   assert.equal(state.carried.fish, 3);
 
-  // Bring wood, shell, and fish to campfire
+  // Bring wood, shell, and fish to unlit campfire -> deposits wood & shell, does not cook until lit!
   state.carried.wood = 3;
   state.carried.shell = 1;
   state.carriedStack.push('wood', 'wood', 'wood', 'shell');
   state.energy = 40;
 
   const camp = CONFIG.ISLAND.CAMPFIRE;
-  const c1 = stepSurvivalSystem(state, camp.CX + 1.2, camp.CZ, false, 0.6);
+  const c0 = stepSurvivalSystem(state, camp.CX + 1.2, camp.CZ, false, 0.6);
   assert.equal(state.nearCampfire, true);
-  assert.equal(c1.depositedToCamp, 4);
+  assert.equal(state.fireLit, false);
+  assert.equal(c0.depositedToCamp, 4);
   assert.equal(state.stashed.wood, 3);
   assert.equal(state.stashed.shell, 1);
+  assert.equal(c0.cookedCount, 0, 'unlit campfire must not cook fish');
+
+  // Now ignite the campfire with 2 wood -> fireLit = true, fireLevel = 1, cooking starts!
+  assert.equal(lightCampfire(state), true);
+  assert.equal(state.fireLit, true);
+  assert.equal(state.fireLevel, 1);
+
+  const c1 = stepSurvivalSystem(state, camp.CX + 1.2, camp.CZ, false, 0.6);
   assert.equal(state.activeAction, 'cook');
 
   const c2 = stepSurvivalSystem(state, camp.CX + 1.2, camp.CZ, false, 0.6);
@@ -170,10 +188,16 @@ test('campfire levels 1 to 5 unlock roasted banana, bow, hammer, and wooden boat
   const boatPad = state.buildPads.find((p) => p.id === 'boat')!;
   assert.ok(boatPad);
 
-  // Move near campfire and stoke to Lv 5
-  state.stashed.wood = 30;
+  // Campfire starts unlit -> move near campfire, ignite (Lv 1), then stoke to Lv 5
+  assert.equal(state.fireLit, false);
+  assert.equal(state.fireLevel, 0);
+  state.stashed.wood = 42;
   stepSurvivalSystem(state, camp.CX + 1, camp.CZ, false, 0.1);
   assert.equal(state.nearCampfire, true);
+  assert.equal(stokeCampfire(state), false, 'must ignite unlit campfire before stoking');
+  assert.equal(lightCampfire(state), true);
+  assert.equal(state.fireLit, true);
+  assert.equal(state.fireLevel, 1);
 
   assert.equal(stokeCampfire(state), true); // Lv 2
   assert.equal(state.fireLevel, 2);
@@ -243,8 +267,9 @@ test('upgradable weapons: bow shoots ranged arrows and hammer slams AoE shockwav
   assert.equal(upgradeWeapon(state, 'axe'), true);
   assert.equal(state.weaponLevels.axe, 2);
 
-  // Stoke campfire to Lv 4 to unlock bow & hammer
+  // Ignite and stoke campfire to Lv 4 to unlock bow & hammer
   stepSurvivalSystem(state, camp.CX, camp.CZ, false, 0.1);
+  lightCampfire(state); // Lv 1
   stokeCampfire(state); // Lv 2
   stokeCampfire(state); // Lv 3 (bow)
   stokeCampfire(state); // Lv 4 (hammer)
@@ -531,4 +556,213 @@ test('weapon XP leveling, player level 1..10 progression, seasons, localized dis
   assert.equal(loseState.energy, 0);
   assert.equal(loseState.gameOutcome, 'defeat');
 });
+
+test('earthquake boulder hazards, lightning_storm, fishable ocean fish, and daytime snakes work properly', () => {
+  const world = generateIslandWorld('survival-earthquake-snakes-fish');
+  const state = createSurvivalState(world, 0.35);
+
+  // Daytime snakes exist in wildlife
+  const cobra = state.wildlife.actors.find((a) => a.speciesId === 'jungle_cobra');
+  const python = state.wildlife.actors.find((a) => a.speciesId === 'island_python');
+  assert.ok(cobra && python, 'jungle_cobra and island_python snakes should populate the island');
+
+  // Catching a fishable ocean fish directly yields fish (not meat)
+  for (const node of state.nodes) {
+    node.x = 999;
+    node.z = 999;
+  }
+  const coralFish = state.wildlife.actors.find((a) => a.speciesId === 'coral_fish')!;
+  assert.ok(coralFish);
+  coralFish.visible = true;
+  coralFish.koTimer = 0;
+  coralFish.respawnTimer = 0;
+
+  stepSurvivalSystem(state, coralFish.x + 0.6, coralFish.z, false, 0.2, undefined, true);
+  assert.equal(state.activeAction, 'cast_fish');
+  const fishRes = stepSurvivalSystem(state, coralFish.x + 0.6, coralFish.z, false, 1.4, undefined, false, false, () => 0.1);
+  assert.equal(fishRes.harvested?.kind, 'fish', 'fishable coral_fish should yield fish via prey interaction');
+  assert.ok(state.carried.fish >= 1);
+
+  // Earthquake triggers warning -> active boulder hazards -> end reward
+  const eqWarn = triggerWorldEvent(state, 'earthquake', false);
+  assert.equal(eqWarn.phase, 'warning');
+  const eqActive = stepSurvivalSystem(
+    state,
+    0,
+    0,
+    false,
+    CONFIG.SURVIVAL.WORLD_EVENTS.WARNING_SEC + 0.1
+  );
+  assert.equal(eqActive.eventStarted?.phase, 'active');
+  state.hazardSpawnTimer = 0.05;
+  stepSurvivalSystem(state, 0, 0, false, 0.1, world, false, false, () => 0.1);
+  assert.ok(
+    state.hazardImpacts.some((h) => h.kind === 'boulder'),
+    'earthquake must spawn falling boulder hazards'
+  );
+
+  // Lightning storm triggers warning -> active lightning strikes
+  const lsWarn = triggerWorldEvent(state, 'lightning_storm', false);
+  assert.equal(lsWarn.phase, 'warning');
+  const lsActive = stepSurvivalSystem(
+    state,
+    0,
+    0,
+    false,
+    CONFIG.SURVIVAL.WORLD_EVENTS.WARNING_SEC + 0.1
+  );
+  assert.equal(lsActive.eventStarted?.phase, 'active');
+  state.hazardSpawnTimer = 0.05;
+  stepSurvivalSystem(state, 0, 0, false, 0.1, world, false, false, () => 0.1);
+  assert.ok(
+    state.hazardImpacts.some((h) => h.kind === 'lightning'),
+    'lightning_storm must spawn lightning strikes'
+  );
+});
+
+test('venomous snake bite applies knockback + poison DoT cured by antidote, and disaster challenges reward survival', () => {
+  const world = generateIslandWorld('survival-venom-challenge-v1');
+  const state = createSurvivalState(world, 0.35);
+
+  const viper = state.wildlife.actors.find((a) => a.speciesId === 'venomous_snake')!;
+  assert.ok(viper, 'venomous_snake must spawn on island');
+  viper.x = 12;
+  viper.z = 12;
+  viper.visible = true;
+  viper.attackCooldown = 0;
+
+  // Step wildlife until snake winds up & strikes player at (13, 12)
+  let strikeResult = stepWildlifeSystem(state.wildlife, 0.25, false, 13, 12, false, 0, false, world);
+  assert.equal(viper.attackState, 'windup');
+  strikeResult = stepWildlifeSystem(state.wildlife, 0.5, false, 13, 12, false, 0, false, world);
+  assert.equal(strikeResult.predatorStrikes.length, 1);
+  const strike = strikeResult.predatorStrikes[0];
+  assert.equal(strike.speciesId, 'venomous_snake');
+  assert.ok(strike.knockbackForce > 0, 'predator strike must emit physical knockback force');
+  assert.ok((strike.venomSec ?? 0) >= 8, 'venomous snake bite must carry timed venom');
+
+  // Apply venom via stepSurvivalSystem & cure via antidote
+  state.venomTimer = 8;
+  const eBeforeVenom = state.energy;
+  stepSurvivalSystem(state, 50, 50, false, 1.0);
+  assert.ok(state.energy < eBeforeVenom - 1.5, 'venom must drain energy over time');
+  assert.equal(useAntidote(state), true);
+  assert.equal(state.venomTimer, 0);
+
+  // Disaster challenge completes & awards coins + skillPoint when survived cleanly
+  triggerWorldEvent(state, 'tsunami', true);
+  assert.ok(state.disasterChallenge);
+  assert.equal(state.disasterChallenge?.status, 'active');
+  const coinsBefore = state.coins;
+  const spBefore = state.skillPoints;
+  const endRes = stepSurvivalSystem(
+    state,
+    0,
+    0,
+    false,
+    CONFIG.SURVIVAL.WORLD_EVENTS.TSUNAMI_DURATION_SEC + 0.1,
+    undefined,
+    false,
+    false
+  );
+  assert.equal(endRes.disasterChallengeOutcome?.completed, true);
+  assert.ok(state.coins > coinsBefore);
+  assert.equal(state.skillPoints, spBefore + 1);
+});
+
+test('camp workshop recipes, airplane wreck salvage, and ancient bone shrines give utility to all resources', () => {
+  const world = generateIslandWorld('survival-workshop-wreck-bones');
+  const state = createSurvivalState(world, 0.38);
+
+  // Salvage airplane wreck once
+  assert.ok(state.wreckSite);
+  const wreckRes = salvagePlaneWreck(state, state.wreckSite!.x, state.wreckSite!.z);
+  assert.equal(wreckRes.salvaged, true);
+  assert.equal(state.wreckLooted, true);
+  assert.ok(state.coins >= 8);
+  assert.equal(salvagePlaneWreck(state, state.wreckSite!.x, state.wreckSite!.z).salvaged, false);
+
+  // Inspect all 4 ancient bone shrines
+  assert.equal(state.ancientBoneSites.length, 4);
+  const b0 = state.ancientBoneSites[0];
+  const boneRes = inspectAncientBones(state, b0.id, b0.x, b0.z);
+  assert.equal(boneRes.inspected, true);
+  assert.equal(state.inspectedBones.length, 1);
+
+  // Craft every workshop recipe using banana, berries, shells, fish, wood, and coins
+  state.carried.banana = 2;
+  state.carried.berries = 6;
+  state.carried.fish = 2;
+  state.carriedStack.push('banana', 'banana', 'berries', 'berries', 'berries', 'berries', 'berries', 'berries', 'fish', 'fish');
+  state.stashed.shell = 3;
+  state.stashed.wood = 4;
+  state.coins = 30;
+  state.energy = 40;
+
+  assert.equal(craftWorkshopItem(state, 'antidote').crafted, true);
+  assert.equal(craftWorkshopItem(state, 'elixir').crafted, true);
+  assert.ok(state.elixirTimer > 0);
+  assert.equal(craftWorkshopItem(state, 'shell_armor').crafted, true);
+  assert.equal(state.shellArmorCharges, 2);
+  assert.equal(craftWorkshopItem(state, 'golden_bait').crafted, true);
+  assert.equal(state.baitCharges, 3);
+  assert.equal(craftWorkshopItem(state, 'ward_torch').crafted, true);
+  assert.ok(state.torchTimer > 0);
+  assert.equal(craftWorkshopItem(state, 'supply_pack').crafted, true);
+  assert.equal(craftWorkshopItem(state, 'xp_tome').crafted, true);
+});
+
+test('buried stone temple door stays locked until all 4 ancient bones are collected and run snapshot round-trips cleanly', () => {
+  const world = generateIslandWorld('survival-temple-save-test');
+  const state = createSurvivalState(world, 0.42);
+  const templeX = CONFIG.ISLAND.SHIPWRECK.HULL_CX;
+  const templeZ = CONFIG.ISLAND.SHIPWRECK.HULL_CZ;
+
+  // Cannot open temple door before collecting all 4 bones
+  const lockedRes = openBuriedTempleDoor(state, templeX, templeZ);
+  assert.equal(lockedRes.opened, false);
+  assert.equal(lockedRes.lockedReason, 'need_bones');
+  assert.equal(state.templeUnlocked, false);
+
+  // Collect all 4 scattered ancient bone shrines
+  for (const bone of state.ancientBoneSites) {
+    const res = inspectAncientBones(state, bone.id, bone.x, bone.z);
+    assert.equal(res.inspected, true);
+  }
+  assert.equal(state.inspectedBones.length, 4);
+
+  // Now open buried temple door & claim hidden relic
+  const coinsBefore = state.coins;
+  const openRes = openBuriedTempleDoor(state, templeX, templeZ);
+  assert.equal(openRes.opened, true);
+  assert.equal(state.templeUnlocked, true);
+  assert.equal(state.templeRelicClaimed, true);
+  assert.equal(state.hasFireSpear, true);
+  assert.ok(state.coins >= coinsBefore + 40);
+
+  // Cannot claim twice
+  const repeatRes = openBuriedTempleDoor(state, templeX, templeZ);
+  assert.equal(repeatRes.opened, false);
+  assert.equal(repeatRes.lockedReason, 'already_claimed');
+
+  // Snapshot save/restore round-trip
+  state.fireLit = true;
+  state.fireLevel = 3;
+  state.buildings.shelter = true;
+  state.carried.wood = 2;
+  state.carriedStack.push('wood', 'wood');
+  const snap = exportSavedRunSnapshot(state, { x: 14.5, y: 2.1, z: -8.25, yaw: 1.2 }, 'normal', world.seed);
+  const restored = restoreSavedRunSnapshot(snap, world);
+  assert.ok(restored);
+  assert.equal(restored!.player.x, 14.5);
+  assert.equal(restored!.player.z, -8.25);
+  assert.equal(restored!.state.templeUnlocked, true);
+  assert.equal(restored!.state.templeRelicClaimed, true);
+  assert.equal(restored!.state.inspectedBones.length, 4);
+  assert.equal(restored!.state.fireLit, true);
+  assert.equal(restored!.state.fireLevel, 3);
+  assert.equal(restored!.state.buildings.shelter, true);
+  assert.equal(restored!.state.carried.wood, 2);
+});
+
 

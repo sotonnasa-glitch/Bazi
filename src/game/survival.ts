@@ -3,18 +3,23 @@ import {
   type BiomeId,
   type CampUpgradeId,
   type DayPhase,
+  type GameMode,
   type GameOutcome,
   type SeasonKind,
   type SkillId,
   type StrangeLandmarkId,
   type WeaponId,
   type WeatherKind,
+  type WorkshopRecipeId,
   type WorldEventKind,
 } from './config';
 import {
   createWildlifeState,
+  damageAnimalActor,
   enrageAnimal,
   getAnimalSpecies,
+  getSpeciesMaxHp,
+  isHostilePredatorActor,
   markAnimalHunted,
   stepWildlifeSystem,
   type AnimalActorState,
@@ -22,6 +27,7 @@ import {
   type WildlifeState,
 } from './wildlife';
 import type {
+  AncientBoneSite,
   BuildPadSite,
   FishingSpot,
   IslandProp,
@@ -45,16 +51,41 @@ export type SurvivalActionKind =
   | 'cook'
   | 'build'
   | 'secret_open'
+  | 'salvage'
+  | 'inspect'
+  | 'temple_open'
   | 'voyage';
 
-export type FocusedTargetKind = 'node' | 'prey' | 'pad' | 'secret' | 'landmark' | 'boat_voyage';
+export type FocusedTargetKind =
+  | 'node'
+  | 'prey'
+  | 'pad'
+  | 'secret'
+  | 'landmark'
+  | 'boat_voyage'
+  | 'wreck'
+  | 'bone_shrine'
+  | 'temple_door'
+  | 'campfire_ignite';
 export type BlockedReason =
   | 'backpack_full'
   | 'low_energy'
   | 'need_spear'
   | 'need_fire_level'
   | 'need_wood'
+  | 'need_bones'
   | 'cooldown';
+
+export interface DisasterChallengeState {
+  event: Exclude<WorldEventKind, 'none'>;
+  titleFa: string;
+  goalFa: string;
+  status: 'active' | 'completed' | 'failed';
+  dodgedCount: number;
+  hitsTaken: number;
+  rewardCoins: number;
+  rewardXp: number;
+}
 
 export interface FocusedTargetInfo {
   kind: FocusedTargetKind;
@@ -87,7 +118,7 @@ export interface HarvestNodeState {
 
 export interface HazardImpact {
   id: string;
-  kind: 'lightning' | 'lava' | 'meteor';
+  kind: 'lightning' | 'lava' | 'meteor' | 'boulder' | 'whirlwind';
   x: number;
   z: number;
   radius: number;
@@ -135,8 +166,15 @@ export interface SurvivalState {
   unlockedWeapons: Record<WeaponId, boolean>;
   weaponLevels: Record<WeaponId, number>;
   weaponXp: Record<WeaponId, number>;
+  fireLit: boolean;
   fireLevel: number;
   fireStokedCount: number;
+  venomTimer: number;
+  antidotes: number;
+  shellArmorCharges: number;
+  elixirTimer: number;
+  torchTimer: number;
+  baitCharges: number;
   xp: number;
   playerLevel: number;
   playerXp: number;
@@ -167,6 +205,14 @@ export interface SurvivalState {
   landmarkSites: LandmarkActionSite[];
   secretSpots: SecretSpot[];
   discoveredSecrets: string[];
+  ancientBoneSites: AncientBoneSite[];
+  inspectedBones: string[];
+  templeUnlocked: boolean;
+  templeRelicClaimed: boolean;
+  templeDoorProgress: number;
+  wreckSite: { x: number; y: number; z: number; rotationY: number } | null;
+  wreckLooted: boolean;
+  disasterChallenge: DisasterChallengeState | null;
   landmarkCooldowns: Record<StrangeLandmarkId, number>;
   landmarkSpecialCooldowns: Record<StrangeLandmarkId, number>;
   buildings: Record<CampUpgradeId, boolean>;
@@ -202,6 +248,7 @@ export interface SurvivalState {
   stashedTotalForCoin: number;
   fireStokeAnimTimer: number;
   hammerSlamCooldown: number;
+  meleeCombatCooldown: number;
 }
 
 export interface SurvivalStepResult {
@@ -229,6 +276,18 @@ export interface SurvivalStepResult {
     y: number;
     z: number;
     ranged?: boolean;
+  };
+  meleeStrike?: {
+    actorId: string;
+    speciesId: string;
+    nameFa: string;
+    damage: number;
+    defeated: boolean;
+    x: number;
+    y: number;
+    z: number;
+    hp: number;
+    maxHp: number;
   };
   arrowShot?: {
     fromX: number;
@@ -258,6 +317,33 @@ export interface SurvivalStepResult {
     y: number;
     z: number;
   };
+  wreckSalvaged?: {
+    x: number;
+    y: number;
+    z: number;
+  };
+  boneInspected?: {
+    id: string;
+    nameFa: string;
+    loreFa: string;
+    x: number;
+    y: number;
+    z: number;
+  };
+  templeOpened?: {
+    x: number;
+    y: number;
+    z: number;
+    notice: string;
+  };
+  templeLockedNotice?: string;
+  fireLitNow?: boolean;
+  poisonedSec?: number;
+  disasterChallengeOutcome?: {
+    titleFa: string;
+    completed: boolean;
+    rewardCoins: number;
+  };
   eventStarted?: {
     kind: WorldEventKind;
     phase: 'warning' | 'active';
@@ -269,7 +355,7 @@ export interface SurvivalStepResult {
   playerLevelUp?: number;
   hazardStrikes: Array<{
     id: string;
-    kind: 'lightning' | 'lava' | 'meteor';
+    kind: 'lightning' | 'lava' | 'meteor' | 'boulder' | 'whirlwind';
     x: number;
     z: number;
     hitPlayer: boolean;
@@ -322,8 +408,22 @@ export interface SurvivalHudView {
   weaponLevels: Record<WeaponId, number>;
   weaponXp: Record<WeaponId, number>;
   weaponXpToNext: Record<WeaponId, number>;
+  fireLit: boolean;
   fireLevel: number;
+  canIgniteFire: boolean;
   canStokeFire: boolean;
+  venomTimer: number;
+  antidotes: number;
+  shellArmorCharges: number;
+  elixirTimer: number;
+  torchTimer: number;
+  baitCharges: number;
+  wreckLooted: boolean;
+  bonesFound: number;
+  bonesTotal: number;
+  templeUnlocked: boolean;
+  templeRelicClaimed: boolean;
+  disasterChallenge: DisasterChallengeState | null;
   xp: number;
   playerLevel: number;
   playerXp: number;
@@ -554,8 +654,15 @@ export function createSurvivalState(
     unlockedWeapons: { axe: true, spear: false, bow: false, hammer: false },
     weaponLevels: { axe: 1, spear: 1, bow: 1, hammer: 1 },
     weaponXp: { axe: 0, spear: 0, bow: 0, hammer: 0 },
-    fireLevel: 1,
+    fireLit: false,
+    fireLevel: 0,
     fireStokedCount: 0,
+    venomTimer: 0,
+    antidotes: 1,
+    shellArmorCharges: 0,
+    elixirTimer: 0,
+    torchTimer: 0,
+    baitCharges: 0,
     xp: 0,
     playerLevel: 1,
     playerXp: 0,
@@ -583,7 +690,7 @@ export function createSurvivalState(
     activeEvent: 'none',
     eventPhase: 'idle',
     eventTimer: 0,
-    nextEventTimer: CONFIG.SURVIVAL.WORLD_EVENTS.MIN_INTERVAL_SEC,
+    nextEventTimer: Math.round(CONFIG.SURVIVAL.WORLD_EVENTS.MIN_INTERVAL_SEC * 0.9),
     eventTick: 0,
     seaLevelOffset: 0,
     boatVoyageCooldown: 0,
@@ -592,6 +699,14 @@ export function createSurvivalState(
     landmarkSites: world.landmarkSites.map((l) => ({ ...l })),
     secretSpots: world.secretSpots ? world.secretSpots.map((s) => ({ ...s })) : [],
     discoveredSecrets: [],
+    ancientBoneSites: world.ancientBoneSites ? world.ancientBoneSites.map((b) => ({ ...b })) : [],
+    inspectedBones: [],
+    templeUnlocked: false,
+    templeRelicClaimed: false,
+    templeDoorProgress: 0,
+    wreckSite: world.wreckSite ? { ...world.wreckSite } : null,
+    wreckLooted: false,
+    disasterChallenge: null,
     landmarkCooldowns: { ruins: 0, volcano: 0, mushroom: 0, shipwreck: 0, spring: 0 },
     landmarkSpecialCooldowns: { ruins: 0, volcano: 0, mushroom: 0, shipwreck: 0, spring: 0 },
     buildings: { shelter: false, rack: false, pier: false, boat: false },
@@ -627,6 +742,7 @@ export function createSurvivalState(
     stashedTotalForCoin: 0,
     fireStokeAnimTimer: 0,
     hammerSlamCooldown: 0,
+    meleeCombatCooldown: 0,
   };
 }
 
@@ -645,6 +761,7 @@ export function getPlayerSpeedScale(
   state: Pick<SurvivalState, 'energy' | 'weather' | 'skills' | 'fireLevel' | 'nearCampfire'> & {
     playerLevel?: number;
     isSwimming?: boolean;
+    elixirTimer?: number;
   }
 ): number {
   if (state.energy <= 1) return CONFIG.SURVIVAL.EXHAUSTED_SPEED_SCALE;
@@ -652,6 +769,7 @@ export function getPlayerSpeedScale(
   const skillBonus = 1 + state.skills.pathfinder * 0.12;
   const levelBonus = 1 + Math.max(0, (state.playerLevel ?? 1) - 1) * 0.025;
   const fireAuraBonus = state.fireLevel >= 6 ? 1.16 : state.fireLevel >= 3 ? 1.1 : 1.0;
+  const elixirBonus = (state.elixirTimer ?? 0) > 0 ? 1.18 : 1.0;
 
   // Weather effect softened by pathfinder skill
   let weatherScale = 1.0;
@@ -672,7 +790,7 @@ export function getPlayerSpeedScale(
 
   const swimScale = state.isSwimming ? CONFIG.SURVIVAL.SWIM_SPEED_SCALE : 1.0;
 
-  return skillBonus * levelBonus * fireAuraBonus * weatherScale * swimScale;
+  return skillBonus * levelBonus * fireAuraBonus * elixirBonus * weatherScale * swimScale;
 }
 
 export function getFishingSpeedMultiplier(
@@ -694,16 +812,17 @@ export function getFishingCatchChance(
   state: Pick<
     SurvivalState,
     'weather' | 'skills' | 'activeEvent' | 'eventPhase' | 'weaponLevels' | 'buildings'
-  >,
+  > & { baitCharges?: number },
   node?: Pick<HarvestNodeState, 'id'>
 ): number {
-  let chance = 0.68;
-  chance += state.skills.angler * 0.08;
-  chance += Math.max(0, state.weaponLevels.spear - 1) * 0.05;
-  if (state.weather === 'rain' || state.weather === 'storm') chance += 0.1;
+  if ((state.baitCharges ?? 0) > 0) return 1.0;
+  let chance = 0.8;
+  chance += state.skills.angler * 0.06;
+  chance += Math.max(0, state.weaponLevels.spear - 1) * 0.04;
+  if (state.weather === 'rain' || state.weather === 'storm') chance += 0.08;
   if (state.activeEvent === 'fish_frenzy' && state.eventPhase === 'active') chance += 0.12;
-  if (node?.id === 'fish-spot-0' && state.buildings.pier) chance += 0.08;
-  return Math.max(0.62, Math.min(0.96, chance));
+  if (node?.id === 'fish-spot-0' && state.buildings.pier) chance += 0.07;
+  return Math.max(0.75, Math.min(0.97, chance));
 }
 
 function removeFromStack(stack: ResourceKind[], kind: ResourceKind, count: number): void {
@@ -763,8 +882,20 @@ export function upgradeWeapon(state: SurvivalState, weaponId: WeaponId): boolean
   return true;
 }
 
+export function lightCampfire(state: SurvivalState): boolean {
+  if (!state.nearCampfire || state.fireLit) return false;
+  if (!spendWood(state, CONFIG.SURVIVAL.FIRE_IGNITE_WOOD_COST)) return false;
+  state.fireLit = true;
+  state.fireLevel = Math.max(1, state.fireLevel);
+  state.fireStokeAnimTimer = 0.8;
+  state.energy = Math.min(state.maxEnergy, state.energy + 12);
+  state.coins += 2;
+  awardXp(state, 12);
+  return true;
+}
+
 export function stokeCampfire(state: SurvivalState): boolean {
-  if (!state.nearCampfire) return false;
+  if (!state.nearCampfire || !state.fireLit) return false;
   if (state.fireLevel >= CONFIG.SURVIVAL.MAX_FIRE_LEVEL) return false;
   if (!spendWood(state, CONFIG.SURVIVAL.FIRE_FUEL_WOOD_COST)) return false;
   state.fireStokedCount += 1;
@@ -780,6 +911,227 @@ export function stokeCampfire(state: SurvivalState): boolean {
   state.coins += 2;
   awardXp(state, 14);
   return true;
+}
+
+export function useAntidote(state: SurvivalState): boolean {
+  if (state.venomTimer <= 0 || state.antidotes <= 0) return false;
+  state.antidotes -= 1;
+  state.venomTimer = 0;
+  state.energy = Math.min(state.maxEnergy, state.energy + 10);
+  return true;
+}
+
+function spendCarriedItem(state: SurvivalState, kind: ResourceKind, count: number): boolean {
+  if (state.carried[kind] < count) return false;
+  state.carried[kind] -= count;
+  removeFromStack(state.carriedStack, kind, count);
+  return true;
+}
+
+export function craftWorkshopItem(
+  state: SurvivalState,
+  recipeId: WorkshopRecipeId
+): { crafted: boolean; notice: string } {
+  if (recipeId === 'antidote') {
+    if (state.carried.berries >= 2 && state.coins >= 2) {
+      spendCarriedItem(state, 'berries', 2);
+      state.coins -= 2;
+    } else if (state.coins >= 5) {
+      state.coins -= 5;
+    } else {
+      return { crafted: false, notice: 'برای پادزهر به ۲ توت + ۲ سکه (یا ۵ سکه) نیاز دارید' };
+    }
+    state.antidotes += 1;
+    awardXp(state, 8);
+    return { crafted: true, notice: 'پادزهر زهر مار ساخته شد (+۱ پادزهر)' };
+  }
+
+  if (recipeId === 'elixir') {
+    if (state.carried.banana < 1 || state.carried.berries < 2) {
+      return { crafted: false, notice: 'برای معجون چابکی به ۱ موز و ۲ توت نیاز دارید' };
+    }
+    spendCarriedItem(state, 'banana', 1);
+    spendCarriedItem(state, 'berries', 2);
+    state.elixirTimer = Math.max(state.elixirTimer, 24);
+    state.energy = Math.min(state.maxEnergy, state.energy + 15);
+    awardXp(state, 10);
+    return { crafted: true, notice: 'معجون چابکی نوشیده شد! سرعت +۱۸٪ و بازیابی انرژی' };
+  }
+
+  if (recipeId === 'shell_armor') {
+    if (!spendShells(state, 3)) {
+      return { crafted: false, notice: 'برای طلسم صدف به ۳ صدف نیاز دارید' };
+    }
+    state.shellArmorCharges += 2;
+    awardXp(state, 10);
+    return { crafted: true, notice: 'طلسم دفاعی صدف فعال شد (+۲ محافظ ضربه)' };
+  }
+
+  if (recipeId === 'golden_bait') {
+    if (state.carried.fish < 1 || state.carried.berries < 1) {
+      return { crafted: false, notice: 'برای طعمه طلایی به ۱ ماهی خام و ۱ توت نیاز دارید' };
+    }
+    spendCarriedItem(state, 'fish', 1);
+    spendCarriedItem(state, 'berries', 1);
+    state.baitCharges += 3;
+    awardXp(state, 10);
+    return { crafted: true, notice: 'طعمه طلایی آماده شد (+۳ صید ۱۰۰٪ و ماهی اضافه)' };
+  }
+
+  if (recipeId === 'ward_torch') {
+    if (state.coins < 2 || state.stashed.wood + state.carried.wood < 2) {
+      return { crafted: false, notice: 'برای مشعل محافظ به ۲ چوب و ۲ سکه نیاز دارید' };
+    }
+    spendWood(state, 2);
+    state.coins -= 2;
+    state.torchTimer = Math.max(state.torchTimer, 38);
+    awardXp(state, 10);
+    return { crafted: true, notice: 'مشعل محافظ روشن شد! مارها و شکارچیان شب دور می‌مانند' };
+  }
+
+  if (recipeId === 'supply_pack') {
+    if (state.coins < 10) {
+      return { crafted: false, notice: 'برای بسته انرژی به ۱۰ سکه نیاز دارید' };
+    }
+    state.coins -= 10;
+    state.energy = Math.min(state.maxEnergy, state.energy + 45);
+    state.lowEnergyBlocked = false;
+    return { crafted: true, notice: 'بسته انرژی کمپ باز شد (+۴۵ انرژی)' };
+  }
+
+  if (state.coins < 12) {
+    return { crafted: false, notice: 'برای تومار تجربه به ۱۲ سکه نیاز دارید' };
+  }
+  state.coins -= 12;
+  awardXp(state, 24);
+  awardWeaponXp(state, state.equippedWeapon, 15);
+  return { crafted: true, notice: 'تومار تجربه خوانده شد! (+۲۴ تجربه و +۱۵ مهارت سلاح)' };
+}
+
+export function salvagePlaneWreck(
+  state: SurvivalState,
+  playerX?: number,
+  playerZ?: number
+): { salvaged: boolean; notice: string } {
+  if (state.wreckLooted || !state.wreckSite) {
+    return { salvaged: false, notice: 'تجهیزات لاشه هواپیما قبلاً جمع‌آوری شده است' };
+  }
+  if (
+    playerX !== undefined &&
+    playerZ !== undefined &&
+    Math.hypot(playerX - state.wreckSite.x, playerZ - state.wreckSite.z) >
+      CONFIG.SURVIVAL.HARVEST_RANGE_WRECK + 0.8
+  ) {
+    return { salvaged: false, notice: 'برای جست‌وجو به لاشه هواپیما نزدیک‌تر شوید' };
+  }
+  state.wreckLooted = true;
+  const freeSlots = Math.max(0, state.backpackCapacity - getBackpackUsed(state));
+  const toCarry = Math.min(3, freeSlots);
+  const toStash = 3 - toCarry;
+  if (toCarry > 0) {
+    state.carried.wood += toCarry;
+    for (let i = 0; i < toCarry; i += 1) state.carriedStack.push('wood');
+  }
+  if (toStash > 0) {
+    state.stashed.wood += toStash;
+  }
+  state.coins += 8;
+  state.antidotes += 1;
+  awardXp(state, 18);
+  return {
+    salvaged: true,
+    notice: 'جعبه‌سیاه و تدارکات هواپیما پیدا شد! (+۳ چوب، +۸ سکه و ۱ پادزهر)',
+  };
+}
+
+export function inspectAncientBones(
+  state: SurvivalState,
+  boneId: string,
+  playerX?: number,
+  playerZ?: number
+): { inspected: boolean; bone?: AncientBoneSite; notice: string } {
+  const bone = state.ancientBoneSites.find((b) => b.id === boneId);
+  if (!bone) return { inspected: false, notice: 'محراب استخوان پیدا نشد' };
+  if (state.inspectedBones.includes(boneId)) {
+    return { inspected: false, bone, notice: bone.loreFa };
+  }
+  if (
+    playerX !== undefined &&
+    playerZ !== undefined &&
+    Math.hypot(playerX - bone.x, playerZ - bone.z) > CONFIG.SURVIVAL.HARVEST_RANGE_BONE + 0.6
+  ) {
+    return { inspected: false, bone, notice: 'به استخوان‌های باستانی نزدیک‌تر شوید' };
+  }
+  state.inspectedBones.push(boneId);
+  state.coins += 5;
+  if (state.inspectedBones.length === 1 || boneId === 'bone-jungle-trail') {
+    state.antidotes += 1;
+  }
+  awardXp(state, 12);
+  return {
+    inspected: true,
+    bone,
+    notice: `${bone.nameFa}: ${bone.loreFa} (+۵ سکه و تجربه)`,
+  };
+}
+
+export function openBuriedTempleDoor(
+  state: SurvivalState,
+  playerX?: number,
+  playerZ?: number
+): { opened: boolean; lockedReason?: 'need_bones' | 'already_claimed' | 'too_far'; notice: string } {
+  if (state.templeRelicClaimed) {
+    return {
+      opened: false,
+      lockedReason: 'already_claimed',
+      notice: 'گنجینه و آیتم مخفی معبد سنگی قبلاً دریافت شده است',
+    };
+  }
+  const templeX = CONFIG.ISLAND.SHIPWRECK.HULL_CX;
+  const templeZ = CONFIG.ISLAND.SHIPWRECK.HULL_CZ;
+  if (
+    playerX !== undefined &&
+    playerZ !== undefined &&
+    Math.hypot(playerX - templeX, playerZ - templeZ) > CONFIG.SURVIVAL.HARVEST_RANGE_TEMPLE + 0.85
+  ) {
+    return {
+      opened: false,
+      lockedReason: 'too_far',
+      notice: 'به درب معبد سنگی نیمه‌مدفون نزدیک‌تر شوید',
+    };
+  }
+
+  const requiredBones = Math.max(1, state.ancientBoneSites.length);
+  const collectedBones = state.inspectedBones.length;
+  if (collectedBones < requiredBones) {
+    return {
+      opened: false,
+      lockedReason: 'need_bones',
+      notice: `درب معبد سنگی قفل است! ابتدا استخوان‌های باستانی جزیره را جمع کن (${collectedBones} از ${requiredBones})`,
+    };
+  }
+
+  state.templeUnlocked = true;
+  state.templeRelicClaimed = true;
+  state.templeDoorProgress = 1;
+  state.coins += 40;
+  state.skillPoints += 2;
+  state.hasSpear = true;
+  state.hasFireSpear = true;
+  state.unlockedWeapons.spear = true;
+  state.unlockedWeapons.bow = true;
+  state.unlockedWeapons.hammer = true;
+  state.antidotes += 2;
+  state.shellArmorCharges += 3;
+  state.elixirTimer = Math.max(state.elixirTimer, 40);
+  state.energy = state.maxEnergy;
+  awardXp(state, 55);
+
+  return {
+    opened: true,
+    notice:
+      'درب معبد سنگی گشوده شد! آیتم مخفی باستانی (تاج خورشید، نیزه آتشین و +۴۰ سکه) دریافت شد!',
+  };
 }
 
 export function upgradeSkill(state: SurvivalState, skillId: SkillId): boolean {
@@ -868,6 +1220,8 @@ function getWorldEventActiveDuration(kind: WorldEventKind): number {
   if (kind === 'fish_frenzy') return ev.FISH_FRENZY_DURATION_SEC;
   if (kind === 'autumn_breeze') return ev.AUTUMN_DURATION_SEC;
   if (kind === 'winter_frost') return ev.WINTER_DURATION_SEC;
+  if (kind === 'earthquake') return ev.EARTHQUAKE_DURATION_SEC;
+  if (kind === 'lightning_storm') return ev.LIGHTNING_STORM_DURATION_SEC;
   return 0;
 }
 
@@ -894,6 +1248,16 @@ export function getWorldEventNoticeText(
   if (kind === 'fish_frenzy') {
     return 'رونق ماهی‌گیری! دسته‌های ماهی در خلیج جمع شدند (+سرعت و صید بیشتر)!';
   }
+  if (kind === 'earthquake') {
+    return phase === 'warning'
+      ? 'لرزش شدید زمین! زلزله در راه است — مراقب سقوط صخره‌ها باش!'
+      : 'زلزله بزرگ جزیره! زمین می‌لرزد و صخره‌ها فرود می‌آیند — جاخالی بده!';
+  }
+  if (kind === 'lightning_storm') {
+    return phase === 'warning'
+      ? 'ابرهای تیره جمع شدند! توفان صاعقه نزدیک است!'
+      : 'توفان سهمگین صاعقه! رعدوبرق پی‌درپی بر جزیره می‌کوبد!';
+  }
   if (kind === 'autumn_breeze') {
     return 'فصل نادر پاییز! برگ‌های نارنجی جزیره را پوشاندند و گیاهان سریع‌تر می‌رویند!';
   }
@@ -910,7 +1274,12 @@ export function triggerWorldEvent(
 ): { kind: WorldEventKind; phase: 'warning' | 'active'; notice: string } {
   const evCfg = CONFIG.SURVIVAL.WORLD_EVENTS;
   state.activeEvent = kind;
-  const needsWarning = !skipWarning && (kind === 'tsunami' || kind === 'volcano_eruption');
+  const needsWarning =
+    !skipWarning &&
+    (kind === 'tsunami' ||
+      kind === 'volcano_eruption' ||
+      kind === 'earthquake' ||
+      kind === 'lightning_storm');
   state.eventPhase = needsWarning ? 'warning' : 'active';
   state.eventTimer = needsWarning ? evCfg.WARNING_SEC : getWorldEventActiveDuration(kind);
 
@@ -938,7 +1307,75 @@ export function triggerSeasonEvent(
   return ev;
 }
 
+function createChallengeForEvent(kind: WorldEventKind): DisasterChallengeState | null {
+  if (kind === 'tsunami') {
+    return {
+      event: 'tsunami',
+      titleFa: 'چالش موج عظیم سونامی',
+      goalFa: 'تا پایان موج، وارد آب عمیق نشو و در بلندی بمان',
+      status: 'active',
+      dodgedCount: 0,
+      hitsTaken: 0,
+      rewardCoins: 10,
+      rewardXp: 20,
+    };
+  }
+  if (kind === 'volcano_eruption') {
+    return {
+      event: 'volcano_eruption',
+      titleFa: 'چالش فوران آتشفشان',
+      goalFa: 'از برخورد سنگ‌های گدازه بدون آسیب جان سالم ببر',
+      status: 'active',
+      dodgedCount: 0,
+      hitsTaken: 0,
+      rewardCoins: 12,
+      rewardXp: 24,
+    };
+  }
+  if (kind === 'earthquake') {
+    return {
+      event: 'earthquake',
+      titleFa: 'چالش زلزله جزیره',
+      goalFa: 'از سقوط تخته سنگ‌ها جاخالی بده و آسیب نبین',
+      status: 'active',
+      dodgedCount: 0,
+      hitsTaken: 0,
+      rewardCoins: 11,
+      rewardXp: 22,
+    };
+  }
+  if (kind === 'lightning_storm') {
+    return {
+      event: 'lightning_storm',
+      titleFa: 'چالش توفان صاعقه',
+      goalFa: 'از دایره‌های صاعقه بدون برخورد عبور کن',
+      status: 'active',
+      dodgedCount: 0,
+      hitsTaken: 0,
+      rewardCoins: 12,
+      rewardXp: 24,
+    };
+  }
+  if (kind === 'meteor_shower') {
+    return {
+      event: 'meteor_shower',
+      titleFa: 'چالش بارش شهاب‌سنگ',
+      goalFa: 'در بارش شهاب‌ها آسیب نبین تا پاداش ویژه بگیری',
+      status: 'active',
+      dodgedCount: 0,
+      hitsTaken: 0,
+      rewardCoins: 10,
+      rewardXp: 20,
+    };
+  }
+  return null;
+}
+
 function applyWorldEventActiveEffects(state: SurvivalState, kind: WorldEventKind): void {
+  const challenge = createChallengeForEvent(kind);
+  if (challenge) {
+    state.disasterChallenge = challenge;
+  }
   if (kind === 'fish_frenzy') {
     for (const node of state.nodes) {
       if (node.propKind === 'fishing') {
@@ -959,6 +1396,12 @@ function applyWorldEventActiveEffects(state: SurvivalState, kind: WorldEventKind
     state.coins += 5;
     state.energy = Math.min(state.maxEnergy, state.energy + 15);
     awardXp(state, 18);
+  } else if (kind === 'earthquake') {
+    state.coins += 5;
+    awardXp(state, 14);
+  } else if (kind === 'lightning_storm') {
+    state.coins += 5;
+    awardXp(state, 15);
   } else if (kind === 'autumn_breeze') {
     state.season = 'autumn';
     state.coins += 4;
@@ -1025,27 +1468,29 @@ export function activateLandmarkPower(
   }
   if (landmarkId === 'mushroom') {
     state.energy = state.maxEnergy;
+    state.elixirTimer = Math.max(state.elixirTimer, 18);
     for (const node of state.nodes) {
       if (node.cooldownRemaining > 0) {
         node.cooldownRemaining *= 0.25;
       }
     }
     awardXp(state, 14);
-    return { triggered: true, label: 'معجون اسپور: انرژی کامل و رشد سریع گیاهان!' };
+    return { triggered: true, label: 'معجون اسپور: انرژی کامل، چابکی ۱۸ ثانیه و رشد سریع گیاهان!' };
   }
   if (landmarkId === 'shipwreck') {
     state.coins += 8;
     state.stashed.wood += 3;
     state.stashed.shell += 2;
     awardXp(state, 14);
-    return { triggered: true, label: 'گنج کاپیتان: +۸ سکه، ۳ چوب و ۲ صدف به کمپ رفت!' };
+    return { triggered: true, label: 'محراب معبد مدفون: +۸ سکه، ۳ چوب و ۲ صدف به کمپ رفت!' };
   }
   state.energy = state.maxEnergy;
+  state.venomTimer = 0;
   state.weather = 'clear';
   state.weatherTimer = CONFIG.WEATHER.MAX_DURATION_SEC;
   state.predatorAlert = false;
   awardXp(state, 14);
-  return { triggered: true, label: 'چشمه بلورین: انرژی کامل و هوای صاف آفتابی!' };
+  return { triggered: true, label: 'چشمه بلورین: انرژی کامل، خنثی‌سازی سم و هوای آفتابی!' };
 }
 
 export function activateLandmarkSpecial(
@@ -1110,12 +1555,12 @@ export function activateLandmarkSpecial(
       state.carried.fish -= 1;
       removeFromStack(state.carriedStack, 'fish', 1);
     } else {
-      return { triggered: false, label: 'برای معامله در کشتی، ۱ گوشت یا ماهی خام بیاور' };
+      return { triggered: false, label: 'برای پیشکش در معبد مدفون، ۱ گوشت یا ماهی خام بیاور' };
     }
     state.landmarkSpecialCooldowns.shipwreck = CONFIG.SURVIVAL.LANDMARK_SPECIAL_COOLDOWN_SEC;
     state.coins += 9;
     awardXp(state, 15);
-    return { triggered: true, label: 'تجارت ملوانان: +۹ سکه و روشن‌شدن فانوس دریایی!' };
+    return { triggered: true, label: 'پیشکش معبد سنگی مدفون: +۹ سکه و درخشش سنگ‌نوشته‌ها!' };
   }
 
   state.landmarkSpecialCooldowns.spring = CONFIG.SURVIVAL.LANDMARK_SPECIAL_COOLDOWN_SEC;
@@ -1253,11 +1698,29 @@ export function getSurvivalHudView(state: SurvivalState, biome: BiomeId): Surviv
     weaponLevels: { ...state.weaponLevels },
     weaponXp: { ...state.weaponXp },
     weaponXpToNext,
+    fireLit: state.fireLit,
     fireLevel: state.fireLevel,
+    canIgniteFire:
+      state.nearCampfire &&
+      !state.fireLit &&
+      totalWood >= CONFIG.SURVIVAL.FIRE_IGNITE_WOOD_COST,
     canStokeFire:
       state.nearCampfire &&
+      state.fireLit &&
       state.fireLevel < CONFIG.SURVIVAL.MAX_FIRE_LEVEL &&
       totalWood >= CONFIG.SURVIVAL.FIRE_FUEL_WOOD_COST,
+    venomTimer: Math.ceil(state.venomTimer),
+    antidotes: state.antidotes,
+    shellArmorCharges: state.shellArmorCharges,
+    elixirTimer: Math.ceil(state.elixirTimer),
+    torchTimer: Math.ceil(state.torchTimer),
+    baitCharges: state.baitCharges,
+    wreckLooted: state.wreckLooted,
+    bonesFound: state.inspectedBones.length,
+    bonesTotal: state.ancientBoneSites.length,
+    templeUnlocked: state.templeUnlocked,
+    templeRelicClaimed: state.templeRelicClaimed,
+    disasterChallenge: state.disasterChallenge ? { ...state.disasterChallenge } : null,
     xp: state.xp,
     playerLevel: state.playerLevel,
     playerXp: state.playerXp,
@@ -1354,6 +1817,19 @@ export function stepSurvivalSystem(
   const prevOutcome = state.gameOutcome;
   const prevPlayerLevel = state.playerLevel;
   const prevSecretsFound = state.discoveredSecrets.length;
+  const prevFireLit = state.fireLit;
+  const prevVenomSec = Math.ceil(state.venomTimer);
+  const prevAntidotes = state.antidotes;
+  const prevShellArmor = state.shellArmorCharges;
+  const prevElixirSec = Math.ceil(state.elixirTimer);
+  const prevTorchSec = Math.ceil(state.torchTimer);
+  const prevBait = state.baitCharges;
+  const prevWreckLooted = state.wreckLooted;
+  const prevBonesFound = state.inspectedBones.length;
+  const prevTempleUnlocked = state.templeUnlocked;
+  const prevTempleRelicClaimed = state.templeRelicClaimed;
+  const prevChallengeStatus = state.disasterChallenge?.status ?? null;
+  const prevChallengeDodged = state.disasterChallenge?.dodgedCount ?? 0;
 
   const weaponLevelUps: WeaponLevelUpEvent[] = [];
   let playerLevelUp: number | undefined;
@@ -1372,6 +1848,9 @@ export function stepSurvivalSystem(
   if (state.hammerSlamCooldown > 0) {
     state.hammerSlamCooldown = Math.max(0, state.hammerSlamCooldown - dt);
   }
+  if (state.meleeCombatCooldown > 0) {
+    state.meleeCombatCooldown = Math.max(0, state.meleeCombatCooldown - dt);
+  }
   if (state.boatVoyageCooldown > 0) {
     state.boatVoyageCooldown = Math.max(0, state.boatVoyageCooldown - dt);
   }
@@ -1380,6 +1859,13 @@ export function stepSurvivalSystem(
   }
   if (state.tsunamiDamageTimer > 0) {
     state.tsunamiDamageTimer = Math.max(0, state.tsunamiDamageTimer - dt);
+  }
+  if (state.elixirTimer > 0) {
+    state.elixirTimer = Math.max(0, state.elixirTimer - dt);
+    state.energy = Math.min(state.maxEnergy, state.energy + dt * 1.2);
+  }
+  if (state.torchTimer > 0) {
+    state.torchTimer = Math.max(0, state.torchTimer - dt);
   }
 
   // 0A. Advance Day / Night Cycle
@@ -1415,6 +1901,7 @@ export function stepSurvivalSystem(
   // 0C. Surprise World Events Scheduler & Lifecycle
   let eventStarted: SurvivalStepResult['eventStarted'];
   let eventEndedNotice: string | undefined;
+  let disasterChallengeOutcome: SurvivalStepResult['disasterChallengeOutcome'];
 
   if (state.activeEvent !== 'none') {
     state.eventTimer -= dt;
@@ -1439,6 +1926,27 @@ export function stepSurvivalSystem(
         evCfg.MIN_INTERVAL_SEC +
         intervalRoll * (evCfg.MAX_INTERVAL_SEC - evCfg.MIN_INTERVAL_SEC);
 
+      if (state.disasterChallenge && state.disasterChallenge.event === ended) {
+        if (state.disasterChallenge.status === 'active') {
+          state.disasterChallenge.status = 'completed';
+          state.coins += state.disasterChallenge.rewardCoins;
+          state.skillPoints += 1;
+          pushXp(state.disasterChallenge.rewardXp);
+          disasterChallengeOutcome = {
+            titleFa: state.disasterChallenge.titleFa,
+            completed: true,
+            rewardCoins: state.disasterChallenge.rewardCoins,
+          };
+        } else {
+          disasterChallengeOutcome = {
+            titleFa: state.disasterChallenge.titleFa,
+            completed: false,
+            rewardCoins: 0,
+          };
+        }
+        state.disasterChallenge = null;
+      }
+
       if (ended === 'tsunami') {
         state.stashed.wood += 3;
         state.stashed.shell += 2;
@@ -1455,6 +1963,10 @@ export function stepSurvivalSystem(
         eventEndedNotice = 'نسیم پاییزی فرونشست و تابستان جزیره بازگشت';
       } else if (ended === 'winter_frost') {
         eventEndedNotice = 'برف زمستانی آب شد و گرمای آفتاب بازگشت';
+      } else if (ended === 'earthquake') {
+        eventEndedNotice = 'لرزش زمین آرام گرفت و جزیره استوار شد';
+      } else if (ended === 'lightning_storm') {
+        eventEndedNotice = 'توفان صاعقه فروکش کرد و آسمان آرام شد';
       }
     }
   } else {
@@ -1464,12 +1976,14 @@ export function stepSurvivalSystem(
       const evRoll =
         Math.abs(Math.sin(state.eventTick * 17.31 + state.dayCount * 3.17) * 43758.5453) % 1;
       let chosen: Exclude<WorldEventKind, 'none'>;
-      if (evRoll < 0.16) chosen = 'low_tide';
-      else if (evRoll < 0.34) chosen = 'tsunami';
-      else if (evRoll < 0.52) chosen = 'volcano_eruption';
-      else if (evRoll < 0.68) chosen = 'meteor_shower';
-      else if (evRoll < 0.82) chosen = 'fish_frenzy';
-      else if (evRoll < 0.91) chosen = 'autumn_breeze';
+      if (evRoll < 0.12) chosen = 'low_tide';
+      else if (evRoll < 0.25) chosen = 'tsunami';
+      else if (evRoll < 0.38) chosen = 'volcano_eruption';
+      else if (evRoll < 0.5) chosen = 'meteor_shower';
+      else if (evRoll < 0.62) chosen = 'fish_frenzy';
+      else if (evRoll < 0.74) chosen = 'earthquake';
+      else if (evRoll < 0.86) chosen = 'lightning_storm';
+      else if (evRoll < 0.93) chosen = 'autumn_breeze';
       else chosen = 'winter_frost';
       eventStarted = triggerWorldEvent(state, chosen, false);
     }
@@ -1501,7 +2015,7 @@ export function stepSurvivalSystem(
         : 0;
   state.seaLevelOffset += (targetSeaOffset - state.seaLevelOffset) * Math.min(1, dt * 1.45);
 
-  // 0D. Localized Disaster Hazards Around Player (Storm Lightning, Volcano Lava Boulders, Meteor Shower)
+  // 0D. Localized Disaster Hazards Around Player (Storm Lightning, Lightning Storm, Earthquake Rockfalls, Volcano Lava Boulders, Meteor Shower)
   const hazardStrikes: SurvivalStepResult['hazardStrikes'] = [];
   let damageTaken = 0;
 
@@ -1510,25 +2024,36 @@ export function stepSurvivalSystem(
       ? 'lava'
       : state.eventPhase === 'active' && state.activeEvent === 'meteor_shower'
         ? 'meteor'
-        : state.weather === 'storm'
-          ? 'lightning'
-          : null;
+        : state.eventPhase === 'active' && state.activeEvent === 'earthquake'
+          ? 'boulder'
+          : state.eventPhase === 'active' && state.activeEvent === 'lightning_storm'
+            ? 'lightning'
+            : state.weather === 'storm'
+              ? 'lightning'
+              : null;
 
   if (activeHazardKind && state.gameOutcome === 'playing') {
     state.hazardSpawnTimer -= dt;
     if (state.hazardSpawnTimer <= 0 && state.hazardImpacts.length < 4) {
-      state.hazardSpawnTimer = activeHazardKind === 'lightning' ? 2.8 : 2.25;
+      state.hazardSpawnTimer =
+        state.activeEvent === 'lightning_storm'
+          ? 1.55
+          : activeHazardKind === 'boulder'
+            ? 1.75
+            : activeHazardKind === 'lightning'
+              ? 3.4
+              : 2.25;
       const ang = randomFn() * Math.PI * 2;
-      const dist = 0.8 + randomFn() * 4.4;
+      const dist = 0.7 + randomFn() * 4.2;
       const hx = playerX + Math.cos(ang) * dist;
       const hz = playerZ + Math.sin(ang) * dist;
-      const delay = activeHazardKind === 'lava' ? 1.15 : 1.05;
+      const delay = activeHazardKind === 'lava' || activeHazardKind === 'meteor' ? 1.05 : 0.95;
       state.hazardImpacts.push({
         id: `hz-${Date.now()}-${Math.floor(randomFn() * 10000)}`,
         kind: activeHazardKind,
         x: hx,
         z: hz,
-        radius: activeHazardKind === 'lava' ? 2.4 : 2.25,
+        radius: activeHazardKind === 'lava' || activeHazardKind === 'boulder' ? 2.45 : 2.3,
         delayTimer: delay,
         maxDelay: delay,
         resolved: false,
@@ -1545,20 +2070,33 @@ export function stepSurvivalSystem(
         h.resolved = true;
         const distPlayer = Math.hypot(playerX - h.x, playerZ - h.z);
         const hitPlayer = distPlayer <= h.radius;
-        const dmg = hitPlayer
+        let dmg = hitPlayer
           ? h.kind === 'lava'
-            ? 15
-            : h.kind === 'lightning'
-              ? 14
-              : 12
+            ? 19
+            : h.kind === 'boulder'
+              ? 18
+              : h.kind === 'lightning'
+                ? 16
+                : 15
           : 0;
         if (hitPlayer) {
+          if (state.shellArmorCharges > 0) {
+            dmg = Math.ceil(dmg * 0.5);
+            state.shellArmorCharges -= 1;
+          }
           state.energy = Math.max(0, state.energy - dmg);
           damageTaken += dmg;
+          if (state.disasterChallenge && state.disasterChallenge.status === 'active') {
+            state.disasterChallenge.hitsTaken += 1;
+            state.disasterChallenge.status = 'failed';
+          }
         } else {
           // Reward dodging natural disaster strike!
           state.coins += 1;
           pushXp(3);
+          if (state.disasterChallenge && state.disasterChallenge.status === 'active') {
+            state.disasterChallenge.dodgedCount += 1;
+          }
         }
         hazardStrikes.push({
           id: h.id,
@@ -1581,12 +2119,16 @@ export function stepSurvivalSystem(
   if (
     state.eventPhase === 'active' &&
     state.activeEvent === 'tsunami' &&
-    isSwimming &&
-    state.tsunamiDamageTimer <= 0
+    isSwimming
   ) {
-    state.tsunamiDamageTimer = 1.25;
-    state.energy = Math.max(0, state.energy - 6);
-    damageTaken += 6;
+    if (state.disasterChallenge?.event === 'tsunami' && state.disasterChallenge.status === 'active') {
+      state.disasterChallenge.status = 'failed';
+    }
+    if (state.tsunamiDamageTimer <= 0) {
+      state.tsunamiDamageTimer = 1.15;
+      state.energy = Math.max(0, state.energy - 8);
+      damageTaken += 8;
+    }
   }
 
   // 1. Tick regrow cooldowns (Rain/Storm/Autumn accelerates flora growth!)
@@ -1617,7 +2159,9 @@ export function stepSurvivalSystem(
 
   // 2. Campfire warmth aura, wood/shell banking, fish/meat/banana roasting
   const camp = CONFIG.ISLAND.CAMPFIRE;
-  const auraRadius = camp.AURA_RADIUS + (state.fireLevel - 1) * 1.1;
+  const auraRadius = state.fireLit
+    ? camp.AURA_RADIUS + Math.max(0, state.fireLevel - 1) * 1.1
+    : camp.AURA_RADIUS;
   const distCamp = Math.hypot(playerX - camp.CX, playerZ - camp.CZ);
   state.nearCampfire = distCamp <= auraRadius;
 
@@ -1628,12 +2172,12 @@ export function stepSurvivalSystem(
   let cookedMeatCount = 0;
 
   if (state.nearCampfire) {
-    if (state.energy < state.maxEnergy) {
+    if (state.fireLit && state.energy < state.maxEnergy) {
       const shelterMult = state.buildings.shelter ? 1.35 : 1.0;
       const fireMult =
         state.fireLevel >= 5
           ? 2.2
-          : 1 + (state.fireLevel - 1) * 0.25 + state.skills.pyromancer * 0.15;
+          : 1 + Math.max(0, state.fireLevel - 1) * 0.25 + state.skills.pyromancer * 0.15;
       state.energy = Math.min(
         state.maxEnergy,
         state.energy + CONFIG.SURVIVAL.CAMPFIRE_ENERGY_REGEN_PER_SEC * shelterMult * fireMult * dt
@@ -1663,8 +2207,8 @@ export function stepSurvivalSystem(
       state.coins += depositCoins;
     }
 
-    const canRoastBanana = state.fireLevel >= 2 && state.carried.banana > 0;
-    if (state.carried.fish > 0 || state.carried.meat > 0 || canRoastBanana) {
+    const canRoastBanana = state.fireLit && state.fireLevel >= 2 && state.carried.banana > 0;
+    if (state.fireLit && (state.carried.fish > 0 || state.carried.meat > 0 || canRoastBanana)) {
       state.cookProgress += dt / Math.max(0.1, CONFIG.SURVIVAL.COOK_DURATION_SEC);
       if (state.cookProgress >= 1) {
         state.cookProgress -= 1;
@@ -1699,17 +2243,38 @@ export function stepSurvivalSystem(
     }
   } else {
     state.cookProgress = 0;
-    if (moved && state.energy > 1) {
-      const drainRate = isSwimming
-        ? CONFIG.SURVIVAL.SWIM_ENERGY_DRAIN_PER_SEC
-        : CONFIG.SURVIVAL.WALK_ENERGY_DRAIN_PER_SEC;
-      state.energy = Math.max(1, state.energy - drainRate * dt);
+  }
+
+  if (!state.nearCampfire || !state.fireLit) {
+    if (state.energy > 1) {
+      let drainRate = 0;
+      if (moved) {
+        drainRate += isSwimming
+          ? CONFIG.SURVIVAL.SWIM_ENERGY_DRAIN_PER_SEC
+          : CONFIG.SURVIVAL.WALK_ENERGY_DRAIN_PER_SEC;
+      }
+      if (state.isNight && !state.buildings.shelter) {
+        drainRate += CONFIG.SURVIVAL.NIGHT_COLD_DRAIN_PER_SEC * (state.torchTimer > 0 ? 0.3 : 1.0);
+      }
+      if (drainRate > 0) {
+        state.energy = Math.max(1, state.energy - drainRate * dt);
+      }
     }
   }
 
-  // 2B. Step 32-species Wildlife AI & Predator Windup/Strike Attacks
+  // Active snake/scorpion venom DoT (warmth of Lv 3+ lit campfire gently burns off poison)
+  if (state.venomTimer > 0) {
+    const campCleanse = state.nearCampfire && state.fireLit && state.fireLevel >= 3;
+    state.venomTimer = Math.max(0, state.venomTimer - dt * (campCleanse ? 2.5 : 1.0));
+    const venomDrain = CONFIG.SURVIVAL.VENOM_DRAIN_PER_SEC * dt * (campCleanse ? 0.25 : 1.0);
+    state.energy = Math.max(0, state.energy - venomDrain);
+    damageTaken += venomDrain;
+  }
+
+  // 2B. Step Wildlife AI & Predator Windup/Strike Attacks
   let discoveredSpecies: string[] = [];
   let predatorStrikes: PredatorStrikeEvent[] = [];
+  let poisonedSec: number | undefined;
   if (world) {
     const wRes = stepWildlifeSystem(
       state.wildlife,
@@ -1718,17 +2283,27 @@ export function stepSurvivalSystem(
       playerX,
       playerZ,
       state.nearCampfire,
-      state.fireLevel,
+      state.fireLit ? state.fireLevel : 0,
       state.hasFireSpear,
       world,
-      state.activeHuntActorId
+      state.activeHuntActorId,
+      state.torchTimer > 0
     );
     discoveredSpecies = wRes.discoveredNew;
     state.predatorAlert = wRes.predatorNearby;
     predatorStrikes = wRes.predatorStrikes;
-    if (wRes.ambushEnergyLoss > 0) {
-      state.energy = Math.max(0, state.energy - wRes.ambushEnergyLoss);
-      damageTaken += wRes.ambushEnergyLoss;
+    for (const ps of wRes.predatorStrikes) {
+      let dmg = ps.damage;
+      if (state.shellArmorCharges > 0) {
+        dmg = Math.ceil(dmg * 0.5);
+        state.shellArmorCharges -= 1;
+      }
+      state.energy = Math.max(0, state.energy - dmg);
+      damageTaken += dmg;
+      if (ps.venomSec && ps.venomSec > 0) {
+        state.venomTimer = Math.max(state.venomTimer, ps.venomSec);
+        poisonedSec = Math.max(poisonedSec ?? 0, ps.venomSec);
+      }
     }
     if (discoveredSpecies.length > 0) {
       pushXp(discoveredSpecies.length * 4);
@@ -1778,11 +2353,19 @@ export function stepSurvivalSystem(
     ? { id: closestPad.id, cost: CONFIG.SURVIVAL.BUILD_COSTS[closestPad.id], totalWood }
     : null;
 
+  const getNodeDist = (n: HarvestNodeState): number => {
+    const dShore = Math.hypot(playerX - n.x, playerZ - n.z);
+    if (n.propKind === 'fishing' && n.waterX !== undefined && n.waterZ !== undefined) {
+      return Math.min(dShore, Math.hypot(playerX - n.waterX, playerZ - n.waterZ));
+    }
+    return dShore;
+  };
+
   let bestNode: HarvestNodeState | null = null;
   let bestNodeDist = Infinity;
   for (const node of state.nodes) {
     if (node.cooldownRemaining > 0) continue;
-    const d = Math.hypot(playerX - node.x, playerZ - node.z);
+    const d = getNodeDist(node);
     if (d <= node.range && d < bestNodeDist) {
       bestNodeDist = d;
       bestNode = node;
@@ -1790,20 +2373,30 @@ export function stepSurvivalSystem(
   }
 
   let bestPrey: AnimalActorState | null = null;
-  let bestPreyDist = Infinity;
+  let bestPreyScore = Infinity;
   const bowEquipped = state.equippedWeapon === 'bow' && state.unlockedWeapons.bow;
   const huntRange = bowEquipped
     ? CONFIG.SURVIVAL.HARVEST_RANGE_BOW
     : state.hasSpear
-      ? CONFIG.SURVIVAL.HARVEST_RANGE_HUNT
-      : CONFIG.SURVIVAL.HARVEST_RANGE_HUNT * 0.84;
+      ? CONFIG.SURVIVAL.HARVEST_RANGE_COMBAT
+      : Math.max(CONFIG.SURVIVAL.HARVEST_RANGE_HUNT, CONFIG.SURVIVAL.HARVEST_RANGE_COMBAT * 0.92);
   for (const actor of state.wildlife.actors) {
     if (!actor.visible || actor.koTimer > 0 || actor.respawnTimer > 0) continue;
     const spec = getAnimalSpecies(actor.speciesId);
-    if (!spec || !spec.huntable) continue;
+    const hostile = isHostilePredatorActor(actor);
+    if (!spec || (!spec.huntable && !spec.fishable && !hostile)) continue;
+    const effRange = spec.fishable
+      ? Math.max(huntRange, CONFIG.SURVIVAL.HARVEST_RANGE_FISHING)
+      : hostile
+        ? Math.max(huntRange, CONFIG.SURVIVAL.HARVEST_RANGE_COMBAT)
+        : state.hasSpear
+          ? CONFIG.SURVIVAL.HARVEST_RANGE_HUNT
+          : CONFIG.SURVIVAL.HARVEST_RANGE_HUNT * 0.84;
     const d = Math.hypot(playerX - actor.x, playerZ - actor.z);
-    if (d <= huntRange && d < bestPreyDist) {
-      bestPreyDist = d;
+    // Prioritize close hostile attackers slightly so player fights off predators instead of ignoring them
+    const score = d - (hostile && d <= CONFIG.SURVIVAL.HARVEST_RANGE_COMBAT ? 1.5 : 0);
+    if (d <= effRange && score < bestPreyScore) {
+      bestPreyScore = score;
       bestPrey = actor;
     }
   }
@@ -1820,11 +2413,35 @@ export function stepSurvivalSystem(
     }
   }
 
-  // Compute focused target (priority: Pad -> Secret -> Built Boat Voyage -> Prey in bow range -> Node -> Melee Prey)
+  // Check nearby uninspected Ancient Bone Shrine & Crash Wreck
+  let bestBone: AncientBoneSite | null = null;
+  let bestBoneDist = Infinity;
+  for (const bone of state.ancientBoneSites) {
+    if (state.inspectedBones.includes(bone.id)) continue;
+    const d = Math.hypot(playerX - bone.x, playerZ - bone.z);
+    if (d <= CONFIG.SURVIVAL.HARVEST_RANGE_BONE && d < bestBoneDist) {
+      bestBoneDist = d;
+      bestBone = bone;
+    }
+  }
+  const nearWreck =
+    !state.wreckLooted &&
+    state.wreckSite &&
+    Math.hypot(playerX - state.wreckSite.x, playerZ - state.wreckSite.z) <=
+      CONFIG.SURVIVAL.HARVEST_RANGE_WRECK;
+  const templeX = CONFIG.ISLAND.SHIPWRECK.HULL_CX;
+  const templeZ = CONFIG.ISLAND.SHIPWRECK.HULL_CZ;
+  const nearTempleDoor =
+    !state.templeRelicClaimed &&
+    Math.hypot(playerX - templeX, playerZ - templeZ) <= CONFIG.SURVIVAL.HARVEST_RANGE_TEMPLE;
+  const canIgniteHere =
+    !state.fireLit && distCamp <= camp.COLLIDER_R + 1.95;
+
+  // Compute focused target (priority: Pad -> Secret -> Temple Door -> Wreck -> Bone -> Built Boat Voyage -> Prey in bow range -> Node -> Melee Prey -> Campfire Ignite)
   let focused: FocusedTargetInfo | null = null;
   if (closestPad) {
     const cost = CONFIG.SURVIVAL.BUILD_COSTS[closestPad.id];
-    const boatNeedsFire = closestPad.id === 'boat' && state.fireLevel < 5;
+    const boatNeedsFire = closestPad.id === 'boat' && (!state.fireLit || state.fireLevel < 5);
     const blockedReason: BlockedReason | undefined = boatNeedsFire
       ? 'need_fire_level'
       : totalWood < cost
@@ -1852,6 +2469,41 @@ export function stepSurvivalSystem(
       x: bestSecret.x,
       y: bestSecret.y,
       z: bestSecret.z,
+    };
+  } else if (nearTempleDoor) {
+    const totalBones = Math.max(1, state.ancientBoneSites.length);
+    const hasAllBones = state.inspectedBones.length >= totalBones;
+    focused = {
+      kind: 'temple_door',
+      id: 'buried_temple_door',
+      action: 'temple_open',
+      labelFa: hasAllBones
+        ? 'گشودن درب معبد سنگی و دریافت آیتم مخفی'
+        : `درب معبد قفل است (${state.inspectedBones.length}/${totalBones} استخوان)`,
+      x: templeX,
+      y: 0.4,
+      z: templeZ,
+      blockedReason: hasAllBones ? undefined : 'need_bones',
+    };
+  } else if (nearWreck && state.wreckSite) {
+    focused = {
+      kind: 'wreck',
+      id: 'airplane_wreck',
+      action: 'salvage',
+      labelFa: 'جست‌وجوی لاشه هواپیما (+چوب، سکه و پادزهر)',
+      x: state.wreckSite.x,
+      y: state.wreckSite.y,
+      z: state.wreckSite.z,
+    };
+  } else if (bestBone) {
+    focused = {
+      kind: 'bone_shrine',
+      id: bestBone.id,
+      action: 'inspect',
+      labelFa: `بررسی ${bestBone.nameFa}`,
+      x: bestBone.x,
+      y: bestBone.y,
+      z: bestBone.z,
     };
   } else if (builtBoatPad) {
     focused = {
@@ -1882,6 +2534,24 @@ export function stepSurvivalSystem(
         : state.energy < CONFIG.SURVIVAL.HARVEST_ENERGY_COST_HUNT
           ? 'low_energy'
           : undefined,
+    };
+  } else if (bestPrey && isHostilePredatorActor(bestPrey) && Math.hypot(playerX - bestPrey.x, playerZ - bestPrey.z) <= CONFIG.SURVIVAL.HARVEST_RANGE_COMBAT) {
+    const spec = getAnimalSpecies(bestPrey.speciesId);
+    const maxHp = bestPrey.maxHp ?? getSpeciesMaxHp(bestPrey.speciesId);
+    const hp = bestPrey.hp ?? maxHp;
+    focused = {
+      kind: 'prey',
+      id: bestPrey.id,
+      action: 'hunt',
+      labelFa:
+        hp < maxHp
+          ? `نبرد با ${spec?.nameFa ?? 'دشمن'} (${hp}/${maxHp})`
+          : `نبرد با ${spec?.nameFa ?? 'دشمن'}`,
+      x: bestPrey.x,
+      y: bestPrey.y,
+      z: bestPrey.z,
+      blockedReason:
+        state.energy < CONFIG.SURVIVAL.HARVEST_ENERGY_COST_HUNT * 0.5 ? 'low_energy' : undefined,
     };
   } else if (bestNode) {
     const fishingAction: SurvivalActionKind =
@@ -1922,22 +2592,44 @@ export function stepSurvivalSystem(
     };
   } else if (bestPrey) {
     const spec = getAnimalSpecies(bestPrey.speciesId);
-    const needsSpear = Boolean(spec?.requiresSpear && !state.hasSpear);
+    const isFishActor = Boolean(spec?.fishable);
+    const hostile = isHostilePredatorActor(bestPrey);
+    const needsSpear = Boolean(!isFishActor && !hostile && spec?.requiresSpear && !state.hasSpear);
+    const fishAct: SurvivalActionKind =
+      state.equippedWeapon === 'spear' && state.hasSpear ? 'spear_fish' : 'cast_fish';
     focused = {
       kind: 'prey',
       id: bestPrey.id,
-      action: 'hunt',
-      labelFa: `شکار ${spec?.nameFa ?? 'جانور'}`,
+      action: isFishActor ? fishAct : 'hunt',
+      labelFa: isFishActor
+        ? `صید ${spec?.nameFa ?? 'ماهی'}`
+        : hostile
+          ? `نبرد با ${spec?.nameFa ?? 'شکارچی'}`
+          : `شکار ${spec?.nameFa ?? 'جانور'}`,
       x: bestPrey.x,
       y: bestPrey.y,
       z: bestPrey.z,
-      blockedReason: !backpackHasRoom
-        ? 'backpack_full'
-        : needsSpear
-          ? 'need_spear'
-          : state.energy < CONFIG.SURVIVAL.HARVEST_ENERGY_COST_HUNT
-            ? 'low_energy'
-            : undefined,
+      blockedReason:
+        !hostile && !backpackHasRoom
+          ? 'backpack_full'
+          : needsSpear
+            ? 'need_spear'
+            : state.energy < (hostile ? CONFIG.SURVIVAL.HARVEST_ENERGY_COST_HUNT * 0.5 : CONFIG.SURVIVAL.HARVEST_ENERGY_COST_HUNT)
+              ? 'low_energy'
+              : undefined,
+    };
+  } else if (canIgniteHere) {
+    const needCost = CONFIG.SURVIVAL.FIRE_IGNITE_WOOD_COST;
+    focused = {
+      kind: 'campfire_ignite',
+      id: 'campfire_ignite',
+      action: 'cook',
+      labelFa: `روشن کردن آتش کمپ (${needCost} چوب)`,
+      x: camp.CX,
+      y: 0,
+      z: camp.CZ,
+      blockedReason: totalWood < needCost ? 'need_wood' : undefined,
+      woodCost: needCost,
     };
   }
 
@@ -1945,7 +2637,7 @@ export function stepSurvivalSystem(
   if (targetRequest) {
     if (targetRequest.kind === 'node') {
       const n = state.nodes.find((item) => item.id === targetRequest.id && item.cooldownRemaining <= 0);
-      if (n && Math.hypot(playerX - n.x, playerZ - n.z) <= n.range + 0.55) {
+      if (n && getNodeDist(n) <= n.range + 0.65) {
         const fishingAction: SurvivalActionKind =
           state.equippedWeapon === 'spear' && state.hasSpear ? 'spear_fish' : 'cast_fish';
         focused = {
@@ -1959,7 +2651,7 @@ export function stepSurvivalSystem(
                 : n.kind === 'fish'
                   ? fishingAction
                   : 'forage',
-          labelFa: n.kind === 'wood' ? 'قطع درخت با تبر' : 'جمع‌آوری منبع',
+          labelFa: n.kind === 'wood' ? 'قطع درخت با تبر' : n.kind === 'fish' ? 'صید ماهی' : 'جمع‌آوری منبع',
           x: n.x,
           y: n.y,
           z: n.z,
@@ -1975,30 +2667,44 @@ export function stepSurvivalSystem(
         (act) => act.id === targetRequest.id && act.visible && act.koTimer <= 0 && act.respawnTimer <= 0
       );
       const spec = a ? getAnimalSpecies(a.speciesId) : undefined;
-      if (a && spec && spec.huntable && Math.hypot(playerX - a.x, playerZ - a.z) <= huntRange + 0.8) {
-        const needsSpear = Boolean(!bowEquipped && spec.requiresSpear && !state.hasSpear);
+      const hostile = a ? isHostilePredatorActor(a) : false;
+      const effRange = spec?.fishable
+        ? Math.max(huntRange, CONFIG.SURVIVAL.HARVEST_RANGE_FISHING)
+        : hostile
+          ? Math.max(huntRange, CONFIG.SURVIVAL.HARVEST_RANGE_COMBAT)
+          : huntRange;
+      if (a && spec && (spec.huntable || spec.fishable || hostile) && Math.hypot(playerX - a.x, playerZ - a.z) <= effRange + 0.95) {
+        const isFishActor = Boolean(spec.fishable);
+        const needsSpear = Boolean(!isFishActor && !hostile && !bowEquipped && spec.requiresSpear && !state.hasSpear);
+        const fishAct: SurvivalActionKind =
+          state.equippedWeapon === 'spear' && state.hasSpear ? 'spear_fish' : 'cast_fish';
         focused = {
           kind: 'prey',
           id: a.id,
-          action: bowEquipped ? 'bow_hunt' : 'hunt',
-          labelFa: `شکار ${spec.nameFa}`,
+          action: isFishActor ? fishAct : bowEquipped ? 'bow_hunt' : 'hunt',
+          labelFa: isFishActor
+            ? `صید ${spec.nameFa}`
+            : hostile
+              ? `نبرد با ${spec.nameFa}`
+              : `شکار ${spec.nameFa}`,
           x: a.x,
           y: a.y,
           z: a.z,
-          blockedReason: !backpackHasRoom
-            ? 'backpack_full'
-            : needsSpear
-              ? 'need_spear'
-              : state.energy < CONFIG.SURVIVAL.HARVEST_ENERGY_COST_HUNT
-                ? 'low_energy'
-                : undefined,
+          blockedReason:
+            !hostile && !backpackHasRoom
+              ? 'backpack_full'
+              : needsSpear
+                ? 'need_spear'
+                : state.energy < (hostile ? CONFIG.SURVIVAL.HARVEST_ENERGY_COST_HUNT * 0.5 : CONFIG.SURVIVAL.HARVEST_ENERGY_COST_HUNT)
+                  ? 'low_energy'
+                  : undefined,
         };
       }
     } else if (targetRequest.kind === 'pad') {
       const p = state.buildPads.find((pad) => pad.id === targetRequest.id && !state.buildings[pad.id]);
       if (p && Math.hypot(playerX - p.x, playerZ - p.z) <= CONFIG.SURVIVAL.HARVEST_RANGE_BUILD + 0.5) {
         const cost = CONFIG.SURVIVAL.BUILD_COSTS[p.id];
-        const boatNeedsFire = p.id === 'boat' && state.fireLevel < 5;
+        const boatNeedsFire = p.id === 'boat' && (!state.fireLit || state.fireLevel < 5);
         focused = {
           kind: 'pad',
           id: p.id,
@@ -2026,6 +2732,63 @@ export function stepSurvivalSystem(
           z: sec.z,
         };
       }
+    } else if (targetRequest.kind === 'wreck' && state.wreckSite && !state.wreckLooted) {
+      if (Math.hypot(playerX - state.wreckSite.x, playerZ - state.wreckSite.z) <= CONFIG.SURVIVAL.HARVEST_RANGE_WRECK + 0.8) {
+        focused = {
+          kind: 'wreck',
+          id: 'airplane_wreck',
+          action: 'salvage',
+          labelFa: 'جست‌وجوی لاشه هواپیما',
+          x: state.wreckSite.x,
+          y: state.wreckSite.y,
+          z: state.wreckSite.z,
+        };
+      }
+    } else if (targetRequest.kind === 'bone_shrine') {
+      const b = state.ancientBoneSites.find(
+        (site) => site.id === targetRequest.id && !state.inspectedBones.includes(site.id)
+      );
+      if (b && Math.hypot(playerX - b.x, playerZ - b.z) <= CONFIG.SURVIVAL.HARVEST_RANGE_BONE + 0.6) {
+        focused = {
+          kind: 'bone_shrine',
+          id: b.id,
+          action: 'inspect',
+          labelFa: `بررسی ${b.nameFa}`,
+          x: b.x,
+          y: b.y,
+          z: b.z,
+        };
+      }
+    } else if (targetRequest.kind === 'temple_door' && !state.templeRelicClaimed) {
+      if (Math.hypot(playerX - templeX, playerZ - templeZ) <= CONFIG.SURVIVAL.HARVEST_RANGE_TEMPLE + 0.85) {
+        const totalBones = Math.max(1, state.ancientBoneSites.length);
+        const hasAllBones = state.inspectedBones.length >= totalBones;
+        focused = {
+          kind: 'temple_door',
+          id: 'buried_temple_door',
+          action: 'temple_open',
+          labelFa: hasAllBones
+            ? 'گشودن درب معبد سنگی و دریافت آیتم مخفی'
+            : `درب معبد قفل است (${state.inspectedBones.length}/${totalBones} استخوان)`,
+          x: templeX,
+          y: 0.4,
+          z: templeZ,
+          blockedReason: hasAllBones ? undefined : 'need_bones',
+        };
+      }
+    } else if (targetRequest.kind === 'campfire_ignite' && !state.fireLit && state.nearCampfire) {
+      const needCost = CONFIG.SURVIVAL.FIRE_IGNITE_WOOD_COST;
+      focused = {
+        kind: 'campfire_ignite',
+        id: 'campfire_ignite',
+        action: 'cook',
+        labelFa: `روشن کردن آتش کمپ (${needCost} چوب)`,
+        x: camp.CX,
+        y: 0,
+        z: camp.CZ,
+        blockedReason: totalWood < needCost ? 'need_wood' : undefined,
+        woodCost: needCost,
+      };
     }
   }
 
@@ -2034,15 +2797,65 @@ export function stepSurvivalSystem(
   state.needSpearBlocked = false;
   state.needSpearHuntBlocked = Boolean(focused && focused.blockedReason === 'need_spear');
 
-  // 4. Weapon Special: Auto-Fishing near water + Hammer AoE Shockwave + Bow Ranged Shot + Intentional Target Interact
+  // 4. Weapon Special: Auto-Fishing near water + Hammer AoE Shockwave + Bow Ranged Shot + Active Combat / Interact
   let harvested: SurvivalStepResult['harvested'];
   let fishingMissed: SurvivalStepResult['fishingMissed'];
   let hunted: SurvivalStepResult['hunted'];
+  let meleeStrike: SurvivalStepResult['meleeStrike'];
   let builtUpgrade: SurvivalStepResult['builtUpgrade'];
   let openedSecret: SurvivalStepResult['openedSecret'];
+  let wreckSalvaged: SurvivalStepResult['wreckSalvaged'];
+  let boneInspected: SurvivalStepResult['boneInspected'];
+  let templeOpened: SurvivalStepResult['templeOpened'];
+  let templeLockedNotice: string | undefined;
+  let fireLitNow: boolean | undefined;
   let arrowShot: SurvivalStepResult['arrowShot'];
   let hammerSlam: SurvivalStepResult['hammerSlam'];
   let boatVoyageNotice: string | undefined;
+
+  const grantPreyKillRewards = (
+    preyActor: AnimalActorState,
+    weaponUsed: WeaponId,
+    isRanged = false
+  ): number => {
+    const preySpec = getAnimalSpecies(preyActor.speciesId);
+    const bowLvl = state.weaponLevels.bow;
+    const spearLvl = state.weaponLevels.spear;
+    const baseYield =
+      (preySpec?.meatYield ?? 1) +
+      (weaponUsed === 'bow' && bowLvl >= 3 ? 1 : 0);
+    const amount = Math.min(baseYield, Math.max(0, state.backpackCapacity - getBackpackUsed(state)));
+    const cookedDrop =
+      state.hasFireSpear ||
+      (weaponUsed === 'bow' && bowLvl >= 4) ||
+      (weaponUsed === 'spear' && state.hasSpear && spearLvl >= 4);
+    if (amount > 0) {
+      if (cookedDrop) {
+        state.cookedMeat += amount;
+      } else {
+        state.carried.meat += amount;
+        for (let i = 0; i < amount; i += 1) state.carriedStack.push('meat');
+      }
+    }
+    state.huntedCount += 1;
+    const hostile = isHostilePredatorActor(preyActor);
+    const bonusCoins =
+      (hostile || preyActor.category === 'night_predator' ? 4 : 1) +
+      (state.weaponLevels[weaponUsed] >= 5 ? 2 : 0);
+    state.coins += bonusCoins;
+    earnedCoins += bonusCoins;
+    pushXp(hostile || preyActor.category === 'night_predator' ? 14 : 9);
+    hunted = {
+      actorId: preyActor.id,
+      speciesId: preyActor.speciesId,
+      amount,
+      x: preyActor.x,
+      y: preyActor.y,
+      z: preyActor.z,
+      ranged: isRanged,
+    };
+    return amount;
+  };
 
   // 4A. Auto-equip rod/spear & fish automatically when standing idle right beside a ready fishing spot!
   const idleNearFish =
@@ -2066,7 +2879,7 @@ export function stepSurvivalSystem(
     state.autoFishIdleTimer = 0;
   }
 
-  // 4B. Direct Ranged Bow Shot or Storm Hammer Slam from click/tap anywhere
+  // 4B. Direct Ranged Bow Shot or Storm Hammer Slam or Active Combat from click/tap anywhere
   if (rangedShot && bowEquipped) {
     const bowLvl = state.weaponLevels.bow;
     let targetActor = rangedShot.actorId
@@ -2084,7 +2897,7 @@ export function stepSurvivalSystem(
       for (const a of state.wildlife.actors) {
         if (!a.visible || a.koTimer > 0 || a.respawnTimer > 0) continue;
         const spec = getAnimalSpecies(a.speciesId);
-        if (!spec?.huntable) continue;
+        if (!spec?.huntable && !isHostilePredatorActor(a)) continue;
         const distFromClick = Math.hypot(a.x - rangedShot.x, a.z - rangedShot.z);
         const distFromPlayer = Math.hypot(a.x - playerX, a.z - playerZ);
         if (distFromPlayer <= CONFIG.SURVIVAL.HARVEST_RANGE_BOW + 1.5 && distFromClick < bestDist) {
@@ -2109,33 +2922,23 @@ export function stepSurvivalSystem(
 
     if (targetActor) {
       const preySpec = getAnimalSpecies(targetActor.speciesId);
-      if (preySpec) {
-        enrageAnimal(targetActor);
-        const baseYield = (preySpec.meatYield ?? 1) + (bowLvl >= 3 ? 1 : 0);
-        const amount = Math.min(baseYield, freeSlots);
-        if (state.hasFireSpear || bowLvl >= 4) {
-          state.cookedMeat += amount;
-        } else {
-          state.carried.meat += amount;
-          for (let i = 0; i < amount; i += 1) state.carriedStack.push('meat');
-        }
-        state.huntedCount += 1;
-        state.energy = Math.max(0, state.energy - CONFIG.SURVIVAL.HARVEST_ENERGY_COST_HUNT * 0.75);
-        const bonusCoins =
-          (targetActor.category === 'night_predator' ? 3 : 1) + (bowLvl >= 5 ? 2 : 0);
-        state.coins += bonusCoins;
-        earnedCoins += bonusCoins;
-        pushXp(targetActor.category === 'night_predator' ? 14 : 9);
-        markAnimalHunted(targetActor);
-        hunted = {
-          actorId: targetActor.id,
-          speciesId: targetActor.speciesId,
-          amount,
-          x: targetActor.x,
-          y: targetActor.y,
-          z: targetActor.z,
-          ranged: true,
-        };
+      const bowDmg = 2 + (bowLvl >= 3 ? 1 : 0);
+      const hitRes = damageAnimalActor(targetActor, bowDmg, playerX, playerZ);
+      state.energy = Math.max(0, state.energy - CONFIG.SURVIVAL.HARVEST_ENERGY_COST_HUNT * 0.75);
+      meleeStrike = {
+        actorId: targetActor.id,
+        speciesId: targetActor.speciesId,
+        nameFa: preySpec?.nameFa ?? 'جانور',
+        damage: bowDmg,
+        defeated: hitRes.defeated,
+        x: targetActor.x,
+        y: targetActor.y,
+        z: targetActor.z,
+        hp: hitRes.hp,
+        maxHp: hitRes.maxHp,
+      };
+      if (hitRes.defeated) {
+        grantPreyKillRewards(targetActor, 'bow', true);
       }
     }
   } else if (triggerInteract || targetRequest) {
@@ -2150,21 +2953,21 @@ export function stepSurvivalSystem(
       state.hammerSlamCooldown = Math.max(0.85, 1.6 - (hammerLvl - 1) * 0.14);
       const aoeRange = CONFIG.SURVIVAL.HAMMER_AOE_RANGE + (hammerLvl - 1) * 0.65;
       let stunnedCount = 0;
+      const hammerDmg = 2 + (hammerLvl >= 3 ? 2 : 0);
       for (const actor of state.wildlife.actors) {
         if (!actor.visible || actor.koTimer > 0 || actor.respawnTimer > 0) continue;
         const d = Math.hypot(actor.x - playerX, actor.z - playerZ);
         if (d <= aoeRange) {
-          actor.stunTimer = CONFIG.SURVIVAL.HAMMER_STUN_SEC + (hammerLvl - 1) * 1.2;
           stunnedCount += 1;
-          if (hammerLvl >= 3 && actor.category === 'night_predator') {
-            // Lv 3 Storm Lightning Slam defeats stunned night predator!
-            markAnimalHunted(actor);
-            state.coins += 3 + (hammerLvl >= 5 ? 2 : 0);
-            earnedCoins += 3 + (hammerLvl >= 5 ? 2 : 0);
-            state.huntedCount += 1;
-          } else if (actor.category === 'night_predator' && d > 0.05) {
-            actor.x += ((actor.x - playerX) / d) * 1.35;
-            actor.z += ((actor.z - playerZ) / d) * 1.35;
+          if (isHostilePredatorActor(actor)) {
+            const hitRes = damageAnimalActor(actor, hammerDmg, playerX, playerZ);
+            if (hitRes.defeated) {
+              grantPreyKillRewards(actor, 'hammer', false);
+            } else {
+              actor.stunTimer = Math.max(actor.stunTimer, CONFIG.SURVIVAL.HAMMER_STUN_SEC + (hammerLvl - 1) * 1.2);
+            }
+          } else {
+            actor.stunTimer = CONFIG.SURVIVAL.HAMMER_STUN_SEC + (hammerLvl - 1) * 1.2;
           }
         }
       }
@@ -2200,6 +3003,53 @@ export function stepSurvivalSystem(
           state.activeAction = 'secret_open';
           state.actionProgress = 1;
         }
+      } else if (focused.kind === 'wreck') {
+        const res = salvagePlaneWreck(state, playerX, playerZ);
+        if (res.salvaged && state.wreckSite) {
+          earnedCoins += 8;
+          wreckSalvaged = {
+            x: state.wreckSite.x,
+            y: state.wreckSite.y,
+            z: state.wreckSite.z,
+          };
+          state.activeAction = 'salvage';
+          state.actionProgress = 1;
+        }
+      } else if (focused.kind === 'bone_shrine') {
+        const res = inspectAncientBones(state, focused.id, playerX, playerZ);
+        if (res.inspected && res.bone) {
+          earnedCoins += 5;
+          boneInspected = {
+            id: res.bone.id,
+            nameFa: res.bone.nameFa,
+            loreFa: res.bone.loreFa,
+            x: res.bone.x,
+            y: res.bone.y,
+            z: res.bone.z,
+          };
+          state.activeAction = 'inspect';
+          state.actionProgress = 1;
+        }
+      } else if (focused.kind === 'temple_door') {
+        const res = openBuriedTempleDoor(state, playerX, playerZ);
+        if (res.opened) {
+          earnedCoins += 40;
+          templeOpened = {
+            x: templeX,
+            y: 0.4,
+            z: templeZ,
+            notice: res.notice,
+          };
+          state.activeAction = 'temple_open';
+          state.actionProgress = 1;
+        }
+      } else if (focused.kind === 'campfire_ignite') {
+        if (lightCampfire(state)) {
+          earnedCoins += 2;
+          fireLitNow = true;
+          state.activeAction = 'cook';
+          state.actionProgress = 1;
+        }
       } else if (focused.kind === 'boat_voyage') {
         state.boatVoyageCooldown = 20;
         state.coins += 10;
@@ -2223,25 +3073,10 @@ export function stepSurvivalSystem(
         const preySpec = preyActor ? getAnimalSpecies(preyActor.speciesId) : undefined;
         if (bowEquipped && preyActor && preySpec) {
           const bowLvl = state.weaponLevels.bow;
-          const baseYield = (preySpec.meatYield ?? 1) + (bowLvl >= 3 ? 1 : 0);
-          const amount = Math.min(baseYield, freeSlots);
-          if (state.hasFireSpear || bowLvl >= 4) {
-            state.cookedMeat += amount;
-          } else {
-            state.carried.meat += amount;
-            for (let i = 0; i < amount; i += 1) {
-              state.carriedStack.push('meat');
-            }
-          }
-          state.huntedCount += 1;
+          const bowDmg = 2 + (bowLvl >= 3 ? 1 : 0);
+          const hitRes = damageAnimalActor(preyActor, bowDmg, playerX, playerZ);
           state.energy = Math.max(0, state.energy - CONFIG.SURVIVAL.HARVEST_ENERGY_COST_HUNT * 0.8);
-          const bonusCoins =
-            (preyActor.category === 'night_predator' ? 3 : 1) + (bowLvl >= 5 ? 2 : 0);
-          state.coins += bonusCoins;
-          earnedCoins += bonusCoins;
-          pushXp(preyActor.category === 'night_predator' ? 14 : 9);
           pushWeaponXp('bow', 11);
-          markAnimalHunted(preyActor);
           arrowShot = {
             fromX: playerX,
             fromY: 1.15,
@@ -2250,15 +3085,21 @@ export function stepSurvivalSystem(
             toY: preyActor.y + 0.45,
             toZ: preyActor.z,
           };
-          hunted = {
+          meleeStrike = {
             actorId: preyActor.id,
             speciesId: preyActor.speciesId,
-            amount,
+            nameFa: preySpec.nameFa,
+            damage: bowDmg,
+            defeated: hitRes.defeated,
             x: preyActor.x,
             y: preyActor.y,
             z: preyActor.z,
-            ranged: true,
+            hp: hitRes.hp,
+            maxHp: hitRes.maxHp,
           };
+          if (hitRes.defeated) {
+            grantPreyKillRewards(preyActor, 'bow', true);
+          }
           // Bow Lv 3+ double-arrow volley hits a second nearby huntable prey if within 4.5m!
           if (bowLvl >= 3) {
             const secondPrey = state.wildlife.actors.find(
@@ -2267,20 +3108,65 @@ export function stepSurvivalSystem(
                 a.visible &&
                 a.koTimer <= 0 &&
                 a.respawnTimer <= 0 &&
-                getAnimalSpecies(a.speciesId)?.huntable &&
+                (getAnimalSpecies(a.speciesId)?.huntable || isHostilePredatorActor(a)) &&
                 Math.hypot(a.x - preyActor.x, a.z - preyActor.z) <= 4.5
             );
             if (secondPrey) {
-              markAnimalHunted(secondPrey);
-              state.huntedCount += 1;
-              state.coins += 2;
-              earnedCoins += 2;
+              const secHit = damageAnimalActor(secondPrey, bowDmg, playerX, playerZ);
+              if (secHit.defeated) {
+                state.huntedCount += 1;
+                state.coins += 2;
+                earnedCoins += 2;
+              }
             }
           }
           state.activeAction = 'bow_hunt';
           state.actionTargetX = preyActor.x;
           state.actionTargetZ = preyActor.z;
           state.actionProgress = 1;
+        } else if (preyActor && isHostilePredatorActor(preyActor) && !preySpec?.fishable) {
+          // Active instant melee combat strike against hostile attackers!
+          if (state.meleeCombatCooldown <= 0) {
+            const activeWeapon = state.equippedWeapon === 'bow' ? 'axe' : state.equippedWeapon;
+            const dmg =
+              activeWeapon === 'spear' && state.hasSpear
+                ? 2 + (state.hasFireSpear ? 1 : 0) + (state.weaponLevels.spear >= 4 ? 1 : 0)
+                : activeWeapon === 'hammer' && state.unlockedWeapons.hammer
+                  ? 2 + (state.weaponLevels.hammer >= 3 ? 1 : 0)
+                  : 1 + (state.weaponLevels.axe >= 3 ? 1 : 0);
+            const hitRes = damageAnimalActor(preyActor, dmg, playerX, playerZ);
+            state.meleeCombatCooldown = CONFIG.SURVIVAL.MELEE_STRIKE_COOLDOWN_SEC;
+            state.energy = Math.max(1, state.energy - CONFIG.SURVIVAL.HARVEST_ENERGY_COST_HUNT * 0.5);
+            state.activeBuildId = null;
+            state.activeNodeId = null;
+            state.activeHuntActorId = null;
+            state.activeAction = 'hunt';
+            state.actionTargetX = preyActor.x;
+            state.actionTargetZ = preyActor.z;
+            state.actionProgress = 1;
+            const xpWeapon: WeaponId =
+              activeWeapon === 'spear' && state.hasSpear
+                ? 'spear'
+                : activeWeapon === 'hammer' && state.unlockedWeapons.hammer
+                  ? 'hammer'
+                  : 'axe';
+            pushWeaponXp(xpWeapon, hitRes.defeated ? 13 : 7);
+            meleeStrike = {
+              actorId: preyActor.id,
+              speciesId: preyActor.speciesId,
+              nameFa: preySpec?.nameFa ?? 'دشمن',
+              damage: dmg,
+              defeated: hitRes.defeated,
+              x: preyActor.x,
+              y: preyActor.y,
+              z: preyActor.z,
+              hp: hitRes.hp,
+              maxHp: hitRes.maxHp,
+            };
+            if (hitRes.defeated) {
+              grantPreyKillRewards(preyActor, xpWeapon, false);
+            }
+          }
         } else {
           if (preyActor && (preyActor.speciesId === 'boar' || preyActor.speciesId === 'pirate_crab')) {
             enrageAnimal(preyActor);
@@ -2294,6 +3180,9 @@ export function stepSurvivalSystem(
       }
     } else if (focused && focused.blockedReason === 'low_energy') {
       state.lowEnergyBlocked = true;
+    } else if (focused && focused.kind === 'temple_door' && focused.blockedReason === 'need_bones') {
+      const res = openBuriedTempleDoor(state, playerX, playerZ);
+      templeLockedNotice = res.notice;
     }
   }
 
@@ -2321,7 +3210,7 @@ export function stepSurvivalSystem(
       node.cooldownRemaining > 0 ||
       !backpackHasRoom ||
       state.energy < node.energyCost ||
-      Math.hypot(playerX - node.x, playerZ - node.z) > node.range + 0.45
+      getNodeDist(node) > node.range + 0.65
     ) {
       state.activeNodeId = null;
       state.harvestProgress = 0;
@@ -2332,6 +3221,9 @@ export function stepSurvivalSystem(
   if (state.activeHuntActorId) {
     const prey = state.wildlife.actors.find((a) => a.id === state.activeHuntActorId);
     const spec = prey ? getAnimalSpecies(prey.speciesId) : undefined;
+    const effRange = spec?.fishable
+      ? Math.max(huntRange, CONFIG.SURVIVAL.HARVEST_RANGE_FISHING)
+      : huntRange;
     if (
       !prey ||
       !prey.visible ||
@@ -2339,9 +3231,9 @@ export function stepSurvivalSystem(
       prey.respawnTimer > 0 ||
       !spec ||
       !backpackHasRoom ||
-      (spec.requiresSpear && !state.hasSpear) ||
+      (!spec.fishable && spec.requiresSpear && !state.hasSpear) ||
       state.energy < CONFIG.SURVIVAL.HARVEST_ENERGY_COST_HUNT ||
-      Math.hypot(playerX - prey.x, playerZ - prey.z) > huntRange + 0.9
+      Math.hypot(playerX - prey.x, playerZ - prey.z) > effRange + 1.0
     ) {
       state.activeHuntActorId = null;
       state.huntProgress = 0;
@@ -2440,7 +3332,9 @@ export function stepSurvivalSystem(
             state.hasFireSpear || (node.id === 'fish-spot-0' && state.buildings.pier) ? 1 : 0;
           const spearLv3Bonus =
             state.hasSpear && state.weaponLevels.spear >= 3 ? 1 : 0;
-          rawYield = 1 + rainBonus + frenzyBonus + pierOrFireBonus + spearLv3Bonus;
+          const baitBonus = state.baitCharges > 0 ? 1 : 0;
+          if (state.baitCharges > 0) state.baitCharges -= 1;
+          rawYield = 1 + rainBonus + frenzyBonus + pierOrFireBonus + spearLv3Bonus + baitBonus;
           if (rawYield === 1 && state.skills.angler > 0 && (state.dayCount + state.xp) % 2 === 0) {
             rawYield = 2;
           }
@@ -2501,62 +3395,106 @@ export function stepSurvivalSystem(
   } else if (state.activeHuntActorId) {
     const prey = state.wildlife.actors.find((a) => a.id === state.activeHuntActorId)!;
     const spec = getAnimalSpecies(prey.speciesId)!;
+    const isFishActor = Boolean(spec.fishable);
     state.lowEnergyBlocked = false;
-    state.activeAction = 'hunt';
+    state.activeAction = isFishActor
+      ? state.equippedWeapon === 'spear' && state.hasSpear
+        ? 'spear_fish'
+        : 'cast_fish'
+      : 'hunt';
     state.actionTargetX = prey.x;
     state.actionTargetZ = prey.z;
 
-    const spearLvlBonus = state.hasSpear ? 1 + (state.weaponLevels.spear - 1) * 0.28 : 1.0;
-    const huntSpeed =
-      (1 + state.skills.angler * 0.2) *
-      (state.hasFireSpear ? 1.4 : state.hasSpear ? 1.15 : 1.0) *
-      spearLvlBonus;
-    const dur = spec.huntDuration ?? CONFIG.SURVIVAL.HARVEST_DURATION_HUNT;
-    state.huntProgress += (dt * huntSpeed) / Math.max(0.15, dur);
-    state.actionProgress = Math.min(1, state.huntProgress);
+    if (isFishActor) {
+      const speedMult = getFishingSpeedMultiplier(state) * (state.equippedWeapon === 'spear' && state.hasSpear ? 1.2 : 1.0);
+      state.huntProgress += (dt * speedMult) / Math.max(0.2, CONFIG.SURVIVAL.HARVEST_DURATION_FISHING);
+      state.actionProgress = Math.min(1, state.huntProgress);
 
-    if (state.huntProgress >= 1) {
-      const baseYield = spec.meatYield ?? 1;
-      const amount = Math.min(baseYield, freeSlots);
-      const spearFiery = state.hasFireSpear || (state.hasSpear && state.weaponLevels.spear >= 4);
-      if (spearFiery) {
-        state.cookedMeat += amount;
-      } else {
-        state.carried.meat += amount;
+      if (state.huntProgress >= 1) {
+        const rainBonus = state.weather === 'rain' || state.weather === 'storm' ? 1 : 0;
+        const frenzyBonus = state.activeEvent === 'fish_frenzy' && state.eventPhase === 'active' ? 1 : 0;
+        const rawYield =
+          (prey.speciesId === 'golden_snapper' ? 2 : 1) + rainBonus + frenzyBonus;
+        const amount = Math.min(rawYield, freeSlots);
+        state.carried.fish += amount;
         for (let i = 0; i < amount; i += 1) {
-          state.carriedStack.push('meat');
+          state.carriedStack.push('fish');
         }
+        state.energy = Math.max(1, state.energy - CONFIG.SURVIVAL.HARVEST_ENERGY_COST_FISHING);
+        const fishCoins = prey.speciesId === 'golden_snapper' ? 4 : 2;
+        state.coins += fishCoins;
+        earnedCoins += fishCoins;
+        pushXp(10);
+        if (state.hasSpear) pushWeaponXp('spear', 10);
+        markAnimalHunted(prey);
+        harvested = {
+          nodeId: prey.id,
+          kind: 'fish',
+          propKind: 'fishing',
+          amount,
+          x: prey.x,
+          y: prey.y,
+          z: prey.z,
+        };
+        state.activeHuntActorId = null;
+        state.huntProgress = 0;
+        state.actionProgress = 0;
+        state.activeAction = 'idle';
       }
-      state.huntedCount += 1;
-      state.energy = Math.max(1, state.energy - CONFIG.SURVIVAL.HARVEST_ENERGY_COST_HUNT);
-      const bonusCoins =
-        (prey.category === 'night_predator' ? 3 : 1) +
-        (state.hasSpear && state.weaponLevels.spear >= 5 ? 2 : 0);
-      state.coins += bonusCoins;
-      earnedCoins += bonusCoins;
-      pushXp(prey.category === 'night_predator' ? 14 : 9);
-      if (state.equippedWeapon === 'spear' && state.hasSpear) {
-        pushWeaponXp('spear', 12);
-      } else {
-        pushWeaponXp('axe', 8);
+    } else {
+      const spearLvlBonus = state.hasSpear ? 1 + (state.weaponLevels.spear - 1) * 0.28 : 1.0;
+      const huntSpeed =
+        (1 + state.skills.angler * 0.2) *
+        (state.hasFireSpear ? 1.4 : state.hasSpear ? 1.15 : 1.0) *
+        spearLvlBonus;
+      const dur = spec.huntDuration ?? CONFIG.SURVIVAL.HARVEST_DURATION_HUNT;
+      state.huntProgress += (dt * huntSpeed) / Math.max(0.15, dur);
+      state.actionProgress = Math.min(1, state.huntProgress);
+
+      if (state.huntProgress >= 1) {
+        const baseYield = spec.meatYield ?? 1;
+        const amount = Math.min(baseYield, freeSlots);
+        const spearFiery = state.hasFireSpear || (state.hasSpear && state.weaponLevels.spear >= 4);
+        if (spearFiery) {
+          state.cookedMeat += amount;
+        } else {
+          state.carried.meat += amount;
+          for (let i = 0; i < amount; i += 1) {
+            state.carriedStack.push('meat');
+          }
+        }
+        state.huntedCount += 1;
+        state.energy = Math.max(1, state.energy - CONFIG.SURVIVAL.HARVEST_ENERGY_COST_HUNT);
+        const bonusCoins =
+          (prey.category === 'night_predator' ? 3 : 1) +
+          (state.hasSpear && state.weaponLevels.spear >= 5 ? 2 : 0);
+        state.coins += bonusCoins;
+        earnedCoins += bonusCoins;
+        pushXp(prey.category === 'night_predator' ? 14 : 9);
+        if (state.equippedWeapon === 'spear' && state.hasSpear) {
+          pushWeaponXp('spear', 12);
+        } else {
+          pushWeaponXp('axe', 8);
+        }
+        markAnimalHunted(prey);
+        hunted = {
+          actorId: prey.id,
+          speciesId: prey.speciesId,
+          amount,
+          x: prey.x,
+          y: prey.y,
+          z: prey.z,
+        };
+        state.activeHuntActorId = null;
+        state.huntProgress = 0;
+        state.actionProgress = 0;
+        state.activeAction = 'idle';
       }
-      markAnimalHunted(prey);
-      hunted = {
-        actorId: prey.id,
-        speciesId: prey.speciesId,
-        amount,
-        x: prey.x,
-        y: prey.y,
-        z: prey.z,
-      };
-      state.activeHuntActorId = null;
-      state.huntProgress = 0;
-      state.actionProgress = 0;
-      state.activeAction = 'idle';
     }
-  } else if (!arrowShot && !hammerSlam && !openedSecret) {
+  } else if (!arrowShot && !hammerSlam && !openedSecret && !wreckSalvaged && !boneInspected && !templeOpened && !fireLitNow) {
     const canRoastAny =
       state.nearCampfire &&
+      state.fireLit &&
       (state.carried.fish > 0 ||
         state.carried.meat > 0 ||
         (state.fireLevel >= 2 && state.carried.banana > 0));
@@ -2572,7 +3510,7 @@ export function stepSurvivalSystem(
     state.lowEnergyBlocked = state.energy <= 1 && moved;
   }
 
-  // Check Defeat Condition (predator strikes / disaster hazards / drowning brought energy to 0!)
+  // Check Defeat Condition (predator strikes / disaster hazards / venom / drowning brought energy to 0!)
   if (state.energy <= 0) {
     state.energy = 0;
     state.gameOutcome = 'defeat';
@@ -2582,8 +3520,16 @@ export function stepSurvivalSystem(
     Boolean(harvested) ||
     Boolean(fishingMissed) ||
     Boolean(hunted) ||
+    Boolean(meleeStrike) ||
     Boolean(builtUpgrade) ||
     Boolean(openedSecret) ||
+    Boolean(wreckSalvaged) ||
+    Boolean(boneInspected) ||
+    Boolean(templeOpened) ||
+    Boolean(templeLockedNotice) ||
+    Boolean(fireLitNow) ||
+    Boolean(poisonedSec) ||
+    Boolean(disasterChallengeOutcome) ||
     Boolean(arrowShot) ||
     Boolean(hammerSlam) ||
     Boolean(eventStarted) ||
@@ -2600,6 +3546,19 @@ export function stepSurvivalSystem(
     discoveredSpecies.length > 0 ||
     Math.round(state.energy) !== prevRoundedEnergy ||
     state.nearCampfire !== prevNearCamp ||
+    state.fireLit !== prevFireLit ||
+    Math.ceil(state.venomTimer) !== prevVenomSec ||
+    state.antidotes !== prevAntidotes ||
+    state.shellArmorCharges !== prevShellArmor ||
+    Math.ceil(state.elixirTimer) !== prevElixirSec ||
+    Math.ceil(state.torchTimer) !== prevTorchSec ||
+    state.baitCharges !== prevBait ||
+    state.wreckLooted !== prevWreckLooted ||
+    state.inspectedBones.length !== prevBonesFound ||
+    state.templeUnlocked !== prevTempleUnlocked ||
+    state.templeRelicClaimed !== prevTempleRelicClaimed ||
+    (state.disasterChallenge?.status ?? null) !== prevChallengeStatus ||
+    (state.disasterChallenge?.dodgedCount ?? 0) !== prevChallengeDodged ||
     state.backpackFullBlocked !== prevFullBlocked ||
     state.lowEnergyBlocked !== prevLowBlocked ||
     state.needSpearBlocked !== prevNeedSpear ||
@@ -2625,10 +3584,18 @@ export function stepSurvivalSystem(
     harvested,
     fishingMissed,
     hunted,
+    meleeStrike,
     arrowShot,
     hammerSlam,
     builtUpgrade,
     openedSecret,
+    wreckSalvaged,
+    boneInspected,
+    templeOpened,
+    templeLockedNotice,
+    fireLitNow,
+    poisonedSec,
+    disasterChallengeOutcome,
     eventStarted,
     eventEndedNotice,
     boatVoyageNotice,
@@ -2643,5 +3610,314 @@ export function stepSurvivalSystem(
     depositedToCamp,
     earnedCoins,
     discoveredSpecies,
+  };
+}
+
+export interface SavedRunSnapshot {
+  version: 1;
+  savedAt: number;
+  mode: GameMode;
+  seed: string;
+  player: {
+    x: number;
+    y: number;
+    z: number;
+    yaw: number;
+  };
+  state: {
+    carried: SurvivalState['carried'];
+    carriedStack: ResourceKind[];
+    stashed: SurvivalState['stashed'];
+    cookedFish: number;
+    roastedBanana: number;
+    cookedMeat: number;
+    huntedCount: number;
+    coins: number;
+    energy: number;
+    hasSpear: boolean;
+    hasFireSpear: boolean;
+    equippedWeapon: WeaponId;
+    unlockedWeapons: Record<WeaponId, boolean>;
+    weaponLevels: Record<WeaponId, number>;
+    weaponXp: Record<WeaponId, number>;
+    fireLit: boolean;
+    fireLevel: number;
+    fireStokedCount: number;
+    venomTimer: number;
+    antidotes: number;
+    shellArmorCharges: number;
+    elixirTimer: number;
+    torchTimer: number;
+    baitCharges: number;
+    xp: number;
+    playerLevel: number;
+    playerXp: number;
+    playerXpToNext: number;
+    skillPoints: number;
+    skills: Record<SkillId, number>;
+    timeOfDay: number;
+    dayCount: number;
+    weather: WeatherKind;
+    weatherTimer: number;
+    groundWetness: number;
+    discoveredSecrets: string[];
+    inspectedBones: string[];
+    wreckLooted: boolean;
+    templeUnlocked: boolean;
+    templeRelicClaimed: boolean;
+    buildings: Record<CampUpgradeId, boolean>;
+    discoveredAnimals: string[];
+    nodeCooldowns: Record<string, number>;
+  };
+}
+
+export function exportSavedRunSnapshot(
+  state: SurvivalState,
+  player: { x: number; y: number; z: number; yaw: number },
+  mode: GameMode,
+  seed: string
+): SavedRunSnapshot {
+  const nodeCooldowns: Record<string, number> = {};
+  for (const node of state.nodes) {
+    if (node.cooldownRemaining > 0.2) {
+      nodeCooldowns[node.id] = Number(node.cooldownRemaining.toFixed(2));
+    }
+  }
+  return {
+    version: 1,
+    savedAt: Date.now(),
+    mode,
+    seed,
+    player: {
+      x: Number(player.x.toFixed(3)),
+      y: Number(player.y.toFixed(3)),
+      z: Number(player.z.toFixed(3)),
+      yaw: Number(player.yaw.toFixed(3)),
+    },
+    state: {
+      carried: { ...state.carried },
+      carriedStack: [...state.carriedStack],
+      stashed: { ...state.stashed },
+      cookedFish: state.cookedFish,
+      roastedBanana: state.roastedBanana,
+      cookedMeat: state.cookedMeat,
+      huntedCount: state.huntedCount,
+      coins: state.coins,
+      energy: Number(state.energy.toFixed(2)),
+      hasSpear: state.hasSpear,
+      hasFireSpear: state.hasFireSpear,
+      equippedWeapon: state.equippedWeapon,
+      unlockedWeapons: { ...state.unlockedWeapons },
+      weaponLevels: { ...state.weaponLevels },
+      weaponXp: { ...state.weaponXp },
+      fireLit: state.fireLit,
+      fireLevel: state.fireLevel,
+      fireStokedCount: state.fireStokedCount,
+      venomTimer: state.venomTimer,
+      antidotes: state.antidotes,
+      shellArmorCharges: state.shellArmorCharges,
+      elixirTimer: state.elixirTimer,
+      torchTimer: state.torchTimer,
+      baitCharges: state.baitCharges,
+      xp: state.xp,
+      playerLevel: state.playerLevel,
+      playerXp: state.playerXp,
+      playerXpToNext: state.playerXpToNext,
+      skillPoints: state.skillPoints,
+      skills: { ...state.skills },
+      timeOfDay: state.timeOfDay,
+      dayCount: state.dayCount,
+      weather: state.weather,
+      weatherTimer: state.weatherTimer,
+      groundWetness: state.groundWetness,
+      discoveredSecrets: [...state.discoveredSecrets],
+      inspectedBones: [...state.inspectedBones],
+      wreckLooted: state.wreckLooted,
+      templeUnlocked: state.templeUnlocked,
+      templeRelicClaimed: state.templeRelicClaimed,
+      buildings: { ...state.buildings },
+      discoveredAnimals: [...state.wildlife.discoveredSpecies],
+      nodeCooldowns,
+    },
+  };
+}
+
+export function restoreSavedRunSnapshot(
+  snapshot: unknown,
+  world: IslandWorldData
+): { state: SurvivalState; player: { x: number; y: number; z: number; yaw: number } } | null {
+  if (!snapshot || typeof snapshot !== 'object') return null;
+  const snap = snapshot as Partial<SavedRunSnapshot>;
+  if (snap.version !== 1 || !snap.state || !snap.player || typeof snap.seed !== 'string') {
+    return null;
+  }
+
+  const saved = snap.state;
+  const state = createSurvivalState(world, typeof saved.timeOfDay === 'number' ? saved.timeOfDay : 0.38);
+
+  if (saved.carried) {
+    state.carried = {
+      wood: Math.max(0, Number(saved.carried.wood) || 0),
+      fish: Math.max(0, Number(saved.carried.fish) || 0),
+      berries: Math.max(0, Number(saved.carried.berries) || 0),
+      shell: Math.max(0, Number(saved.carried.shell) || 0),
+      banana: Math.max(0, Number(saved.carried.banana) || 0),
+      meat: Math.max(0, Number(saved.carried.meat) || 0),
+    };
+  }
+  if (Array.isArray(saved.carriedStack)) {
+    state.carriedStack = saved.carriedStack.filter(
+      (k): k is ResourceKind =>
+        k === 'wood' || k === 'fish' || k === 'berries' || k === 'shell' || k === 'banana' || k === 'meat'
+    );
+  }
+  if (saved.stashed) {
+    state.stashed = {
+      wood: Math.max(0, Number(saved.stashed.wood) || 0),
+      shell: Math.max(0, Number(saved.stashed.shell) || 0),
+    };
+  }
+
+  state.cookedFish = Math.max(0, Number(saved.cookedFish) || 0);
+  state.roastedBanana = Math.max(0, Number(saved.roastedBanana) || 0);
+  state.cookedMeat = Math.max(0, Number(saved.cookedMeat) || 0);
+  state.huntedCount = Math.max(0, Number(saved.huntedCount) || 0);
+  state.coins = Math.max(0, Number(saved.coins) || 0);
+
+  state.hasSpear = Boolean(saved.hasSpear);
+  state.hasFireSpear = Boolean(saved.hasFireSpear);
+  if (saved.unlockedWeapons) {
+    state.unlockedWeapons = {
+      axe: true,
+      spear: Boolean(saved.unlockedWeapons.spear),
+      bow: Boolean(saved.unlockedWeapons.bow),
+      hammer: Boolean(saved.unlockedWeapons.hammer),
+    };
+  }
+  if (saved.weaponLevels) {
+    state.weaponLevels = {
+      axe: Math.max(1, Number(saved.weaponLevels.axe) || 1),
+      spear: Math.max(1, Number(saved.weaponLevels.spear) || 1),
+      bow: Math.max(1, Number(saved.weaponLevels.bow) || 1),
+      hammer: Math.max(1, Number(saved.weaponLevels.hammer) || 1),
+    };
+  }
+  if (saved.weaponXp) {
+    state.weaponXp = {
+      axe: Math.max(0, Number(saved.weaponXp.axe) || 0),
+      spear: Math.max(0, Number(saved.weaponXp.spear) || 0),
+      bow: Math.max(0, Number(saved.weaponXp.bow) || 0),
+      hammer: Math.max(0, Number(saved.weaponXp.hammer) || 0),
+    };
+  }
+  if (
+    saved.equippedWeapon &&
+    state.unlockedWeapons[saved.equippedWeapon]
+  ) {
+    state.equippedWeapon = saved.equippedWeapon;
+  }
+
+  state.fireLit = Boolean(saved.fireLit);
+  state.fireLevel = state.fireLit ? Math.max(1, Number(saved.fireLevel) || 1) : 0;
+  state.fireStokedCount = Math.max(0, Number(saved.fireStokedCount) || 0);
+  state.venomTimer = Math.max(0, Number(saved.venomTimer) || 0);
+  state.antidotes = Math.max(0, Number(saved.antidotes) || 0);
+  state.shellArmorCharges = Math.max(0, Number(saved.shellArmorCharges) || 0);
+  state.elixirTimer = Math.max(0, Number(saved.elixirTimer) || 0);
+  state.torchTimer = Math.max(0, Number(saved.torchTimer) || 0);
+  state.baitCharges = Math.max(0, Number(saved.baitCharges) || 0);
+
+  state.xp = Math.max(0, Number(saved.xp) || 0);
+  state.playerLevel = Math.max(1, Math.min(CONFIG.PLAYER.MAX_LEVEL, Number(saved.playerLevel) || 1));
+  state.playerXp = Math.max(0, Number(saved.playerXp) || 0);
+  state.playerXpToNext =
+    state.playerLevel >= CONFIG.PLAYER.MAX_LEVEL
+      ? getPlayerXpThreshold(CONFIG.PLAYER.MAX_LEVEL - 1)
+      : getPlayerXpThreshold(state.playerLevel);
+  state.skillPoints = Math.max(0, Number(saved.skillPoints) || 0);
+
+  if (saved.skills) {
+    state.skills = {
+      lumberjack: Math.max(0, Number(saved.skills.lumberjack) || 0),
+      backpacker: Math.max(0, Number(saved.skills.backpacker) || 0),
+      pathfinder: Math.max(0, Number(saved.skills.pathfinder) || 0),
+      angler: Math.max(0, Number(saved.skills.angler) || 0),
+      pyromancer: Math.max(0, Number(saved.skills.pyromancer) || 0),
+    };
+  }
+  if (saved.buildings) {
+    state.buildings = {
+      shelter: Boolean(saved.buildings.shelter),
+      rack: Boolean(saved.buildings.rack),
+      pier: Boolean(saved.buildings.pier),
+      boat: Boolean(saved.buildings.boat),
+    };
+    state.buildProgress = {
+      shelter: state.buildings.shelter ? 1 : 0,
+      rack: state.buildings.rack ? 1 : 0,
+      pier: state.buildings.pier ? 1 : 0,
+      boat: state.buildings.boat ? 1 : 0,
+    };
+  }
+
+  state.maxEnergy = recomputeMaxEnergy(state);
+  state.backpackCapacity = recomputeBackpackCapacity(state);
+  state.energy = Math.max(10, Math.min(state.maxEnergy, Number(saved.energy) || state.maxEnergy));
+
+  state.dayCount = Math.max(1, Number(saved.dayCount) || 1);
+  if (
+    saved.weather === 'clear' ||
+    saved.weather === 'rain' ||
+    saved.weather === 'storm' ||
+    saved.weather === 'fog'
+  ) {
+    state.weather = saved.weather;
+  }
+  if (typeof saved.weatherTimer === 'number') {
+    state.weatherTimer = Math.max(2, saved.weatherTimer);
+  }
+  if (typeof saved.groundWetness === 'number') {
+    state.groundWetness = Math.max(0, Math.min(1, saved.groundWetness));
+  }
+
+  if (Array.isArray(saved.discoveredSecrets)) {
+    state.discoveredSecrets = saved.discoveredSecrets.filter((id) =>
+      state.secretSpots.some((s) => s.id === id)
+    );
+  }
+  if (Array.isArray(saved.inspectedBones)) {
+    state.inspectedBones = saved.inspectedBones.filter((id) =>
+      state.ancientBoneSites.some((b) => b.id === id)
+    );
+  }
+  state.wreckLooted = Boolean(saved.wreckLooted);
+  state.templeUnlocked = Boolean(saved.templeUnlocked);
+  state.templeRelicClaimed = Boolean(saved.templeRelicClaimed);
+  state.templeDoorProgress = state.templeUnlocked ? 1 : 0;
+
+  if (Array.isArray(saved.discoveredAnimals)) {
+    for (const sp of saved.discoveredAnimals) {
+      if (!state.wildlife.discoveredSpecies.includes(sp)) {
+        state.wildlife.discoveredSpecies.push(sp);
+      }
+    }
+  }
+  if (saved.nodeCooldowns && typeof saved.nodeCooldowns === 'object') {
+    for (const node of state.nodes) {
+      const cd = saved.nodeCooldowns[node.id];
+      if (typeof cd === 'number' && cd > 0) {
+        node.cooldownRemaining = cd;
+      }
+    }
+  }
+
+  return {
+    state,
+    player: {
+      x: Number.isFinite(snap.player.x) ? snap.player.x : CONFIG.WORLD.SPAWN_X,
+      y: Number.isFinite(snap.player.y) ? snap.player.y : 1.9,
+      z: Number.isFinite(snap.player.z) ? snap.player.z : CONFIG.WORLD.SPAWN_Z,
+      yaw: Number.isFinite(snap.player.yaw) ? snap.player.yaw : 0,
+    },
   };
 }

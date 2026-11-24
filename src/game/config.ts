@@ -103,6 +103,11 @@ export const CONFIG = {
       COLLIDER_R: 1.05,
       AURA_RADIUS: 4.3,
     },
+    AIRPLANE_WRECK: {
+      CX: -21,
+      CZ: 19,
+      COLLIDER_R: 3.1,
+    },
   },
 
   PROPS: {
@@ -160,19 +165,24 @@ export const CONFIG = {
     HARVEST_RANGE_BANANA: 2.55,
     HARVEST_RANGE_BUSH: 2.25,
     HARVEST_RANGE_SHELL: 2.15,
-    HARVEST_RANGE_FISHING: 4.1,
+    HARVEST_RANGE_FISHING: 4.8,
     HARVEST_RANGE_HUNT: 2.85,
+    HARVEST_RANGE_COMBAT: 3.35,
     HARVEST_RANGE_BOW: 10.5,
+    MELEE_STRIKE_COOLDOWN_SEC: 0.36,
     HAMMER_AOE_RANGE: 4.0,
     HAMMER_STUN_SEC: 4.8,
     HARVEST_RANGE_BUILD: 2.55,
     HARVEST_RANGE_LANDMARK: 4.8,
     HARVEST_RANGE_SECRET: 2.5,
+    HARVEST_RANGE_WRECK: 3.6,
+    HARVEST_RANGE_BONE: 2.6,
+    HARVEST_RANGE_TEMPLE: 4.5,
     HARVEST_DURATION_TREE: 0.85,
     HARVEST_DURATION_BANANA: 1.0,
     HARVEST_DURATION_BUSH: 0.45,
     HARVEST_DURATION_SHELL: 0.35,
-    HARVEST_DURATION_FISHING: 1.15,
+    HARVEST_DURATION_FISHING: 1.05,
     HARVEST_DURATION_HUNT: 0.85,
     COOK_DURATION_SEC: 1.0,
     BUILD_DURATION_SEC: 1.05,
@@ -180,26 +190,29 @@ export const CONFIG = {
     REGROW_BANANA_SEC: 12,
     REGROW_BUSH_SEC: 9,
     REGROW_SHELL_SEC: 14,
-    REGROW_FISHING_SEC: 5.5,
+    REGROW_FISHING_SEC: 5.0,
     RESPAWN_HUNT_SEC: 22,
     LANDMARK_COOLDOWN_SEC: 24,
     LANDMARK_SPECIAL_COOLDOWN_SEC: 14,
-    WALK_ENERGY_DRAIN_PER_SEC: 0.44,
-    SWIM_ENERGY_DRAIN_PER_SEC: 0.95,
+    WALK_ENERGY_DRAIN_PER_SEC: 0.68,
+    SWIM_ENERGY_DRAIN_PER_SEC: 1.55,
+    NIGHT_COLD_DRAIN_PER_SEC: 0.58,
+    VENOM_DRAIN_PER_SEC: 2.6,
     SWIM_SPEED_SCALE: 0.72,
-    HARVEST_ENERGY_COST_TREE: 2.5,
+    HARVEST_ENERGY_COST_TREE: 2.6,
     HARVEST_ENERGY_COST_BANANA: 1.6,
-    HARVEST_ENERGY_COST_FISHING: 1.8,
-    HARVEST_ENERGY_COST_HUNT: 2.2,
+    HARVEST_ENERGY_COST_FISHING: 1.6,
+    HARVEST_ENERGY_COST_HUNT: 2.4,
     HARVEST_ENERGY_COST_BUSH: 0.5,
-    BERRY_ENERGY_RESTORE: 20,
-    BANANA_ENERGY_RESTORE: 26,
-    COOKED_FISH_ENERGY_RESTORE: 45,
-    ROASTED_BANANA_ENERGY_RESTORE: 56,
-    COOKED_MEAT_ENERGY_RESTORE: 62,
+    BERRY_ENERGY_RESTORE: 18,
+    BANANA_ENERGY_RESTORE: 25,
+    COOKED_FISH_ENERGY_RESTORE: 44,
+    ROASTED_BANANA_ENERGY_RESTORE: 54,
+    COOKED_MEAT_ENERGY_RESTORE: 60,
     CAMPFIRE_ENERGY_REGEN_PER_SEC: 18,
     EXHAUSTED_SPEED_SCALE: 0.65,
     SPEAR_CRAFT_WOOD_COST: 2,
+    FIRE_IGNITE_WOOD_COST: 2,
     FIRE_FUEL_WOOD_COST: 2,
     MAX_FIRE_LEVEL: 10,
     XP_PER_SKILL_POINT: 28,
@@ -215,9 +228,9 @@ export const CONFIG = {
       boat: 15,
     },
     WORLD_EVENTS: {
-      MIN_INTERVAL_SEC: 28,
-      MAX_INTERVAL_SEC: 44,
-      WARNING_SEC: 3.8,
+      MIN_INTERVAL_SEC: 55,
+      MAX_INTERVAL_SEC: 85,
+      WARNING_SEC: 4.5,
       LOW_TIDE_DURATION_SEC: 15,
       TSUNAMI_DURATION_SEC: 13,
       VOLCANO_DURATION_SEC: 14,
@@ -225,10 +238,57 @@ export const CONFIG = {
       FISH_FRENZY_DURATION_SEC: 15,
       AUTUMN_DURATION_SEC: 15,
       WINTER_DURATION_SEC: 15,
+      EARTHQUAKE_DURATION_SEC: 13,
+      LIGHTNING_STORM_DURATION_SEC: 14,
       LOW_TIDE_OFFSET: -0.55,
       TSUNAMI_OFFSET: 1.42,
     },
   },
+
+  WORKSHOP_RECIPES: [
+    {
+      id: 'antidote',
+      nameFa: 'پادزهر زهر مار',
+      costFa: '۲ توت + ۲ سکه (یا ۵ سکه)',
+      effectFa: '+۱ پادزهر فوری برای خنثی‌سازی سم',
+    },
+    {
+      id: 'elixir',
+      nameFa: 'معجون چابکی استوایی',
+      costFa: '۱ موز + ۲ توت',
+      effectFa: '۲۴ ثانیه سرعت بیشتر و بازیابی انرژی',
+    },
+    {
+      id: 'shell_armor',
+      nameFa: 'طلسم دفاعی صدف',
+      costFa: '۳ صدف',
+      effectFa: 'کاهش ۵۰٪ آسیب ۲ ضربه بعدی',
+    },
+    {
+      id: 'golden_bait',
+      nameFa: 'طعمه طلایی ماهی‌گیری',
+      costFa: '۱ ماهی + ۱ توت',
+      effectFa: '۳ صید تضمینی ۱۰۰٪ + ماهی اضافه',
+    },
+    {
+      id: 'ward_torch',
+      nameFa: 'مشعل محافظ کمپ',
+      costFa: '۲ چوب + ۲ سکه',
+      effectFa: '۳۸ ثانیه دفع شکارچیان شب و مارها',
+    },
+    {
+      id: 'supply_pack',
+      nameFa: 'بسته انرژی کمپ',
+      costFa: '۱۰ سکه',
+      effectFa: '+۴۵ انرژی فوری برای کاوش',
+    },
+    {
+      id: 'xp_tome',
+      nameFa: 'تومار تجربه سلاح',
+      costFa: '۱۲ سکه',
+      effectFa: '+۲۴ تجربه شخصیت و +۱۵ تجربه سلاح',
+    },
+  ] as const,
 
   WEAPON_SPECS: [
     {
@@ -296,7 +356,7 @@ export const CONFIG = {
   ] as const,
 
   JOYSTICK: {
-    MAX_RADIUS_PX: 54,
+    MAX_RADIUS_PX: 72,
     DEADZONE_RATIO: 0.12,
   },
 
@@ -336,13 +396,14 @@ export const CONFIG = {
 
   STORAGE_KEYS: {
     CURRENT_ISLAND_SEED: 'survival_island_3d_normal_seed_v3',
+    SAVED_RUN: 'survival_island_saved_run_v1',
     BEST_SCORE: 'survival_island_best_score_v1',
     DAILY_BEST_PREFIX: 'survival_island_daily_v1_',
   },
 } as const;
 
 export type GameMode = 'normal' | 'daily';
-export type AppScreenState = 'loading' | 'title' | 'playing';
+export type AppScreenState = 'loading' | 'title' | 'cutscene' | 'ending_cutscene' | 'playing';
 export type GameOutcome = 'playing' | 'victory' | 'defeat';
 export type SeasonKind = 'summer' | 'autumn' | 'winter';
 export type BiomeId = 'center' | 'ruins' | 'volcano' | 'mushroom' | 'shipwreck' | 'spring';
@@ -351,6 +412,14 @@ export type CampUpgradeId = 'shelter' | 'rack' | 'pier' | 'boat';
 export type DayPhase = 'dawn' | 'day' | 'dusk' | 'night';
 export type WeatherKind = 'clear' | 'rain' | 'storm' | 'fog';
 export type WeaponId = 'axe' | 'spear' | 'bow' | 'hammer';
+export type WorkshopRecipeId =
+  | 'antidote'
+  | 'elixir'
+  | 'shell_armor'
+  | 'golden_bait'
+  | 'ward_torch'
+  | 'supply_pack'
+  | 'xp_tome';
 export type WorldEventKind =
   | 'none'
   | 'low_tide'
@@ -359,5 +428,7 @@ export type WorldEventKind =
   | 'meteor_shower'
   | 'fish_frenzy'
   | 'autumn_breeze'
-  | 'winter_frost';
+  | 'winter_frost'
+  | 'earthquake'
+  | 'lightning_storm';
 export type SkillId = 'lumberjack' | 'backpacker' | 'pathfinder' | 'angler' | 'pyromancer';

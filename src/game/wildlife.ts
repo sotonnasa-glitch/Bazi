@@ -32,6 +32,7 @@ export interface AnimalSpeciesSpec {
   flying?: boolean;
   aquatic?: boolean;
   amphibious?: boolean;
+  fishable?: boolean;
   huntable?: boolean;
   meatYield?: number;
   huntDuration?: number;
@@ -219,6 +220,57 @@ export const ANIMAL_SPECIES: AnimalSpeciesSpec[] = [
     accentColor: 0xfff5d6,
     flying: true,
   },
+  {
+    id: 'jungle_cobra',
+    nameFa: 'مار کبرا طلایی',
+    category: 'day',
+    archetype: 'serpent',
+    habitatFa: 'علفزار و سنگلاخ جزیره',
+    homeBiome: 'center',
+    speed: 2.15,
+    scale: 1.02,
+    primaryColor: 0xc28f27,
+    secondaryColor: 0x3b2611,
+    accentColor: 0xffe46b,
+    huntable: true,
+    meatYield: 1,
+    huntDuration: 0.72,
+    requiresSpear: false,
+  },
+  {
+    id: 'island_python',
+    nameFa: 'مار پیتون جنگل',
+    category: 'day',
+    archetype: 'serpent',
+    habitatFa: 'جنگل استوایی مرطوب',
+    homeBiome: 'center',
+    speed: 1.75,
+    scale: 1.15,
+    primaryColor: 0x5c7f34,
+    secondaryColor: 0x2f3b19,
+    accentColor: 0xd9c26f,
+    huntable: true,
+    meatYield: 2,
+    huntDuration: 0.8,
+    requiresSpear: false,
+  },
+  {
+    id: 'venomous_snake',
+    nameFa: 'مار سمی افعی',
+    category: 'day',
+    archetype: 'serpent',
+    habitatFa: 'سنگلاخ و بیشه‌زار جزیره',
+    homeBiome: 'center',
+    speed: 2.4,
+    scale: 1.06,
+    primaryColor: 0x2d8a3e,
+    secondaryColor: 0x9ef01a,
+    accentColor: 0xfff033,
+    huntable: true,
+    meatYield: 1,
+    huntDuration: 0.72,
+    requiresSpear: false,
+  },
 
   // 13-18: Coastal & Marine Wildlife (crabs on big sandy beach, fish strictly offshore!)
   {
@@ -293,6 +345,7 @@ export const ANIMAL_SPECIES: AnimalSpeciesSpec[] = [
     secondaryColor: 0xfff2cc,
     accentColor: 0x1e293b,
     aquatic: true,
+    fishable: true,
   },
   {
     id: 'golden_snapper',
@@ -307,6 +360,7 @@ export const ANIMAL_SPECIES: AnimalSpeciesSpec[] = [
     secondaryColor: 0xfff59d,
     accentColor: 0xd9480f,
     aquatic: true,
+    fishable: true,
   },
 
   // 19-25: Night Predators (emerge & hunt at night, hide/rest during day!)
@@ -391,6 +445,9 @@ export const ANIMAL_SPECIES: AnimalSpeciesSpec[] = [
     secondaryColor: 0xc2ab93,
     accentColor: 0xffcc29,
     flying: true,
+    huntable: true,
+    meatYield: 1,
+    huntDuration: 0.72,
   },
   {
     id: 'scorpion',
@@ -422,6 +479,9 @@ export const ANIMAL_SPECIES: AnimalSpeciesSpec[] = [
     secondaryColor: 0x5c3c6e,
     accentColor: 0xff3b5c,
     flying: true,
+    huntable: true,
+    meatYield: 1,
+    huntDuration: 0.68,
   },
 
   // 26-32: Strange / Mythic Creatures in Weird Landmarks
@@ -507,10 +567,10 @@ export const ANIMAL_SPECIES: AnimalSpeciesSpec[] = [
   },
   {
     id: 'pirate_crab',
-    nameFa: 'خرچنگ غول‌پیکر دزدان',
+    nameFa: 'خرچنگ غول‌پیکر خلیج استخوان',
     category: 'strange',
     archetype: 'crab',
-    habitatFa: 'خلیج کشتی‌شکسته',
+    habitatFa: 'خلیج جمجمه و استخوان',
     homeBiome: 'shipwreck',
     speed: 1.85,
     scale: 1.45,
@@ -518,8 +578,29 @@ export const ANIMAL_SPECIES: AnimalSpeciesSpec[] = [
     secondaryColor: 0xffc83d,
     accentColor: 0x1b2432,
     amphibious: true,
+    huntable: true,
+    meatYield: 2,
+    huntDuration: 0.85,
   },
 ];
+
+export function getSpeciesMaxHp(speciesId: string): number {
+  if (speciesId === 'black_panther' || speciesId === 'pirate_crab' || speciesId === 'night_wolf') {
+    return 3;
+  }
+  if (
+    speciesId === 'hyena' ||
+    speciesId === 'scorpion' ||
+    speciesId === 'venomous_snake' ||
+    speciesId === 'night_viper' ||
+    speciesId === 'boar' ||
+    speciesId === 'giant_owl' ||
+    speciesId === 'vampire_bat'
+  ) {
+    return 2;
+  }
+  return 1;
+}
 
 export interface AnimalActorState {
   id: string;
@@ -548,6 +629,10 @@ export interface AnimalActorState {
   attackTargetX: number;
   attackTargetZ: number;
   enraged?: boolean;
+  pauseTimer?: number;
+  turnBank?: number;
+  hp?: number;
+  maxHp?: number;
 }
 
 export interface PredatorStrikeEvent {
@@ -556,6 +641,10 @@ export interface PredatorStrikeEvent {
   x: number;
   z: number;
   damage: number;
+  knockbackX: number;
+  knockbackZ: number;
+  knockbackForce: number;
+  venomSec?: number;
 }
 
 export interface WildlifeState {
@@ -666,6 +755,7 @@ export function createWildlifeState(world: IslandWorldData, seed: string): Wildl
       }
 
       const yaw = rng() * Math.PI * 2;
+      const maxHp = getSpeciesMaxHp(spec.id);
       actors.push({
         id: `${spec.id}-${copy}`,
         speciesId: spec.id,
@@ -693,6 +783,10 @@ export function createWildlifeState(world: IslandWorldData, seed: string): Wildl
         attackTargetX: pt.x,
         attackTargetZ: pt.z,
         enraged: false,
+        pauseTimer: 0,
+        turnBank: 0,
+        hp: maxHp,
+        maxHp,
       });
     }
   }
@@ -710,6 +804,17 @@ export function getAnimalSpecies(speciesId: string): AnimalSpeciesSpec | undefin
   return SPECIES_BY_ID.get(speciesId);
 }
 
+export function isHostilePredatorActor(actor: AnimalActorState): boolean {
+  return (
+    actor.category === 'night_predator' ||
+    actor.speciesId === 'venomous_snake' ||
+    actor.speciesId === 'jungle_cobra' ||
+    actor.speciesId === 'pirate_crab' ||
+    Boolean(actor.enraged) ||
+    actor.attackState !== 'idle'
+  );
+}
+
 export function markAnimalHunted(actor: AnimalActorState): void {
   actor.koTimer = 0.55;
   actor.respawnTimer = CONFIG.SURVIVAL.RESPAWN_HUNT_SEC;
@@ -721,6 +826,43 @@ export function markAnimalHunted(actor: AnimalActorState): void {
   actor.attackState = 'idle';
   actor.attackTimer = 0;
   actor.enraged = false;
+  actor.hp = 0;
+}
+
+export function damageAnimalActor(
+  actor: AnimalActorState,
+  damage: number,
+  fromX: number,
+  fromZ: number
+): { defeated: boolean; hp: number; maxHp: number; knockedX: number; knockedZ: number } {
+  const maxHp = actor.maxHp ?? getSpeciesMaxHp(actor.speciesId);
+  actor.maxHp = maxHp;
+  const currentHp = actor.hp ?? maxHp;
+  const nextHp = Math.max(0, currentHp - Math.max(1, damage));
+  actor.hp = nextHp;
+
+  const dx = actor.x - fromX;
+  const dz = actor.z - fromZ;
+  const dist = Math.max(0.05, Math.hypot(dx, dz));
+  const nx = dx / dist;
+  const nz = dz / dist;
+
+  if (nextHp <= 0) {
+    markAnimalHunted(actor);
+    return { defeated: true, hp: 0, maxHp, knockedX: nx, knockedZ: nz };
+  }
+
+  // Interrupt active lunge windup & stagger predator backwards
+  actor.attackState = 'idle';
+  actor.attackTimer = 0;
+  actor.attackCooldown = Math.max(actor.attackCooldown, 1.15);
+  actor.stunTimer = Math.max(actor.stunTimer, 0.72);
+  actor.enraged = true;
+  actor.x += nx * 1.05;
+  actor.z += nz * 1.05;
+  actor.vx = nx * 2.2;
+  actor.vz = nz * 2.2;
+  return { defeated: false, hp: nextHp, maxHp, knockedX: nx, knockedZ: nz };
 }
 
 export function enrageAnimal(actor: AnimalActorState): void {
@@ -737,7 +879,8 @@ export function stepWildlifeSystem(
   fireLevel: number,
   hasFireSpear: boolean,
   world: IslandWorldData,
-  activeHuntActorId: string | null = null
+  activeHuntActorId: string | null = null,
+  torchActive = false
 ): WildlifeStepResult {
   if (dt <= 0) {
     return { discoveredNew: [], predatorNearby: false, ambushEnergyLoss: 0, predatorStrikes: [] };
@@ -752,7 +895,8 @@ export function stepWildlifeSystem(
   let predatorNearby = false;
   let ambushEnergyLoss = 0;
   const camp = CONFIG.ISLAND.CAMPFIRE;
-  const wardRadius = CONFIG.ISLAND.CAMPFIRE.AURA_RADIUS + (fireLevel - 1) * 2.2;
+  const fireLit = fireLevel > 0;
+  const wardRadius = fireLit ? CONFIG.ISLAND.CAMPFIRE.AURA_RADIUS + (fireLevel - 1) * 2.2 : 0;
 
   for (const actor of state.actors) {
     const spec = SPECIES_BY_ID.get(actor.speciesId);
@@ -787,6 +931,9 @@ export function stepWildlifeSystem(
         actor.attackState = 'idle';
         actor.attackTimer = 0;
         actor.enraged = false;
+        const maxHp = actor.maxHp ?? getSpeciesMaxHp(actor.speciesId);
+        actor.maxHp = maxHp;
+        actor.hp = maxHp;
         continue;
       } else {
         actor.visible = false;
@@ -836,90 +983,144 @@ export function stepWildlifeSystem(
       discoveredNew.push(actor.speciesId);
     }
 
-    // 3. Movement AI
+    const speedMag = Math.hypot(actor.vx, actor.vz);
     actor.decisionTimer -= dt;
-    actor.phase += dt * (2.5 + spec.speed * 1.4);
+    actor.phase += dt * (1.8 + speedMag * 1.9);
 
     if (actor.stunTimer > 0) {
       actor.vx = 0;
       actor.vz = 0;
       actor.attackState = 'idle';
       actor.attackTimer = 0;
+      actor.turnBank = 0;
       continue;
     }
 
+    const protectedByCamp = nearCampfire && fireLit;
+    const isVenomousSnake = actor.speciesId === 'venomous_snake';
+    const isCobra = actor.speciesId === 'jungle_cobra';
     const isAggressiveHostile =
       actor.category === 'night_predator' ||
+      (isVenomousSnake && !torchActive && (Boolean(actor.enraged) || (distToPlayer < 4.2 && !protectedByCamp))) ||
+      (isCobra && !torchActive && (Boolean(actor.enraged) || (distToPlayer < 2.8 && !protectedByCamp))) ||
       (Boolean(actor.enraged) && (actor.speciesId === 'boar' || actor.speciesId === 'pirate_crab'));
 
-    // Handle active melee windup -> strike sequence (predator stops, telegraphs, then lunges & damages!)
+    // Smooth locomotion target velocity (keeps movement natural instead of instant snapping)
+    let desiredVx = actor.vx;
+    let desiredVz = actor.vz;
+    let velBlendRate = spec.flying ? 5.2 : 6.8;
+
+    // Handle active melee windup -> strike sequence (predator stops, telegraphs, then lunges & physically knocks back!)
     if (actor.attackState === 'windup') {
       actor.attackTimer -= dt;
-      actor.vx = 0;
-      actor.vz = 0;
+      desiredVx = 0;
+      desiredVz = 0;
+      velBlendRate = 16.0;
       actor.yaw = Math.atan2(actor.attackTargetX - actor.x, actor.attackTargetZ - actor.z);
       if (actor.attackTimer <= 0) {
         actor.attackState = 'strike';
-        actor.attackTimer = 0.22;
+        actor.attackTimer = 0.26;
         const lungeAng = Math.atan2(playerZ - actor.z, playerX - actor.x);
         actor.attackTargetX = playerX;
         actor.attackTargetZ = playerZ;
-        actor.vx = Math.cos(lungeAng) * spec.speed * 1.45;
-        actor.vz = Math.sin(lungeAng) * spec.speed * 1.45;
-        actor.attackCooldown = 1.85;
-        if (distToPlayer <= 2.45) {
-          const strikeDamage = actor.speciesId === 'black_panther' || actor.speciesId === 'pirate_crab' ? 16 : 12;
+        actor.vx = Math.cos(lungeAng) * spec.speed * 1.78;
+        actor.vz = Math.sin(lungeAng) * spec.speed * 1.78;
+        desiredVx = actor.vx;
+        desiredVz = actor.vz;
+        actor.attackCooldown = 1.55;
+        if (distToPlayer <= 2.6) {
+          const strikeDamage =
+            actor.speciesId === 'black_panther' || actor.speciesId === 'pirate_crab'
+              ? 24
+              : actor.speciesId === 'night_wolf' || actor.speciesId === 'hyena'
+                ? 18
+                : actor.speciesId === 'scorpion'
+                  ? 17
+                  : isVenomousSnake || isCobra
+                    ? 14
+                    : 16;
+          const venomSec = isVenomousSnake
+            ? 9.0
+            : isCobra || actor.speciesId === 'night_viper'
+              ? 4.0
+              : actor.speciesId === 'scorpion'
+                ? 4.5
+                : undefined;
+          const kDist = Math.max(0.05, distToPlayer);
+          const knockbackX = (playerX - actor.x) / kDist;
+          const knockbackZ = (playerZ - actor.z) / kDist;
+          const knockbackForce =
+            actor.speciesId === 'black_panther' ||
+            actor.speciesId === 'pirate_crab' ||
+            actor.speciesId === 'night_wolf'
+              ? 9.5
+              : actor.speciesId === 'boar'
+                ? 8.5
+                : 6.2;
           ambushEnergyLoss += strikeDamage;
-          state.ambushCooldown = 1.4;
+          state.ambushCooldown = 1.25;
           predatorStrikes.push({
             actorId: actor.id,
             speciesId: actor.speciesId,
             x: playerX,
             z: playerZ,
             damage: strikeDamage,
+            knockbackX,
+            knockbackZ,
+            knockbackForce,
+            venomSec,
           });
         }
       }
     } else if (actor.attackState === 'strike') {
       actor.attackTimer -= dt;
+      desiredVx = actor.vx * 0.85;
+      desiredVz = actor.vz * 0.85;
+      velBlendRate = 5.0;
       if (actor.attackTimer <= 0) {
         actor.attackState = 'idle';
         actor.attackTimer = 0;
-        actor.vx = 0;
-        actor.vz = 0;
+        desiredVx = 0;
+        desiredVz = 0;
       }
     } else if (actor.id === activeHuntActorId) {
       // Prey braces/slows slightly while actively locked in combat/hunt
-      actor.vx *= 0.25;
-      actor.vz *= 0.25;
+      desiredVx = actor.vx * 0.25;
+      desiredVz = actor.vz * 0.25;
+      velBlendRate = 10.0;
     } else if (isAggressiveHostile) {
       const distToCamp = Math.hypot(actor.x - camp.CX, actor.z - camp.CZ);
-      const playerSafe = actor.category === 'night_predator' && (nearCampfire || (hasFireSpear && fireLevel >= 3));
-      if (actor.category === 'night_predator' && distToCamp < wardRadius + 1.5) {
-        // Campfire scares predators away from camp!
+      const playerSafe =
+        (actor.category === 'night_predator' && (protectedByCamp || (hasFireSpear && fireLevel >= 3))) ||
+        torchActive;
+      if (actor.category === 'night_predator' && fireLit && distToCamp < wardRadius + 1.5) {
+        // Lit campfire scares predators away from camp!
         const awayAngle = Math.atan2(actor.z - camp.CZ, actor.x - camp.CX);
-        actor.vx = Math.cos(awayAngle) * spec.speed;
-        actor.vz = Math.sin(awayAngle) * spec.speed;
-      } else if (distToPlayer < 14.5 && !playerSafe) {
+        desiredVx = Math.cos(awayAngle) * spec.speed;
+        desiredVz = Math.sin(awayAngle) * spec.speed;
+      } else if (distToPlayer < 17.0 && !playerSafe) {
         predatorNearby = true;
-        if (distToPlayer <= 1.85 && actor.attackCooldown <= 0) {
+        if (distToPlayer <= 1.95 && actor.attackCooldown <= 0) {
           // Stop in front of player and telegraph visible attack!
           actor.attackState = 'windup';
-          actor.attackTimer = 0.45;
+          actor.attackTimer = 0.42;
           actor.attackTargetX = playerX;
           actor.attackTargetZ = playerZ;
-          actor.vx = 0;
-          actor.vz = 0;
+          desiredVx = 0;
+          desiredVz = 0;
+          velBlendRate = 18.0;
           actor.yaw = Math.atan2(playerX - actor.x, playerZ - actor.z);
-        } else if (distToPlayer <= 1.85) {
+        } else if (distToPlayer <= 1.95) {
           // Hold menacing stance while cooldown ticks
-          actor.vx = 0;
-          actor.vz = 0;
+          desiredVx = 0;
+          desiredVz = 0;
+          velBlendRate = 12.0;
           actor.yaw = Math.atan2(playerX - actor.x, playerZ - actor.z);
         } else {
           const chaseAngle = Math.atan2(playerZ - actor.z, playerX - actor.x);
-          actor.vx = Math.cos(chaseAngle) * spec.speed * 0.84;
-          actor.vz = Math.sin(chaseAngle) * spec.speed * 0.84;
+          desiredVx = Math.cos(chaseAngle) * spec.speed * 0.96;
+          desiredVz = Math.sin(chaseAngle) * spec.speed * 0.96;
+          velBlendRate = 8.5;
         }
       } else if (actor.decisionTimer <= 0) {
         actor.enraged = false;
@@ -928,19 +1129,49 @@ export function stepWildlifeSystem(
         const wobble = (Math.sin(actor.phase * 1.7) - 0.5) * 2.4;
         const distHome = Math.hypot(actor.x - actor.homeX, actor.z - actor.homeZ);
         const angle = distHome > actor.roamRadius ? toHome : toHome + wobble;
-        actor.vx = Math.cos(angle) * spec.speed * 0.65;
-        actor.vz = Math.sin(angle) * spec.speed * 0.65;
+        desiredVx = Math.cos(angle) * spec.speed * 0.65;
+        desiredVz = Math.sin(angle) * spec.speed * 0.65;
       }
+    } else if (
+      (actor.speciesId === 'rabbit' || actor.speciesId === 'deer' || actor.speciesId === 'squirrel') &&
+      distToPlayer < 4.2 &&
+      distToPlayer > 1.2
+    ) {
+      // Timid prey gracefully bounds away if explorer sprints up close
+      const fleeAngle = Math.atan2(actor.z - playerZ, actor.x - playerX);
+      desiredVx = Math.cos(fleeAngle) * spec.speed * 1.05;
+      desiredVz = Math.sin(fleeAngle) * spec.speed * 1.05;
+      velBlendRate = 9.0;
+      actor.pauseTimer = 0;
+      actor.decisionTimer = 0.7;
+    } else if ((actor.pauseTimer ?? 0) > 0) {
+      actor.pauseTimer = Math.max(0, (actor.pauseTimer ?? 0) - dt);
+      desiredVx = 0;
+      desiredVz = 0;
+      velBlendRate = 5.5;
     } else if (actor.decisionTimer <= 0) {
-      actor.decisionTimer = 1.4 + Math.abs(Math.cos(actor.phase)) * 2.6;
-      const distHome = Math.hypot(actor.x - actor.homeX, actor.z - actor.homeZ);
-      const angle =
-        distHome > actor.roamRadius
-          ? Math.atan2(actor.homeZ - actor.z, actor.homeX - actor.x)
-          : actor.yaw + Math.sin(actor.phase * 2.3) * 1.9;
-      actor.vx = Math.cos(angle) * spec.speed * 0.65;
-      actor.vz = Math.sin(angle) * spec.speed * 0.65;
+      const pauseRoll = Math.abs(Math.sin(actor.phase * 3.17));
+      if (!spec.flying && !spec.aquatic && pauseRoll > 0.72) {
+        actor.pauseTimer = 1.0 + pauseRoll * 1.2;
+        actor.decisionTimer = actor.pauseTimer + 0.5;
+        desiredVx = 0;
+        desiredVz = 0;
+      } else {
+        actor.decisionTimer = 1.4 + Math.abs(Math.cos(actor.phase)) * 2.6;
+        const distHome = Math.hypot(actor.x - actor.homeX, actor.z - actor.homeZ);
+        const angle =
+          distHome > actor.roamRadius
+            ? Math.atan2(actor.homeZ - actor.z, actor.homeX - actor.x)
+            : actor.yaw + Math.sin(actor.phase * 2.3) * 1.75;
+        const roamScale = spec.aquatic || spec.flying ? 0.85 : 0.7;
+        desiredVx = Math.cos(angle) * spec.speed * roamScale;
+        desiredVz = Math.sin(angle) * spec.speed * roamScale;
+      }
     }
+
+    const blend = 1 - Math.exp(-velBlendRate * dt);
+    actor.vx += (desiredVx - actor.vx) * blend;
+    actor.vz += (desiredVz - actor.vz) * blend;
 
     const nextX = actor.x + actor.vx * dt;
     const nextZ = actor.z + actor.vz * dt;
@@ -972,8 +1203,16 @@ export function stepWildlifeSystem(
       actor.decisionTimer = 0.25;
     }
 
-    if (Math.hypot(actor.vx, actor.vz) > 0.05) {
-      actor.yaw = Math.atan2(actor.vx, actor.vz);
+    if (Math.hypot(actor.vx, actor.vz) > 0.06) {
+      const targetYaw = Math.atan2(actor.vx, actor.vz);
+      let diff = targetYaw - actor.yaw;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      const turnRate = spec.flying || spec.aquatic ? 7.5 : 9.0;
+      actor.yaw += diff * Math.min(1, dt * turnRate);
+      actor.turnBank = Math.max(-0.45, Math.min(0.45, diff * 0.65));
+    } else {
+      actor.turnBank = (actor.turnBank ?? 0) * Math.max(0, 1 - dt * 8);
     }
   }
 

@@ -39,11 +39,11 @@ export function VirtualJoystick({ enabled, onChange }: VirtualJoystickProps) {
       if (!zone) return;
 
       const rect = zone.getBoundingClientRect();
-      const pad = maxRadius + 12;
       const rawX = event.clientX - rect.left;
       const rawY = event.clientY - rect.top;
-      const originX = Math.max(pad, Math.min(rect.width - pad, rawX));
-      const originY = Math.max(pad, Math.min(rect.height - pad, rawY));
+      const originX = rawX;
+      const originY = rawY;
+      event.stopPropagation();
 
       try {
         zone.setPointerCapture(event.pointerId);
@@ -129,38 +129,38 @@ export function VirtualJoystick({ enabled, onChange }: VirtualJoystickProps) {
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerEnd}
       onPointerCancel={handlePointerEnd}
-      className="absolute bottom-0 inset-x-0 h-1/2 z-10 touch-none select-none cursor-grab active:cursor-grabbing"
+      className="absolute bottom-3.5 right-3 w-[178px] h-[178px] sm:w-[196px] sm:h-[196px] rounded-full z-15 touch-none select-none cursor-grab active:cursor-grabbing flex items-center justify-center"
     >
       {stick ? (
         <div
           data-testid="virtual-joystick-active"
-          className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white/80 bg-white/18 flex items-center justify-center"
+          className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white/85 bg-white/20 flex items-center justify-center"
           style={{
             left: `${stick.originX}px`,
             top: `${stick.originY}px`,
             width: `${maxRadius * 2}px`,
             height: `${maxRadius * 2}px`,
-            boxShadow: '0 6px 18px rgba(10, 62, 102, 0.25)',
+            boxShadow: '0 8px 22px rgba(10, 62, 102, 0.28)',
           }}
         >
           <div
-            className="w-12 h-12 rounded-full bg-gradient-to-b from-white to-[#ffe8a3] border-2 border-white"
+            className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-gradient-to-b from-white to-[#ffe8a3] border-2 border-white"
             style={{
               transform: `translate(${stick.knobX}px, ${stick.knobY}px)`,
-              boxShadow: '0 4px 10px rgba(12, 66, 108, 0.35)',
+              boxShadow: '0 6px 14px rgba(12, 66, 108, 0.38)',
             }}
           />
         </div>
       ) : (
-        <div className="pointer-events-none absolute bottom-[108px] sm:bottom-6 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5 opacity-85">
-          <div className="w-16 h-16 rounded-full border-2 border-dashed border-white/75 bg-white/12 flex items-center justify-center">
-            <div className="w-7 h-7 rounded-full bg-white/85 shadow-md" />
+        <div className="pointer-events-none flex flex-col items-center gap-1.5 opacity-90">
+          <div className="w-22 h-22 sm:w-24 sm:h-24 rounded-full border-2 border-dashed border-white/85 bg-white/18 flex items-center justify-center shadow-lg">
+            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-white/92 shadow-md border border-[#ffe8a3]" />
           </div>
           <span
             className="text-[11px] font-extrabold text-white whitespace-nowrap"
-            style={{ textShadow: '0 2px 4px rgba(10, 58, 94, 0.65)' }}
+            style={{ textShadow: '0 2px 4px rgba(10, 58, 94, 0.78)' }}
           >
-            لمس و کشیدن برای حرکت
+            حرکت (لمس و کشیدن)
           </span>
         </div>
       )}

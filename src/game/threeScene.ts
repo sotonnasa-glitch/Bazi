@@ -10,6 +10,7 @@ import {
   type SkillId,
   type StrangeLandmarkId,
   type WeaponId,
+  type WorkshopRecipeId,
 } from './config';
 import { soundEngine } from './audio';
 import {
@@ -18,7 +19,9 @@ import {
   type AnimalVisualRig,
 } from './animalModels';
 import {
-  buildAnchorGeometry,
+  buildAirplaneFuselageWingGeo,
+  buildAirplanePropellerGeo,
+  buildAncientBoneShrineGeo,
   buildAnvilGeometry,
   buildArrowGeometry,
   buildAxeToolGeometry,
@@ -33,6 +36,7 @@ import {
   buildBoatCradleGeometry,
   buildBowToolGeometry,
   buildBrazierGeometry,
+  buildBuriedStoneTempleGeo,
   buildCampShelterGeometry,
   buildCampfireLogsGeometry,
   buildCanopyBlossomsGeometry,
@@ -41,10 +45,10 @@ import {
   buildCoastalReedGeometry,
   buildCoconutClusterGeometry,
   buildCrystalClusterGeometry,
-  buildCurvedBoatHullGeometry,
   buildCurvedGullWingGeometry,
   buildCurvedPalmTrunkGeometry,
   buildDriftwoodLogGeometry,
+  buildFemurBoneGeometry,
   buildFernTuftGeometry,
   buildFishGeometry,
   buildFishingPierGeometry,
@@ -52,6 +56,7 @@ import {
   buildFlameTongueGeometry,
   buildGrassClumpGeometry,
   buildHammerToolGeometry,
+  buildHumanSkullGeometry,
   buildJungleCanopyGeometry,
   buildJungleCanopyVariantBGeometry,
   buildJungleTrunkGeometry,
@@ -61,6 +66,7 @@ import {
   buildMeatCutGeometry,
   buildOrganicBasaltCragGeometry,
   buildPalmCanopyGeometry,
+  buildParachuteCanopyGeo,
   buildPineCanopyGeometry,
   buildPineTrunkGeometry,
   buildRoundedChestGeometry,
@@ -74,10 +80,11 @@ import {
   buildSpearToolGeometry,
   buildSporeBloomGeometry,
   buildStorageRackGeometry,
+  buildTempleDoorSlabGeo,
+  buildTempleRelicCrownGeo,
   buildTinyMushroomGeometry,
   buildTreeStumpGeometry,
   buildTropicalHibiscusGeometry,
-  buildWeatheredBarrelGeometry,
   buildWeatheredRuinsPillarGeometry,
   buildWildflowerGeometry,
   buildWillowCanopyGeometry,
@@ -88,13 +95,18 @@ import {
   activateLandmarkPower,
   activateLandmarkSpecial,
   craftSpear,
+  craftWorkshopItem,
   createSurvivalState,
   eatBestFoodFromInventory,
+  exportSavedRunSnapshot,
   getPlayerSpeedScale,
   getSurvivalHudView,
+  lightCampfire,
+  openBuriedTempleDoor,
   requestBowShotAt,
   requestPlayerInteract,
   requestTargetInteract,
+  restoreSavedRunSnapshot,
   selectWeapon,
   stepSurvivalSystem,
   stokeCampfire,
@@ -103,14 +115,24 @@ import {
   triggerWorldEvent,
   upgradeSkill,
   upgradeWeapon,
+  useAntidote,
   type FocusedTargetKind,
   type ResourceKind,
+  type SavedRunSnapshot,
   type SurvivalHudView,
   type SurvivalState,
 } from './survival';
 import { getAnimalSpecies } from './wildlife';
 import { createProceduralTextureSet } from './textures';
-import { createSeededRandom, getSeedForMode, resetNormalSeed, toPersianDigits } from './utils';
+import {
+  createSeededRandom,
+  getSeedForMode,
+  resetNormalSeed,
+  safeStorageGet,
+  safeStorageRemove,
+  safeStorageSet,
+  toPersianDigits,
+} from './utils';
 import {
   computeTerrainVertexColor,
   detectBiomeAt,
@@ -124,6 +146,15 @@ import {
 export interface ActiveRunInfo {
   mode: GameMode;
   seed: string;
+}
+
+export interface SavedRunSummary {
+  mode: GameMode;
+  seed: string;
+  dayCount: number;
+  playerLevel: number;
+  coins: number;
+  savedAt: number;
 }
 
 export type HudSnapshot = SurvivalHudView;
@@ -146,6 +177,9 @@ export interface ThreeSceneCallbacks {
 
 export interface ThreeIslandController {
   startRun: (mode: GameMode, forceNewIsland?: boolean) => void;
+  resumeSavedRun: () => boolean;
+  getSavedRunSummary: () => SavedRunSummary | null;
+  skipCutscene: () => void;
   returnToMenu: () => void;
   setJoystickInput: (dx: number, dy: number) => void;
   interact: () => void;
@@ -153,7 +187,10 @@ export interface ThreeIslandController {
   craftSpear: () => boolean;
   selectWeapon: (id: WeaponId) => boolean;
   upgradeWeapon: (id: WeaponId) => boolean;
+  lightFire: () => boolean;
   stokeFire: () => boolean;
+  useAntidote: () => boolean;
+  craftWorkshop: (recipeId: WorkshopRecipeId) => { crafted: boolean; notice: string };
   upgradeSkill: (skillId: SkillId) => boolean;
   triggerLandmark: (id: StrangeLandmarkId) => { triggered: boolean; label: string };
   triggerLandmarkSpecial: (id: StrangeLandmarkId) => { triggered: boolean; label: string };
@@ -1267,12 +1304,24 @@ export function createThreeIslandGame(
   let obeliskCrystal: THREE.Mesh | null = null;
   let obeliskHalo: THREE.Mesh | null = null;
   let obeliskHaloInner: THREE.Mesh | null = null;
+  let ruinSunBeam: THREE.Mesh | null = null;
+  let ruinShards: THREE.Mesh[] = [];
   let lavaPoolMesh: THREE.Mesh | null = null;
   let springWaterMesh: THREE.Mesh | null = null;
+  let springHaloRing: THREE.Mesh | null = null;
+  let springPrismShards: THREE.Mesh[] = [];
   let waterfallMat: THREE.ShaderMaterial | null = null;
   let beaconFlameMesh: THREE.Mesh | null = null;
   let beaconBeamMesh: THREE.Mesh | null = null;
   let fireflyGroup: THREE.Group | null = null;
+  let mushroomHaloRing: THREE.Mesh | null = null;
+  let skullMistRing: THREE.Mesh | null = null;
+  let templeDoorMesh: THREE.Mesh | null = null;
+  let templeRelicMesh: THREE.Mesh | null = null;
+  let templeSealOrbs: THREE.Mesh[] = [];
+  let templeDoorAnim = 0;
+  let wreckGroup: THREE.Group | null = null;
+  let wreckRingMesh: THREE.Mesh | null = null;
   let campFlames: THREE.Mesh[] = [];
   let campAuraRing: THREE.Mesh | null = null;
   let campCoalBed: THREE.Mesh | null = null;
@@ -1296,7 +1345,7 @@ export function createThreeIslandGame(
   let activePebbleMat: THREE.MeshStandardMaterial | null = null;
   let islandDisposables: Array<{ dispose: () => void }> = [];
 
-  // Interactive harvest, fishing, shell, secret chests & camp build pad visual bindings
+  // Interactive harvest, fishing, shell, secret chests, bone shrines & camp build pad visual bindings
   const bushNodeVisuals = new Map<string, { group: THREE.Group; berries: THREE.Mesh[]; baseScale: number }>();
   const shellNodeVisuals = new Map<string, { mesh: THREE.Mesh; baseScale: number }>();
   const fishingVisuals = new Map<string, { fishA: THREE.Mesh; fishB: THREE.Mesh; ripple: THREE.Mesh; waterX: number; waterZ: number }>();
@@ -1306,6 +1355,7 @@ export function createThreeIslandGame(
     string,
     { group: THREE.Group; lid: THREE.Mesh; glowRing: THREE.Mesh; sparkles: THREE.Mesh[]; openAnim: number }
   >();
+  const boneShrineVisuals = new Map<string, { group: THREE.Group; ring: THREE.Mesh }>();
   const treeNodeVisuals = new Map<string, InstancedTreeBinding>();
   const bananaBunchVisuals = new Map<string, { trunkMesh: THREE.InstancedMesh; canopyMesh: THREE.InstancedMesh; bunchMesh: THREE.InstancedMesh; index: number; prop: IslandProp }>();
   const animalGeoLib = createAnimalGeometryLibrary();
@@ -1356,6 +1406,32 @@ export function createThreeIslandGame(
   );
   scene.add(survivor.root);
   disposables.push(survivor);
+
+  // 3D Airplane Crash Cutscene Rig & Parachute Canopy
+  const planeFuselageGeo = buildAirplaneFuselageWingGeo();
+  const planePropellerGeo = buildAirplanePropellerGeo();
+  const parachuteGeo = buildParachuteCanopyGeo();
+  const planeMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    roughness: 0.45,
+    metalness: 0.18,
+    vertexColors: true,
+  });
+  const cutscenePlaneGroup = new THREE.Group();
+  const cutscenePlaneBody = new THREE.Mesh(planeFuselageGeo, planeMat);
+  cutscenePlaneBody.castShadow = true;
+  const cutscenePropeller = new THREE.Mesh(planePropellerGeo, planeMat);
+  cutscenePropeller.position.set(0, -0.02, 1.96);
+  cutscenePlaneGroup.add(cutscenePlaneBody, cutscenePropeller);
+  cutscenePlaneGroup.visible = false;
+  scene.add(cutscenePlaneGroup);
+
+  const cutsceneParachuteMesh = new THREE.Mesh(parachuteGeo, planeMat);
+  cutsceneParachuteMesh.position.set(0, 0.9, 0);
+  cutsceneParachuteMesh.castShadow = true;
+  cutsceneParachuteMesh.visible = false;
+  survivor.root.add(cutsceneParachuteMesh);
+  disposables.push(planeFuselageGeo, planePropellerGeo, parachuteGeo, planeMat);
 
   // Fishing bobber & curved fishing line in world space
   const bobberGeo = new THREE.SphereGeometry(0.11, 10, 8);
@@ -1489,6 +1565,7 @@ export function createThreeIslandGame(
     buildPadVisuals.clear();
     landmarkRingVisuals.clear();
     secretSpotVisuals.clear();
+    boneShrineVisuals.clear();
     treeNodeVisuals.clear();
     bananaBunchVisuals.clear();
     for (const rig of animalRigBindings.values()) {
@@ -1502,12 +1579,24 @@ export function createThreeIslandGame(
     obeliskCrystal = null;
     obeliskHalo = null;
     obeliskHaloInner = null;
+    ruinSunBeam = null;
+    ruinShards = [];
     lavaPoolMesh = null;
     springWaterMesh = null;
+    springHaloRing = null;
+    springPrismShards = [];
     waterfallMat = null;
     beaconFlameMesh = null;
     beaconBeamMesh = null;
     fireflyGroup = null;
+    mushroomHaloRing = null;
+    skullMistRing = null;
+    templeDoorMesh = null;
+    templeRelicMesh = null;
+    templeSealOrbs = [];
+    templeDoorAnim = 0;
+    wreckGroup = null;
+    wreckRingMesh = null;
     campFlames = [];
     campAuraRing = null;
     campCoalBed = null;
@@ -1531,7 +1620,6 @@ export function createThreeIslandGame(
     const woodMat = getPbrMat(0xffffff, 0.84, textures.woodDiffuse, textures.woodBump, 0.03);
     const woodDarkMat = getPbrMat(CONFIG.COLORS.WOOD_DARK, 0.88);
     const boneMat = getPbrMat(0xf4ecd8, 0.78);
-    const sailMat = getPbrMat(0xfff5e0, 0.9);
 
     // 0. CENTRAL SURVIVAL CAMPFIRE HAVEN (Stone Ring, Driftwood Logs, Multi-Tongue Flame, Stash Chest)
     const campY = groundHeightAt(CAMPFIRE.CX, CAMPFIRE.CZ, world);
@@ -1935,6 +2023,27 @@ export function createThreeIslandGame(
     archTop.rotation.z = 0.04;
     archTop.castShadow = true;
 
+    const sunBeamGeo = new THREE.CylinderGeometry(0.45, 1.55, 8.2, 16, 1, true);
+    const sunBeamMat = new THREE.MeshBasicMaterial({
+      color: 0xfff0a3,
+      transparent: true,
+      opacity: 0.14,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    ruinSunBeam = new THREE.Mesh(sunBeamGeo, sunBeamMat);
+    ruinSunBeam.position.set(0, 4.3, 0);
+    const ruinShardGeo = new THREE.OctahedronGeometry(0.28, 0);
+    ruinShards = [];
+    for (let rs = 0; rs < 3; rs += 1) {
+      const shard = new THREE.Mesh(ruinShardGeo, obeliskMat);
+      const ang = (rs / 3) * Math.PI * 2;
+      shard.position.set(Math.cos(ang) * 2.25, 2.9, Math.sin(ang) * 2.25);
+      ruinsGroup.add(shard);
+      ruinShards.push(shard);
+    }
+    islandDisposables.push(sunBeamGeo, sunBeamMat, ruinShardGeo);
+
     ruinsGroup.add(
       altarBase,
       altarTop,
@@ -1942,6 +2051,7 @@ export function createThreeIslandGame(
       obeliskCrystal,
       obeliskHalo,
       obeliskHaloInner,
+      ruinSunBeam,
       archL,
       archR,
       archTop
@@ -2038,6 +2148,19 @@ export function createThreeIslandGame(
 
     lavaPoolMesh = new THREE.Mesh(lavaGeo, lavaMat);
     volcGroup.add(lavaPoolMesh);
+    const craterGlowRingGeo = new THREE.RingGeometry(3.65, 4.25, 28);
+    craterGlowRingGeo.rotateX(-Math.PI / 2);
+    const craterGlowRingMat = new THREE.MeshBasicMaterial({
+      color: 0xff5a18,
+      transparent: true,
+      opacity: 0.45,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const craterGlowRing = new THREE.Mesh(craterGlowRingGeo, craterGlowRingMat);
+    craterGlowRing.position.y = 0.04;
+    volcGroup.add(craterGlowRing);
+    islandDisposables.push(craterGlowRingGeo, craterGlowRingMat);
     islandGroup.add(volcGroup);
 
     // Obsidian Magma Forge Anvil beside the Volcano Shrine site!
@@ -2200,6 +2323,28 @@ export function createThreeIslandGame(
       spire.rotation.y = sa;
       islandGroup.add(spire);
     }
+    const springHaloGeo = new THREE.RingGeometry(4.35, 4.75, 36);
+    springHaloGeo.rotateX(-Math.PI / 2);
+    const springHaloMat = new THREE.MeshBasicMaterial({
+      color: 0x72f7ff,
+      transparent: true,
+      opacity: 0.42,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    springHaloRing = new THREE.Mesh(springHaloGeo, springHaloMat);
+    springHaloRing.position.set(SPRING.CX, springGroundY + 0.56, SPRING.CZ);
+    islandGroup.add(springHaloRing);
+    const prismShardGeo = new THREE.OctahedronGeometry(0.24, 0);
+    springPrismShards = [];
+    for (let ps = 0; ps < 4; ps += 1) {
+      const ang = (ps / 4) * Math.PI * 2;
+      const sh = new THREE.Mesh(prismShardGeo, springSpireMat);
+      sh.position.set(SPRING.CX + Math.cos(ang) * 2.6, springGroundY + 1.85, SPRING.CZ + Math.sin(ang) * 2.6);
+      islandGroup.add(sh);
+      springPrismShards.push(sh);
+    }
+    islandDisposables.push(springHaloGeo, springHaloMat, prismShardGeo);
 
     // 4. GIANT BIOLUMINESCENT MUSHROOMS + SPORE LANTERN CLUSTERS + FIREFLIES
     const stemMat = getPbrMat(CONFIG.COLORS.MUSHROOM_STEM, 0.82);
@@ -2319,125 +2464,292 @@ export function createThreeIslandGame(
       fireflyGroup.add(ff);
     }
     islandGroup.add(fireflyGroup);
+    const mushHaloGeo = new THREE.RingGeometry(2.6, 3.1, 32);
+    mushHaloGeo.rotateX(-Math.PI / 2);
+    const mushHaloMat = new THREE.MeshBasicMaterial({
+      color: 0xd966ff,
+      transparent: true,
+      opacity: 0.32,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    mushroomHaloRing = new THREE.Mesh(mushHaloGeo, mushHaloMat);
+    mushroomHaloRing.position.set(MUSHROOM.CX, groundHeightAt(MUSHROOM.CX, MUSHROOM.CZ, world) + 0.12, MUSHROOM.CZ);
+    islandGroup.add(mushroomHaloRing);
+    islandDisposables.push(mushHaloGeo, mushHaloMat);
 
-    // 5. SHIPWRECK COVE: Sculpted Hull + Pirate Pennant + Ship Wheel + Iron Anchor + Rotating Lighthouse Beam
-    const hullGroundY = groundHeightAt(SHIPWRECK.HULL_CX, SHIPWRECK.HULL_CZ, world);
-    const shipGroup = new THREE.Group();
-    shipGroup.position.set(SHIPWRECK.HULL_CX, hullGroundY - 0.02, SHIPWRECK.HULL_CZ);
-    shipGroup.rotation.set(0.05, -0.58, 0.1);
+    // 5. HALF-BURIED ANCIENT STONE TEMPLE IN THE SAND (Replaces Shipwreck): Carved Skull/Bone Steles, Sealed Door, & Golden Sun-Emerald Relic
+    const coveGroundY = groundHeightAt(SHIPWRECK.HULL_CX, SHIPWRECK.HULL_CZ, world);
+    const buriedTempleGroup = new THREE.Group();
+    buriedTempleGroup.position.set(SHIPWRECK.HULL_CX, coveGroundY - 0.06, SHIPWRECK.HULL_CZ);
+    buriedTempleGroup.rotation.y = -0.52;
 
-    const hullGeo = buildCurvedBoatHullGeometry();
-    const hullMat = woodMat.clone();
-    hullMat.side = THREE.DoubleSide;
-    const cabinGeo = buildSculptedStoneSlabGeometry(1.45, 0.92, 1.65, 3.2);
-    const mastGeo = new THREE.CapsuleGeometry(0.15, 4.5, 6, 10);
-    const yardGeo = new THREE.CapsuleGeometry(0.075, 2.8, 5, 8);
-    yardGeo.rotateZ(Math.PI / 2);
-    const sailGeo = new THREE.CylinderGeometry(1.5, 1.5, 2.15, 12, 1, true, -0.55, 1.1);
-    const pennantGeo = new THREE.ConeGeometry(0.32, 0.95, 4);
-    pennantGeo.rotateZ(-Math.PI / 2);
-    const pennantMat = getPbrMat(0xd93025, 0.65);
-    const wheelRimGeo = new THREE.TorusGeometry(0.38, 0.045, 7, 16);
-    const anchorGeo = buildAnchorGeometry();
-    const ironMat = getPbrMat(0x3a434d, 0.55);
-    const chestGeo = buildRoundedChestGeometry();
-    const barrelGeo = buildWeatheredBarrelGeometry();
+    const templeBodyGeo = buildBuriedStoneTempleGeo();
+    const templeDoorGeo = buildTempleDoorSlabGeo();
+    const templeRelicGeo = buildTempleRelicCrownGeo();
+    const humanSkullGeo = buildHumanSkullGeometry();
+    const femurBoneGeo = buildFemurBoneGeometry();
+    const templeStoneMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.78,
+      metalness: 0.06,
+      vertexColors: true,
+    });
+    const altarSkullMat = new THREE.MeshStandardMaterial({
+      color: 0xf7efe0,
+      roughness: 0.68,
+      metalness: 0.04,
+      vertexColors: true,
+    });
+    const templeRelicMat = new THREE.MeshStandardMaterial({
+      color: 0xffe066,
+      emissive: 0xd97706,
+      emissiveIntensity: 0.75,
+      roughness: 0.24,
+      metalness: 0.35,
+      vertexColors: true,
+    });
+    const eyeGlowMat = new THREE.MeshStandardMaterial({
+      color: 0xffb336,
+      emissive: 0xff6b12,
+      emissiveIntensity: 1.45,
+      roughness: 0.25,
+    });
+    const sealOrbGeo = new THREE.SphereGeometry(0.14, 10, 8);
+    const skullMistGeo = new THREE.RingGeometry(1.55, 2.15, 32);
+    skullMistGeo.rotateX(-Math.PI / 2);
+    const skullMistMat = new THREE.MeshBasicMaterial({
+      color: 0x2dd4bf,
+      transparent: true,
+      opacity: 0.34,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const ribGeo = new THREE.TorusGeometry(2.35, 0.2, 10, 16, Math.PI * 0.82);
+
     islandDisposables.push(
-      hullGeo,
-      hullMat,
-      cabinGeo,
-      mastGeo,
-      yardGeo,
-      sailGeo,
-      pennantGeo,
-      wheelRimGeo,
-      anchorGeo,
-      chestGeo,
-      barrelGeo
+      templeBodyGeo,
+      templeDoorGeo,
+      templeRelicGeo,
+      humanSkullGeo,
+      femurBoneGeo,
+      templeStoneMat,
+      altarSkullMat,
+      templeRelicMat,
+      eyeGlowMat,
+      sealOrbGeo,
+      skullMistGeo,
+      skullMistMat,
+      ribGeo
     );
 
-    const hullMesh = new THREE.Mesh(hullGeo, hullMat);
-    hullMesh.castShadow = true;
-    hullMesh.receiveShadow = true;
+    const templeBodyMesh = new THREE.Mesh(templeBodyGeo, templeStoneMat);
+    templeBodyMesh.castShadow = true;
+    templeBodyMesh.receiveShadow = true;
+    buriedTempleGroup.add(templeBodyMesh);
 
-    const sternCabin = new THREE.Mesh(cabinGeo, woodDarkMat);
-    sternCabin.position.set(-1.55, 1.0, 0);
-    sternCabin.castShadow = true;
+    templeDoorMesh = new THREE.Mesh(templeDoorGeo, templeStoneMat);
+    templeDoorMesh.position.set(0, 0, 1.38);
+    templeDoorMesh.castShadow = true;
+    templeDoorMesh.receiveShadow = true;
+    buriedTempleGroup.add(templeDoorMesh);
 
-    const shipWheel = new THREE.Mesh(wheelRimGeo, woodMat);
-    shipWheel.position.set(-0.78, 1.48, 0);
-    shipWheel.rotation.y = Math.PI / 2;
+    templeRelicMesh = new THREE.Mesh(templeRelicGeo, templeRelicMat);
+    templeRelicMesh.position.set(0, 1.15, -0.45);
+    templeRelicMesh.scale.setScalar(1.25);
+    templeRelicMesh.castShadow = true;
+    buriedTempleGroup.add(templeRelicMesh);
 
-    const mast = new THREE.Mesh(mastGeo, woodDarkMat);
-    mast.position.set(0.45, 2.55, 0);
-    mast.rotation.z = -0.22;
-    mast.castShadow = true;
-
-    const yard = new THREE.Mesh(yardGeo, woodDarkMat);
-    yard.position.set(0.9, 4.05, 0);
-    yard.rotation.y = 0.25;
-
-    const pennant = new THREE.Mesh(pennantGeo, pennantMat);
-    pennant.position.set(1.25, 4.78, 0);
-
-    const sail = new THREE.Mesh(sailGeo, sailMat);
-    sail.position.set(0.95, 2.95, -0.95);
-    sail.rotation.y = 0.25;
-    sail.castShadow = true;
-    (sailMat as THREE.MeshStandardMaterial).side = THREE.DoubleSide;
-
-    shipGroup.add(hullMesh, sternCabin, shipWheel, mast, yard, pennant, sail);
-    islandGroup.add(shipGroup);
-
-    const anchorX = SHIPWRECK.HULL_CX + 3.25;
-    const anchorZ = SHIPWRECK.HULL_CZ - 1.25;
-    const anchorMesh = new THREE.Mesh(anchorGeo, ironMat);
-    anchorMesh.position.set(anchorX, groundHeightAt(anchorX, anchorZ, world) + 0.04, anchorZ);
-    anchorMesh.rotation.set(1.15, 0.4, -0.35);
-    anchorMesh.castShadow = true;
-    islandGroup.add(anchorMesh);
-
-    const chestX = SHIPWRECK.HULL_CX - 3.0;
-    const chestZ = SHIPWRECK.HULL_CZ + 0.6;
-    const chestA = new THREE.Mesh(chestGeo, woodMat);
-    chestA.position.set(chestX, groundHeightAt(chestX, chestZ, world) - 0.04, chestZ);
-    chestA.rotation.y = 0.4;
-    chestA.castShadow = true;
-    islandGroup.add(chestA);
-
-    const goldCoinGeo = new THREE.SphereGeometry(0.11, 8, 6);
-    islandDisposables.push(goldCoinGeo);
-    for (let g = 0; g < 4; g += 1) {
-      const glint = new THREE.Mesh(goldCoinGeo, sunGoldMat);
-      glint.scale.set(1, 0.45, 1);
-      glint.position.set(
-        chestX + (g - 1.5) * 0.22,
-        groundHeightAt(chestX, chestZ, world) + 0.08,
-        chestZ + 0.42 + (g % 2) * 0.14
-      );
-      islandGroup.add(glint);
+    // 4 Carved Stone Bone-Socket Seals along the temple entrance lintel
+    templeSealOrbs = [];
+    const sealOffsets = [-1.02, -0.34, 0.34, 1.02];
+    for (const sx of sealOffsets) {
+      const orbMat = new THREE.MeshStandardMaterial({
+        color: 0x475569,
+        emissive: 0x0f766e,
+        emissiveIntensity: 0.15,
+        roughness: 0.35,
+        metalness: 0.2,
+      });
+      islandDisposables.push(orbMat);
+      const orb = new THREE.Mesh(sealOrbGeo, orbMat);
+      orb.position.set(sx, 2.52, 1.62);
+      buriedTempleGroup.add(orb);
+      templeSealOrbs.push(orb);
     }
 
-    const barrelX = SHIPWRECK.HULL_CX - 3.6;
-    const barrelZ = SHIPWRECK.HULL_CZ - 0.5;
-    const barrelA = new THREE.Mesh(barrelGeo, woodDarkMat);
-    barrelA.position.set(barrelX, groundHeightAt(barrelX, barrelZ, world) + 0.22, barrelZ);
-    barrelA.rotation.z = 0.9;
-    barrelA.castShadow = true;
-    islandGroup.add(barrelA);
+    // Twin guardian braziers flanking the half-buried temple stairs
+    for (const side of [-1, 1]) {
+      const templeBrazier = new THREE.Mesh(brazierGeo, stoneDarkMat);
+      templeBrazier.position.set(side * 2.25, 0.08, 1.95);
+      templeBrazier.castShadow = true;
+      const templeFlame = new THREE.Mesh(brazierFlameGeo, eyeGlowMat);
+      templeFlame.position.set(side * 2.25, 0.94, 1.95);
+      templeFlame.scale.setScalar(0.68);
+      buriedTempleGroup.add(templeBrazier, templeFlame);
+    }
 
-    const ribGeo = new THREE.TorusGeometry(2.3, 0.2, 10, 16, Math.PI * 0.78);
-    islandDisposables.push(ribGeo);
-    for (let i = 0; i < 4; i += 1) {
-      const rx = 33.8 + i * 1.35;
-      const rz = 39.2;
-      const ry = groundHeightAt(rx, rz, world);
-      const rib = new THREE.Mesh(ribGeo, boneMat);
-      rib.position.set(rx, ry - 0.12, rz);
-      rib.rotation.set(0.15, Math.PI * 0.5 + 0.25, -0.28);
-      rib.scale.setScalar(1.06 - i * 0.09);
-      rib.castShadow = true;
-      islandGroup.add(rib);
+    skullMistRing = new THREE.Mesh(skullMistGeo, skullMistMat);
+    skullMistRing.position.set(0, 0.15, 2.05);
+    buriedTempleGroup.add(skullMistRing);
+    islandGroup.add(buriedTempleGroup);
+
+    // 5B. SCATTERED ANCIENT HUMAN SKULLS & BONES ACROSS THE ISLAND (Skull Cove, Ruins, Volcano, Secrets & Forest)
+    const boneRng = createSeededRandom(`${world.seed}-human-bones`);
+    const skullMatrices: THREE.Matrix4[] = [];
+    const femurMatrices: THREE.Matrix4[] = [];
+    const boneDummy = new THREE.Object3D();
+    const addSkeletonCluster = (cx: number, cz: number, skullScale: number, withRibs = false) => {
+      const cy = groundHeightAt(cx, cz, world);
+      if (cy < 0.08) return;
+      boneDummy.position.set(cx, cy + 0.01, cz);
+      boneDummy.rotation.set((boneRng() - 0.5) * 0.28, boneRng() * Math.PI * 2, (boneRng() - 0.5) * 0.35);
+      boneDummy.scale.setScalar(skullScale);
+      boneDummy.updateMatrix();
+      skullMatrices.push(boneDummy.matrix.clone());
+
+      const boneCount = 2 + Math.floor(boneRng() * 3);
+      for (let b = 0; b < boneCount; b += 1) {
+        const ang = boneRng() * Math.PI * 2;
+        const dist = 0.28 + boneRng() * 0.72;
+        const bx = cx + Math.cos(ang) * dist;
+        const bz = cz + Math.sin(ang) * dist;
+        const by = groundHeightAt(bx, bz, world);
+        if (by < 0.04) continue;
+        boneDummy.position.set(bx, by + 0.035, bz);
+        boneDummy.rotation.set((boneRng() - 0.5) * 0.2, boneRng() * Math.PI * 2, (boneRng() - 0.5) * 0.16);
+        boneDummy.scale.setScalar(0.82 + boneRng() * 0.45);
+        boneDummy.updateMatrix();
+        femurMatrices.push(boneDummy.matrix.clone());
+      }
+      if (withRibs) {
+        const rb = new THREE.Mesh(ribGeo, boneMat);
+        rb.position.set(cx + 0.35, cy - 0.08, cz - 0.25);
+        rb.rotation.set(0.25, boneRng() * Math.PI * 2, -0.3);
+        rb.scale.setScalar(0.32 + boneRng() * 0.14);
+        rb.castShadow = true;
+        islandGroup.add(rb);
+      }
+    };
+
+    for (let i = 0; i < 8; i += 1) {
+      const a = boneRng() * Math.PI * 2;
+      const r = 3.2 + boneRng() * 8.5;
+      addSkeletonCluster(SHIPWRECK.HULL_CX + Math.cos(a) * r, SHIPWRECK.HULL_CZ + Math.sin(a) * r, 0.85 + boneRng() * 0.35, i % 3 === 0);
+    }
+    for (let i = 0; i < 6; i += 1) {
+      const a = boneRng() * Math.PI * 2;
+      const r = 4.5 + boneRng() * 9.0;
+      addSkeletonCluster(RUINS.CX + Math.cos(a) * r, RUINS.CZ + Math.sin(a) * r, 0.8 + boneRng() * 0.3);
+    }
+    for (let i = 0; i < 6; i += 1) {
+      const a = boneRng() * Math.PI * 2;
+      const r = 9.0 + boneRng() * 7.5;
+      addSkeletonCluster(VOLCANO.CX + Math.cos(a) * r, VOLCANO.CZ + Math.sin(a) * r, 0.82 + boneRng() * 0.32);
+    }
+    for (const sec of world.secretSpots) {
+      addSkeletonCluster(sec.x + (boneRng() - 0.5) * 2.2, sec.z + (boneRng() - 0.5) * 2.2, 0.88);
+    }
+    for (let i = 0; i < 7; i += 1) {
+      const a = boneRng() * Math.PI * 2;
+      const r = 16 + boneRng() * 34;
+      addSkeletonCluster(Math.cos(a) * r, Math.sin(a) * r * 0.85, 0.8 + boneRng() * 0.28);
+    }
+
+    if (skullMatrices.length > 0) {
+      const skullInst = new THREE.InstancedMesh(humanSkullGeo, altarSkullMat, skullMatrices.length);
+      skullInst.castShadow = !isSoftwareGl;
+      skullMatrices.forEach((m, idx) => skullInst.setMatrixAt(idx, m));
+      skullInst.instanceMatrix.needsUpdate = true;
+      skullInst.computeBoundingSphere();
+      islandGroup.add(skullInst);
+    }
+    if (femurMatrices.length > 0) {
+      const femurInst = new THREE.InstancedMesh(femurBoneGeo, altarSkullMat, femurMatrices.length);
+      femurInst.castShadow = !isSoftwareGl;
+      femurMatrices.forEach((m, idx) => femurInst.setMatrixAt(idx, m));
+      femurInst.instanceMatrix.needsUpdate = true;
+      femurInst.computeBoundingSphere();
+      islandGroup.add(femurInst);
+    }
+
+    // 5C. CRASHED AIRPLANE WRECKAGE & 4 INTERACTIVE ANCIENT BONE SHRINES
+    if (world.wreckSite) {
+      const ws = world.wreckSite;
+      wreckGroup = new THREE.Group();
+      wreckGroup.position.set(ws.x, ws.y + 0.35, ws.z);
+      wreckGroup.rotation.set(0.14, ws.rotationY, -0.22);
+
+      const wreckHull = new THREE.Mesh(planeFuselageGeo, planeMat);
+      wreckHull.castShadow = true;
+      wreckHull.receiveShadow = true;
+      const wreckProp = new THREE.Mesh(planePropellerGeo, planeMat);
+      wreckProp.position.set(0, -0.02, 1.96);
+      wreckProp.rotation.z = 0.72;
+      wreckProp.rotation.x = 0.35;
+
+      const furrowGeo = buildSculptedBoulderGeometry(2.3, 1.9, false);
+      furrowGeo.scale(1.2, 0.24, 1.75);
+      const furrowMat = getPbrMat(0x5c4632, 0.94);
+      const furrow = new THREE.Mesh(furrowGeo, furrowMat);
+      furrow.position.set(0, -0.45, 0.25);
+      furrow.receiveShadow = true;
+
+      const wreckRingGeo = new THREE.RingGeometry(2.75, 3.18, 36);
+      wreckRingGeo.rotateX(-Math.PI / 2);
+      const wreckRingMat = new THREE.MeshBasicMaterial({
+        color: 0xf59e0b,
+        transparent: true,
+        opacity: 0.72,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      wreckRingMesh = new THREE.Mesh(wreckRingGeo, wreckRingMat);
+      wreckRingMesh.position.set(0, -0.22, 0);
+      wreckRingMesh.rotation.set(-0.14, 0, 0.22);
+
+      islandDisposables.push(furrowGeo, wreckRingGeo, wreckRingMat);
+      wreckGroup.add(wreckHull, wreckProp, furrow, wreckRingMesh);
+      islandGroup.add(wreckGroup);
+    }
+
+    if (world.ancientBoneSites && world.ancientBoneSites.length > 0) {
+      const shrineGeo = buildAncientBoneShrineGeo();
+      const shrineMat = new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        roughness: 0.72,
+        metalness: 0.04,
+        vertexColors: true,
+      });
+      const shrineGlowGeo = new THREE.RingGeometry(0.95, 1.24, 28);
+      shrineGlowGeo.rotateX(-Math.PI / 2);
+      islandDisposables.push(shrineGeo, shrineMat, shrineGlowGeo);
+
+      for (const bone of world.ancientBoneSites) {
+        const bg = new THREE.Group();
+        bg.position.set(bone.x, bone.y - 0.03, bone.z);
+        bg.rotation.y = Math.atan2(-bone.x, -bone.z);
+
+        const shrineMesh = new THREE.Mesh(shrineGeo, shrineMat);
+        shrineMesh.scale.setScalar(1.32);
+        shrineMesh.castShadow = true;
+        shrineMesh.receiveShadow = true;
+        bg.add(shrineMesh);
+
+        const ringMat = new THREE.MeshBasicMaterial({
+          color: 0x2dd4bf,
+          transparent: true,
+          opacity: 0.68,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        });
+        const ring = new THREE.Mesh(shrineGlowGeo, ringMat);
+        ring.position.y = 0.08;
+        bg.add(ring);
+        islandDisposables.push(ringMat);
+        islandGroup.add(bg);
+        boneShrineVisuals.set(bone.id, { group: bg, ring });
+      }
     }
 
     // Sculpted Coastal Lighthouse Dome Beacon + Rotating Spotlight Cone
@@ -4044,7 +4356,9 @@ export function createThreeIslandGame(
       eventParam === 'meteor_shower' ||
       eventParam === 'fish_frenzy' ||
       eventParam === 'autumn_breeze' ||
-      eventParam === 'winter_frost'
+      eventParam === 'winter_frost' ||
+      eventParam === 'earthquake' ||
+      eventParam === 'lightning_storm'
     ) {
       triggerWorldEvent(survivalState, eventParam, true);
       if (eventParam === 'low_tide') {
@@ -4062,6 +4376,14 @@ export function createThreeIslandGame(
     buildContinuousIslandScene(worldData);
     resetPlayerToSpawn();
   };
+
+  let cutsceneTimer = 0;
+  let cutsceneCrashFxDone = false;
+  let wreckSmokeTimer = 0;
+  let poisonChipTimer = 0;
+  const knockbackVel = { x: 0, z: 0 };
+  let hitShakeTimer = 0;
+  let recoilTimer = 0;
 
   loadSeedWorld(currentSeed);
   emitHud(currentBiome);
@@ -4081,6 +4403,7 @@ export function createThreeIslandGame(
     markerTimer: number;
   } | null = null;
   let lastNotifiedOutcome: GameOutcome = 'playing';
+  let prevWindupIds = new Set<string>();
 
   const onKeyDown = (e: KeyboardEvent) => {
     activeKeys.add(e.code);
@@ -4123,8 +4446,10 @@ export function createThreeIslandGame(
 
     const rect = renderer.domElement.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
-    ndcVec.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-    ndcVec.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    const clickPx = e.clientX - rect.left;
+    const clickPy = e.clientY - rect.top;
+    ndcVec.x = (clickPx / rect.width) * 2 - 1;
+    ndcVec.y = -(clickPy / rect.height) * 2 + 1;
     raycaster.setFromCamera(ndcVec, camera);
 
     let hx = playerState.x;
@@ -4147,35 +4472,119 @@ export function createThreeIslandGame(
     }
     if (!gotHit) return;
 
-    // Pick exact clicked 3D entity near (hx, hz)
-    let picked: { kind: FocusedTargetKind; id: string; x: number; z: number; range: number; score: number } | null = null;
-    const consider = (kind: FocusedTargetKind, id: string, tx: number, tz: number, range: number, maxClickDist: number, priorityBias = 0) => {
-      const d = Math.hypot(tx - hx, tz - hz);
-      if (d <= maxClickDist) {
-        const score = d - priorityBias;
+    // Pick exact clicked 3D entity using BOTH ground raycast AND 2D screen-space projection (handles tall tree canopies & offshore fish!)
+    let picked: {
+      kind: FocusedTargetKind;
+      id: string;
+      x: number;
+      z: number;
+      altX?: number;
+      altZ?: number;
+      range: number;
+      score: number;
+    } | null = null;
+    const consider = (
+      kind: FocusedTargetKind,
+      id: string,
+      tx: number,
+      ty: number,
+      tz: number,
+      range: number,
+      maxClickDist: number,
+      screenRadiusPx: number,
+      priorityBias = 0,
+      walkX = tx,
+      walkZ = tz
+    ) => {
+      const dGround = Math.hypot(tx - hx, tz - hz);
+      const pt = projectWorldToViewport(tx, ty, tz);
+      const dScreen = Math.hypot(pt.x - clickPx, pt.y - clickPy);
+      if (dGround <= maxClickDist || dScreen <= screenRadiusPx) {
+        const normGround = dGround <= maxClickDist ? dGround / maxClickDist : 1.5;
+        const normScreen = dScreen <= screenRadiusPx ? dScreen / screenRadiusPx : 1.5;
+        const score = Math.min(normGround, normScreen) - priorityBias;
         if (!picked || score < picked.score) {
-          picked = { kind, id, x: tx, z: tz, range, score };
+          picked = { kind, id, x: walkX, z: walkZ, altX: tx, altZ: tz, range, score };
         }
       }
     };
 
     for (const sec of survivalState.secretSpots) {
       if (survivalState.discoveredSecrets.includes(sec.id)) continue;
-      consider('secret', sec.id, sec.x, sec.z, CONFIG.SURVIVAL.HARVEST_RANGE_SECRET, 2.5, 0.35);
+      consider('secret', sec.id, sec.x, sec.y + 0.65, sec.z, CONFIG.SURVIVAL.HARVEST_RANGE_SECRET, 2.6, 44, 0.22);
+    }
+    if (worldData.wreckSite && !survivalState.wreckLooted) {
+      const ws = worldData.wreckSite;
+      consider('wreck', 'plane-wreck', ws.x, ws.y + 0.85, ws.z, CONFIG.SURVIVAL.HARVEST_RANGE_WRECK, 3.4, 58, 0.25);
+    }
+    for (const bone of worldData.ancientBoneSites) {
+      if (survivalState.inspectedBones.includes(bone.id)) continue;
+      consider('bone_shrine', bone.id, bone.x, bone.y + 0.45, bone.z, CONFIG.SURVIVAL.HARVEST_RANGE_BONE, 2.5, 44, 0.18);
+    }
+    if (!survivalState.templeRelicClaimed) {
+      const templeY = groundHeightAt(
+        CONFIG.ISLAND.SHIPWRECK.HULL_CX,
+        CONFIG.ISLAND.SHIPWRECK.HULL_CZ,
+        worldData
+      );
+      const frontX = CONFIG.ISLAND.SHIPWRECK.HULL_CX + Math.sin(-0.52) * 2.2;
+      const frontZ = CONFIG.ISLAND.SHIPWRECK.HULL_CZ + Math.cos(-0.52) * 2.2;
+      consider(
+        'temple_door',
+        'buried-temple-door',
+        CONFIG.ISLAND.SHIPWRECK.HULL_CX,
+        templeY + 1.35,
+        CONFIG.ISLAND.SHIPWRECK.HULL_CZ,
+        CONFIG.SURVIVAL.HARVEST_RANGE_TEMPLE,
+        3.5,
+        58,
+        0.26,
+        frontX,
+        frontZ
+      );
+    }
+    if (!survivalState.fireLit) {
+      const campY = groundHeightAt(CONFIG.ISLAND.CAMPFIRE.CX, CONFIG.ISLAND.CAMPFIRE.CZ, worldData);
+      consider(
+        'campfire_ignite',
+        'campfire',
+        CONFIG.ISLAND.CAMPFIRE.CX,
+        campY + 0.45,
+        CONFIG.ISLAND.CAMPFIRE.CZ,
+        CONFIG.ISLAND.CAMPFIRE.AURA_RADIUS,
+        2.6,
+        46,
+        0.24
+      );
     }
     for (const pad of survivalState.buildPads) {
       if (survivalState.buildings[pad.id]) continue;
-      consider('pad', pad.id, pad.x, pad.z, CONFIG.SURVIVAL.HARVEST_RANGE_BUILD, 2.5, 0.25);
+      consider('pad', pad.id, pad.x, pad.y + 0.65, pad.z, CONFIG.SURVIVAL.HARVEST_RANGE_BUILD, 2.6, 44, 0.18);
     }
     for (const act of survivalState.wildlife.actors) {
       if (!act.visible || act.koTimer > 0 || act.respawnTimer > 0) continue;
       const spec = getAnimalSpecies(act.speciesId);
-      if (!spec?.huntable) continue;
-      consider('prey', act.id, act.x, act.z, CONFIG.SURVIVAL.HARVEST_RANGE_HUNT, 2.4, 0.3);
+      if (!spec?.huntable && !spec?.fishable) continue;
+      const actRange = spec?.fishable
+        ? Math.max(CONFIG.SURVIVAL.HARVEST_RANGE_HUNT, CONFIG.SURVIVAL.HARVEST_RANGE_FISHING)
+        : CONFIG.SURVIVAL.HARVEST_RANGE_HUNT;
+      consider('prey', act.id, act.x, act.y + 0.55, act.z, actRange, 2.5, 42, 0.2);
     }
     for (const node of survivalState.nodes) {
       if (node.cooldownRemaining > 0) continue;
-      consider('node', node.id, node.x, node.z, node.range, node.kind === 'wood' ? 2.5 : 2.1, 0);
+      if (node.kind === 'wood') {
+        consider('node', node.id, node.x, node.y + 1.1, node.z, node.range, 2.6, 42, 0.08);
+        consider('node', node.id, node.x, node.y + 3.0, node.z, node.range, 2.6, 46, 0.06);
+      } else if (node.kind === 'banana') {
+        consider('node', node.id, node.x, node.y + 1.6, node.z, node.range, 2.5, 44, 0.08);
+      } else if (node.propKind === 'fishing') {
+        consider('node', node.id, node.x, node.y + 0.35, node.z, node.range, 2.7, 46, 0.14);
+        if (node.waterX !== undefined && node.waterZ !== undefined) {
+          consider('node', node.id, node.waterX, 0.05, node.waterZ, node.range, 3.0, 50, 0.14, node.x, node.z);
+        }
+      } else {
+        consider('node', node.id, node.x, node.y + 0.45, node.z, node.range, 2.2, 38, 0.05);
+      }
     }
 
     const bowEquipped = survivalState.equippedWeapon === 'bow' && survivalState.unlockedWeapons.bow;
@@ -4199,9 +4608,23 @@ export function createThreeIslandGame(
     }
 
     if (picked) {
-      const p = picked as { kind: FocusedTargetKind; id: string; x: number; z: number; range: number };
-      const dist = Math.hypot(p.x - playerState.x, p.z - playerState.z);
-      if (dist <= p.range + 0.2) {
+      const p = picked as {
+        kind: FocusedTargetKind;
+        id: string;
+        x: number;
+        z: number;
+        altX?: number;
+        altZ?: number;
+        range: number;
+      };
+      const distPrimary = Math.hypot(p.x - playerState.x, p.z - playerState.z);
+      const distAlt =
+        p.altX !== undefined && p.altZ !== undefined
+          ? Math.hypot(p.altX - playerState.x, p.altZ - playerState.z)
+          : distPrimary;
+      const dist = Math.min(distPrimary, distAlt);
+      // If already within harvest/interact reach, interact immediately WITHOUT moving/jittering the player!
+      if (dist <= p.range + 0.5) {
         requestTargetInteract(survivalState, p.kind, p.id);
         clickWalkTarget = null;
       } else {
@@ -4210,13 +4633,16 @@ export function createThreeIslandGame(
           z: p.z,
           kind: p.kind,
           id: p.id,
-          range: Math.max(0.6, p.range - 0.15),
+          range: Math.max(0.6, p.range - 0.1),
           markerTimer: 0.9,
         };
       }
-      clickRingMesh.position.set(p.x, Math.max(0.06, groundHeightAt(p.x, p.z, worldData) + 0.08), p.z);
+      const rx = p.altX ?? p.x;
+      const rz = p.altZ ?? p.z;
+      clickRingMesh.position.set(rx, Math.max(0.06, groundHeightAt(rx, rz, worldData) + 0.08), rz);
       clickRingMesh.visible = true;
-    } else {
+    } else if (distFromPlayer >= 1.15) {
+      // Ignore tiny accidental ground taps right under player's feet so character never jitters
       clickWalkTarget = { x: hx, z: hz, range: 0.48, markerTimer: 0.7 };
       clickRingMesh.position.set(hx, Math.max(0.06, groundHeightAt(hx, hz, worldData) + 0.08), hz);
       clickRingMesh.visible = true;
@@ -4430,6 +4856,15 @@ export function createThreeIslandGame(
       obeliskHaloInner.rotation.z += dt * 1.45;
       obeliskHaloInner.rotation.y += dt * 0.6;
     }
+    if (ruinSunBeam) {
+      const m = ruinSunBeam.material as THREE.MeshBasicMaterial;
+      m.opacity = 0.1 + Math.sin(elapsedTime * 2.2) * 0.04;
+    }
+    ruinShards.forEach((sh, idx) => {
+      const ang = elapsedTime * 1.2 + (idx / 3) * Math.PI * 2;
+      sh.position.set(Math.cos(ang) * 2.25, 2.9 + Math.sin(elapsedTime * 2.4 + idx) * 0.25, Math.sin(ang) * 2.25);
+      sh.rotation.y += dt * 1.8;
+    });
     if (lavaPoolMesh) {
       const m = lavaPoolMesh.material as THREE.ShaderMaterial;
       m.uniforms.uTime.value = elapsedTime;
@@ -4438,6 +4873,21 @@ export function createThreeIslandGame(
       const m = springWaterMesh.material as THREE.ShaderMaterial;
       m.uniforms.uTime.value = elapsedTime;
     }
+    if (springHaloRing) {
+      const m = springHaloRing.material as THREE.MeshBasicMaterial;
+      m.opacity = 0.32 + Math.sin(elapsedTime * 2.4) * 0.12;
+      springHaloRing.scale.setScalar(1 + Math.sin(elapsedTime * 1.8) * 0.03);
+    }
+    springPrismShards.forEach((sh, idx) => {
+      const ang = elapsedTime * 0.9 + (idx / 4) * Math.PI * 2;
+      const baseH = groundHeightAt(CONFIG.ISLAND.SPRING.CX, CONFIG.ISLAND.SPRING.CZ, worldData) + 1.85;
+      sh.position.set(
+        CONFIG.ISLAND.SPRING.CX + Math.cos(ang) * 2.6,
+        baseH + Math.sin(elapsedTime * 2.3 + idx) * 0.24,
+        CONFIG.ISLAND.SPRING.CZ + Math.sin(ang) * 2.6
+      );
+      sh.rotation.y += dt * 1.4;
+    });
     if (waterfallMat) {
       waterfallMat.uniforms.uTime.value = elapsedTime;
     }
@@ -4456,65 +4906,165 @@ export function createThreeIslandGame(
         1.5 +
         Math.sin(elapsedTime * 1.8) * 0.22;
     }
-
-    // Animate cozy survival campfire flames (scales Lv 1..10!), glowing coal bed & 48 spiraling embers
-    const fireScaleCap = Math.min(2.6, 1 + (survivalState.fireLevel - 1) * 0.22);
-    campFlames.forEach((flame, idx) => {
-      const flicker = 1 + Math.sin(elapsedTime * (7.5 + idx * 2.1) + idx) * 0.14;
-      const baseXZ = idx === 0 ? 1.05 : idx === 4 ? 0.38 : 0.58;
-      const baseY = idx === 4 ? 0.56 : idx === 1 ? 0.88 : 1.08;
-      flame.scale.set(baseXZ * fireScaleCap, baseY * flicker * fireScaleCap, baseXZ * fireScaleCap);
-      flame.rotation.y = elapsedTime * (idx % 2 === 0 ? 1.4 : -1.8);
-    });
-    if (campCoalBed) {
-      const coalMat = campCoalBed.material as THREE.MeshStandardMaterial;
-      coalMat.emissiveIntensity = 1.2 + Math.sin(elapsedTime * 6.5) * 0.35 + (survivalState.fireLevel - 1) * 0.15;
+    if (mushroomHaloRing) {
+      const m = mushroomHaloRing.material as THREE.MeshBasicMaterial;
+      m.opacity = 0.24 + Math.sin(elapsedTime * 2.8) * 0.1;
     }
-    if (campEmberInst) {
-      const activeEmbers = Math.min(campEmberSeeds.length, 16 + survivalState.fireLevel * 3);
-      for (let i = 0; i < campEmberSeeds.length; i += 1) {
-        if (i >= activeEmbers) {
-          seasonDummy.scale.setScalar(0);
-        } else {
-          const es = campEmberSeeds[i];
-          const prog = (elapsedTime * es.spd + es.phase) % 1;
-          const swirl = es.ang + prog * 4.2;
-          const rad = es.rad * (1 + prog * 0.9) * Math.min(1.6, 0.9 + survivalState.fireLevel * 0.08);
-          seasonDummy.position.set(
-            Math.cos(swirl) * rad,
-            0.2 + prog * (1.8 + survivalState.fireLevel * 0.24),
-            Math.sin(swirl) * rad
-          );
-          seasonDummy.scale.setScalar(Math.max(0.05, (1 - prog) * 1.15));
-        }
-        seasonDummy.rotation.set(0, 0, 0);
-        seasonDummy.updateMatrix();
-        campEmberInst.setMatrixAt(i, seasonDummy.matrix);
+    if (skullMistRing) {
+      const m = skullMistRing.material as THREE.MeshBasicMaterial;
+      const bonesReady = survivalState.inspectedBones.length >= worldData.ancientBoneSites.length;
+      m.color.setHex(
+        survivalState.templeRelicClaimed ? 0x64748b : bonesReady ? 0xfbbf24 : 0x2dd4bf
+      );
+      m.opacity = survivalState.templeRelicClaimed
+        ? 0.12
+        : 0.24 + Math.sin(elapsedTime * 2.6) * 0.12;
+      skullMistRing.rotation.z += dt * 0.45;
+    }
+    if (templeDoorMesh) {
+      const targetOpen = survivalState.templeUnlocked ? 1 : 0;
+      templeDoorAnim = THREE.MathUtils.lerp(templeDoorAnim, targetOpen, Math.min(1, dt * 2.8));
+      templeDoorMesh.visible = templeDoorAnim < 0.985;
+      templeDoorMesh.position.y = -templeDoorAnim * 2.15;
+      templeDoorMesh.position.x = templeDoorAnim * 1.45;
+    }
+    if (templeRelicMesh) {
+      templeRelicMesh.visible = !survivalState.templeRelicClaimed;
+      if (templeRelicMesh.visible) {
+        templeRelicMesh.rotation.y = elapsedTime * 1.35;
+        templeRelicMesh.position.y = 1.15 + Math.sin(elapsedTime * 2.4) * 0.14;
       }
-      campEmberInst.instanceMatrix.needsUpdate = true;
     }
-    if (campAuraRing) {
-      const mat = campAuraRing.material as THREE.MeshBasicMaterial;
-      mat.opacity = survivalState.nearCampfire ? 0.56 + Math.sin(elapsedTime * 4) * 0.14 : 0.24;
-      mat.color.setHex(survivalState.fireLevel >= 5 ? 0x62f8ff : 0xffcf5c);
-      campAuraRing.scale.setScalar(1 + Math.min(6, survivalState.fireLevel - 1) * 0.2);
+    for (let i = 0; i < templeSealOrbs.length; i += 1) {
+      const orbMat = templeSealOrbs[i].material as THREE.MeshStandardMaterial;
+      const lit = i < survivalState.inspectedBones.length;
+      orbMat.color.setHex(lit ? 0x5eead4 : 0x475569);
+      orbMat.emissive.setHex(lit ? 0x14b8a6 : 0x0f172a);
+      orbMat.emissiveIntensity = lit ? 1.45 + Math.sin(elapsedTime * 3.5 + i) * 0.28 : 0.12;
     }
-    if (campRoastGroup && campRoastFish && campRoastBanana && campRoastMeat) {
-      const roastFish = survivalState.nearCampfire && survivalState.carried.fish > 0;
-      const roastMeat = !roastFish && survivalState.nearCampfire && survivalState.carried.meat > 0;
-      const roastBanana =
-        !roastFish &&
-        !roastMeat &&
-        survivalState.nearCampfire &&
-        survivalState.fireLevel >= 2 &&
-        survivalState.carried.banana > 0;
-      campRoastGroup.visible = roastFish || roastMeat || roastBanana;
-      campRoastFish.visible = roastFish;
-      campRoastMeat.visible = roastMeat;
-      campRoastBanana.visible = roastBanana;
-      if (roastFish) campRoastFish.rotation.x = elapsedTime * 2.6;
-      if (roastMeat) campRoastMeat.rotation.x = elapsedTime * 2.5;
-      if (roastBanana) campRoastBanana.rotation.x = elapsedTime * 2.4;
+    if (wreckRingMesh) {
+      wreckRingMesh.visible = !survivalState.wreckLooted;
+      if (wreckRingMesh.visible) {
+        const m = wreckRingMesh.material as THREE.MeshBasicMaterial;
+        m.opacity = 0.54 + Math.sin(elapsedTime * 3.4) * 0.2;
+      }
+    }
+    if (wreckGroup && wreckGroup.visible) {
+      wreckSmokeTimer -= dt;
+      if (wreckSmokeTimer <= 0) {
+        wreckSmokeTimer = 0.55;
+        for (const puff of steamPool) {
+          if (!puff.active) {
+            puff.active = true;
+            puff.age = 0;
+            puff.life = 1.65;
+            puff.vx = (Math.random() - 0.5) * 0.45;
+            puff.vy = 1.35 + Math.random() * 0.5;
+            puff.vz = (Math.random() - 0.5) * 0.45;
+            puff.mesh.position.set(
+              wreckGroup.position.x + (Math.random() - 0.5) * 0.8,
+              wreckGroup.position.y + 0.65,
+              wreckGroup.position.z + (Math.random() - 0.5) * 0.8
+            );
+            puff.baseScale = 1.45;
+            puff.mesh.scale.setScalar(1.45);
+            puff.mesh.visible = true;
+            break;
+          }
+        }
+      }
+    }
+    for (const [bId, bVis] of boneShrineVisuals.entries()) {
+      const inspected = survivalState.inspectedBones.includes(bId);
+      const rMat = bVis.ring.material as THREE.MeshBasicMaterial;
+      rMat.opacity = inspected ? 0.16 : 0.56 + Math.sin(elapsedTime * 3.2) * 0.2;
+      rMat.color.setHex(inspected ? 0x64748b : 0x2dd4bf);
+    }
+
+    // Animate cozy survival campfire flames ONLY when lit (starts unlit at fireLit === false!)
+    const fireScaleCap = Math.min(2.6, 1 + Math.max(0, survivalState.fireLevel - 1) * 0.22);
+    if (!survivalState.fireLit) {
+      campFlames.forEach((flame) => {
+        flame.visible = false;
+      });
+      if (campEmberInst) {
+        campEmberInst.visible = false;
+      }
+      if (campCoalBed) {
+        const coalMat = campCoalBed.material as THREE.MeshStandardMaterial;
+        coalMat.color.setHex(0x282422);
+        coalMat.emissiveIntensity = 0.04;
+      }
+      if (campAuraRing) {
+        const mat = campAuraRing.material as THREE.MeshBasicMaterial;
+        mat.opacity = survivalState.nearCampfire ? 0.36 + Math.sin(elapsedTime * 4) * 0.1 : 0.16;
+        mat.color.setHex(0x94a3b8);
+        campAuraRing.scale.setScalar(1);
+      }
+      if (campRoastGroup) {
+        campRoastGroup.visible = false;
+      }
+    } else {
+      campFlames.forEach((flame, idx) => {
+        flame.visible = true;
+        const flicker = 1 + Math.sin(elapsedTime * (7.5 + idx * 2.1) + idx) * 0.14;
+        const baseXZ = idx === 0 ? 1.05 : idx === 4 ? 0.38 : 0.58;
+        const baseY = idx === 4 ? 0.56 : idx === 1 ? 0.88 : 1.08;
+        flame.scale.set(baseXZ * fireScaleCap, baseY * flicker * fireScaleCap, baseXZ * fireScaleCap);
+        flame.rotation.y = elapsedTime * (idx % 2 === 0 ? 1.4 : -1.8);
+      });
+      if (campCoalBed) {
+        const coalMat = campCoalBed.material as THREE.MeshStandardMaterial;
+        coalMat.color.setHex(0xff5a12);
+        coalMat.emissiveIntensity = 1.2 + Math.sin(elapsedTime * 6.5) * 0.35 + (survivalState.fireLevel - 1) * 0.15;
+      }
+      if (campEmberInst) {
+        campEmberInst.visible = true;
+        const activeEmbers = Math.min(campEmberSeeds.length, 16 + survivalState.fireLevel * 3);
+        for (let i = 0; i < campEmberSeeds.length; i += 1) {
+          if (i >= activeEmbers) {
+            seasonDummy.scale.setScalar(0);
+          } else {
+            const es = campEmberSeeds[i];
+            const prog = (elapsedTime * es.spd + es.phase) % 1;
+            const swirl = es.ang + prog * 4.2;
+            const rad = es.rad * (1 + prog * 0.9) * Math.min(1.6, 0.9 + survivalState.fireLevel * 0.08);
+            seasonDummy.position.set(
+              Math.cos(swirl) * rad,
+              0.2 + prog * (1.8 + survivalState.fireLevel * 0.24),
+              Math.sin(swirl) * rad
+            );
+            seasonDummy.scale.setScalar(Math.max(0.05, (1 - prog) * 1.15));
+          }
+          seasonDummy.rotation.set(0, 0, 0);
+          seasonDummy.updateMatrix();
+          campEmberInst.setMatrixAt(i, seasonDummy.matrix);
+        }
+        campEmberInst.instanceMatrix.needsUpdate = true;
+      }
+      if (campAuraRing) {
+        const mat = campAuraRing.material as THREE.MeshBasicMaterial;
+        mat.opacity = survivalState.nearCampfire ? 0.56 + Math.sin(elapsedTime * 4) * 0.14 : 0.24;
+        mat.color.setHex(survivalState.fireLevel >= 5 ? 0x62f8ff : 0xffcf5c);
+        campAuraRing.scale.setScalar(1 + Math.min(6, Math.max(0, survivalState.fireLevel - 1)) * 0.2);
+      }
+      if (campRoastGroup && campRoastFish && campRoastBanana && campRoastMeat) {
+        const roastFish = survivalState.nearCampfire && survivalState.carried.fish > 0;
+        const roastMeat = !roastFish && survivalState.nearCampfire && survivalState.carried.meat > 0;
+        const roastBanana =
+          !roastFish &&
+          !roastMeat &&
+          survivalState.nearCampfire &&
+          survivalState.fireLevel >= 2 &&
+          survivalState.carried.banana > 0;
+        campRoastGroup.visible = roastFish || roastMeat || roastBanana;
+        campRoastFish.visible = roastFish;
+        campRoastMeat.visible = roastMeat;
+        campRoastBanana.visible = roastBanana;
+        if (roastFish) campRoastFish.rotation.x = elapsedTime * 2.6;
+        if (roastMeat) campRoastMeat.rotation.x = elapsedTime * 2.5;
+        if (roastBanana) campRoastBanana.rotation.x = elapsedTime * 2.4;
+      }
     }
 
     // Pulse Strange Landmark interaction rings
@@ -4646,9 +5196,10 @@ export function createThreeIslandGame(
     hemiLight.intensity = (0.24 + dayAmount * 0.66) * weatherDim;
     fillLight.intensity = 0.09 + dayAmount * 0.31;
 
-    campPointLight.intensity =
-      (1.6 + nightAmount * 7.5) * (1 + (survivalState.fireLevel - 1) * 0.45) +
-      Math.sin(elapsedTime * 9) * 0.35;
+    campPointLight.intensity = !survivalState.fireLit
+      ? 0
+      : (1.6 + nightAmount * 7.5) * (1 + (survivalState.fireLevel - 1) * 0.45) +
+        Math.sin(elapsedTime * 9) * 0.35;
     campPointLight.distance = 24 + survivalState.fireLevel * 6;
 
     // Wet Ground Shader / PBR Roughness Sheen during Rain & Storm!
@@ -4712,20 +5263,80 @@ export function createThreeIslandGame(
       rainRippleMat.opacity = isPrecipitation ? 0.44 : wet * 0.24;
     }
 
-    // Update soundEngine ambient surf / birds / crickets / rain
+    // Update dynamic environmental audio layers (rain/storm, night, mystic landmarks, danger proximity)
+    let minPredDist = 999;
+    let activePredThreat = false;
+    for (const actor of survivalState.wildlife.actors) {
+      if (!actor.visible || actor.koTimer > 0) continue;
+      const spec = getAnimalSpecies(actor.speciesId);
+      if (spec?.category !== 'night_predator' && actor.speciesId !== 'viper_snake') continue;
+      const d = Math.hypot(actor.x - playerState.x, actor.z - playerState.z);
+      if (d < minPredDist) minPredDist = d;
+      if (actor.attackState === 'windup' || actor.attackState === 'strike' || d < 12) {
+        activePredThreat = true;
+      }
+    }
+    const distVolcano = Math.hypot(
+      playerState.x - CONFIG.ISLAND.VOLCANO.CX,
+      playerState.z - CONFIG.ISLAND.VOLCANO.CZ
+    );
+    const hazardEventDanger =
+      survivalState.activeEvent === 'tsunami' ||
+      survivalState.activeEvent === 'volcano_eruption' ||
+      survivalState.activeEvent === 'earthquake' ||
+      survivalState.activeEvent === 'lightning_storm'
+        ? 0.55
+        : 0;
+    const predDanger =
+      activePredThreat || survivalState.predatorAlert
+        ? Math.max(0.35, 1 - Math.min(18, minPredDist) / 18)
+        : 0;
+    const dangerLevel = Math.min(
+      1,
+      Math.max(
+        predDanger,
+        hazardEventDanger,
+        distVolcano < 14 ? (14 - distVolcano) / 16 : 0,
+        survivalState.venomTimer > 0 ? 0.52 : 0,
+        survivalState.energy < 25 ? 0.36 : 0
+      )
+    );
+    const distRuins = Math.hypot(
+      playerState.x - CONFIG.ISLAND.RUINS.CX,
+      playerState.z - CONFIG.ISLAND.RUINS.CZ
+    );
+    const distTemple = Math.hypot(
+      playerState.x - CONFIG.ISLAND.SHIPWRECK.HULL_CX,
+      playerState.z - CONFIG.ISLAND.SHIPWRECK.HULL_CZ
+    );
+    const distMushroom = Math.hypot(
+      playerState.x - CONFIG.ISLAND.MUSHROOM.CX,
+      playerState.z - CONFIG.ISLAND.MUSHROOM.CZ
+    );
+    const minMysticDist = Math.min(distRuins, distTemple, distMushroom);
+    const mysticLevel = minMysticDist < 17 ? Math.min(1, (17 - minMysticDist) / 12) : 0;
+
     soundEngine.updateAmbience(
       dt,
       survivalState.weather,
       playerState.y < 1.1,
       survivalState.isNight,
-      screenState === 'playing'
+      screenState === 'playing',
+      survivalState.nearCampfire,
+      {
+        dangerLevel,
+        mysticLevel,
+        activeEvent: survivalState.activeEvent,
+      }
     );
 
     emberTimer += dt;
     if (emberTimer >= 0.45) {
       emberTimer = 0;
-      const campY = groundHeightAt(CONFIG.ISLAND.CAMPFIRE.CX, CONFIG.ISLAND.CAMPFIRE.CZ, worldData);
-      spawnBurstChips(CONFIG.ISLAND.CAMPFIRE.CX, campY, CONFIG.ISLAND.CAMPFIRE.CZ, 'ember');
+      if (survivalState.fireLit) {
+        const campY = groundHeightAt(CONFIG.ISLAND.CAMPFIRE.CX, CONFIG.ISLAND.CAMPFIRE.CZ, worldData);
+        spawnBurstChips(CONFIG.ISLAND.CAMPFIRE.CX, campY, CONFIG.ISLAND.CAMPFIRE.CZ, 'ember');
+      }
     }
 
     steamTimer += dt;
@@ -4892,7 +5503,7 @@ export function createThreeIslandGame(
       if (activeKeys.has('KeyS') || activeKeys.has('ArrowDown')) moveZ += 1;
 
       let mag = Math.hypot(moveX, moveZ);
-      if (mag > 0.05) {
+      if (mag > 0.14) {
         clickWalkTarget = null;
         clickRingMesh.visible = false;
       } else if (clickWalkTarget) {
@@ -4919,13 +5530,35 @@ export function createThreeIslandGame(
 
       const prevSwimming = survivalState.isSwimming;
       const speedScale = getPlayerSpeedScale(survivalState);
+      const kbSpeed = Math.hypot(knockbackVel.x, knockbackVel.z);
+      let inputX = moveX;
+      let inputZ = moveZ;
+      let effSpeedScale = speedScale;
+      if (kbSpeed > 0.25) {
+        const kbDirX = knockbackVel.x / CONFIG.PLAYER.MOVE_SPEED;
+        const kbDirZ = knockbackVel.z / CONFIG.PLAYER.MOVE_SPEED;
+        inputX = moveX * speedScale + kbDirX;
+        inputZ = moveZ * speedScale + kbDirZ;
+        effSpeedScale = Math.max(speedScale, Math.hypot(inputX, inputZ));
+        if (effSpeedScale > 0.001) {
+          inputX /= effSpeedScale;
+          inputZ /= effSpeedScale;
+        }
+        const kbDecay = Math.exp(-8.5 * dt);
+        knockbackVel.x *= kbDecay;
+        knockbackVel.z *= kbDecay;
+      } else {
+        knockbackVel.x = 0;
+        knockbackVel.z = 0;
+      }
+
       const nextPos = stepPlayerPhysics(
         { x: playerState.x, z: playerState.z },
-        moveX,
-        moveZ,
+        inputX,
+        inputZ,
         dt,
         worldData,
-        speedScale,
+        effSpeedScale,
         survivalState.seaLevelOffset
       );
       playerState.x = nextPos.x;
@@ -4982,7 +5615,16 @@ export function createThreeIslandGame(
         }
         const hy = Math.max(survivalState.seaLevelOffset + 0.06, groundHeightAt(hz.x, hz.z, worldData) + 0.08);
         const prog = 1 - Math.max(0, hz.delayTimer) / Math.max(0.1, hz.maxDelay);
-        const colorHex = hz.kind === 'lightning' ? 0x62f6ff : hz.kind === 'meteor' ? 0xc27aff : 0xff451a;
+        const colorHex =
+          hz.kind === 'lightning'
+            ? 0x62f6ff
+            : hz.kind === 'meteor'
+              ? 0xc27aff
+              : hz.kind === 'boulder'
+                ? 0xc98a4b
+                : hz.kind === 'whirlwind'
+                  ? 0x76e0ff
+                  : 0xff451a;
         hv.ringMat.color.setHex(colorHex);
         hv.discMat.color.setHex(colorHex);
         hv.projMat.color.setHex(colorHex);
@@ -4997,7 +5639,8 @@ export function createThreeIslandGame(
         if (!hz.resolved && hz.kind !== 'lightning') {
           hv.proj.visible = true;
           hv.proj.position.set(hz.x, hy + (1 - prog) * 18, hz.z);
-          hv.proj.scale.setScalar(0.85 + prog * 0.45);
+          hv.proj.rotation.set(elapsedTime * 4, elapsedTime * 3, 0);
+          hv.proj.scale.setScalar(hz.kind === 'boulder' ? 1.15 + prog * 0.55 : 0.85 + prog * 0.45);
         } else {
           hv.proj.visible = false;
         }
@@ -5019,15 +5662,22 @@ export function createThreeIslandGame(
               break;
             }
           }
+        } else if (hs.kind === 'boulder') {
+          soundEngine.playEarthquake();
+          spawnBurstChips(hs.x, sy + 0.3, hs.z, 'chipWood');
         } else {
           soundEngine.playHammerSlam();
           spawnBurstChips(hs.x, sy + 0.3, hs.z, 'ember');
         }
       }
 
-      // Predator Melee Strikes & Damage Feedback
+      // Predator Melee Strikes, Physical Knockback, Poison & Damage Feedback
       if (survivalRes.predatorStrikes.length > 0) {
         const ps = survivalRes.predatorStrikes[0];
+        knockbackVel.x += ps.knockbackX * ps.knockbackForce;
+        knockbackVel.z += ps.knockbackZ * ps.knockbackForce;
+        hitShakeTimer = 0.28;
+        recoilTimer = 0.25;
         const clawY = Math.max(playerState.y, survivalState.seaLevelOffset) + 0.88;
         for (const cs of clawSlashPool) {
           if (!cs.active) {
@@ -5040,6 +5690,18 @@ export function createThreeIslandGame(
             cs.mesh.visible = true;
             break;
           }
+        }
+      }
+      if (survivalRes.poisonedSec) {
+        soundEngine.playPoisonHiss();
+        spawnBurstChips(playerState.x, playerState.y + 0.75, playerState.z, 'wood');
+        callbacks.onNotice?.('گزش مار سمی! زهر در بدن پخش شد — از پادزهر استفاده کن یا به چشمه بلورین برو');
+      }
+      if (survivalState.venomTimer > 0) {
+        poisonChipTimer -= dt;
+        if (poisonChipTimer <= 0) {
+          poisonChipTimer = 0.65;
+          spawnBurstChips(playerState.x, playerState.y + 0.65, playerState.z, 'wood');
         }
       }
       if (survivalRes.damageTaken > 0) {
@@ -5288,6 +5950,65 @@ export function createThreeIslandGame(
           callbacks.onNotice(`گونه جدید کشف شد: ${sp.nameFa}`);
         }
       }
+      if (survivalRes.fireLitNow) {
+        soundEngine.playFireIgnite();
+        const campY = groundHeightAt(CONFIG.ISLAND.CAMPFIRE.CX, CONFIG.ISLAND.CAMPFIRE.CZ, worldData);
+        spawnBurstChips(CONFIG.ISLAND.CAMPFIRE.CX, campY + 0.45, CONFIG.ISLAND.CAMPFIRE.CZ, 'ember');
+        callbacks.onNotice?.('آتش کمپ روشن شد! اکنون می‌توانی غذا بپزی و شب را گرم بمانی');
+      }
+      if (survivalRes.wreckSalvaged) {
+        soundEngine.playSecretOpen();
+        const ws = survivalRes.wreckSalvaged;
+        spawnBurstChips(ws.x, ws.y + 0.65, ws.z, 'ember');
+        callbacks.onNotice?.('تجهیزات لاشه هواپیما پیدا شد (+۳ چوب، +۸ سکه و ۱ پادزهر)');
+      }
+      if (survivalRes.boneInspected) {
+        soundEngine.playSecretOpen();
+        const bi = survivalRes.boneInspected;
+        spawnBurstChips(bi.x, bi.y + 0.45, bi.z, 'ember');
+        callbacks.onNotice?.(`${bi.nameFa}: ${bi.loreFa}`);
+      }
+      if (survivalRes.templeOpened) {
+        soundEngine.playTempleUnlock();
+        const ty = groundHeightAt(
+          CONFIG.ISLAND.SHIPWRECK.HULL_CX,
+          CONFIG.ISLAND.SHIPWRECK.HULL_CZ,
+          worldData
+        );
+        spawnBurstChips(
+          CONFIG.ISLAND.SHIPWRECK.HULL_CX,
+          ty + 1.25,
+          CONFIG.ISLAND.SHIPWRECK.HULL_CZ,
+          'ember'
+        );
+        callbacks.onNotice?.(survivalRes.templeOpened.notice);
+        if (callbacks.onResourceFly) {
+          const pt = projectWorldToViewport(
+            CONFIG.ISLAND.SHIPWRECK.HULL_CX,
+            ty + 1.6,
+            CONFIG.ISLAND.SHIPWRECK.HULL_CZ
+          );
+          callbacks.onResourceFly({
+            id: flyEventSeq++,
+            kind: 'coin',
+            startX: pt.x,
+            startY: pt.y,
+          });
+        }
+      }
+      if (survivalRes.templeLockedNotice) {
+        soundEngine.playClick();
+        callbacks.onNotice?.(survivalRes.templeLockedNotice);
+      }
+      if (survivalRes.disasterChallengeOutcome) {
+        const ch = survivalRes.disasterChallengeOutcome;
+        if (ch.completed) {
+          soundEngine.playLevelUp();
+          callbacks.onNotice?.(`پیروزی در ${ch.titleFa}! (+${toPersianDigits(ch.rewardCoins)} سکه و ۱ امتیاز مهارت)`);
+        } else {
+          callbacks.onNotice?.(`${ch.titleFa} با آسیب به پایان رسید`);
+        }
+      }
 
       // Animate Arrow Projectiles, Hammer Shockwave & World Event Projectiles (Meteors / Lava Bombs)
       for (const ar of arrowPool) {
@@ -5387,8 +6108,9 @@ export function createThreeIslandGame(
         }
       }
 
-      // Sync 32-Species Wildlife Visual Rigs (articulated legs, heads, tails, attack windup/lunge, KO topple, sleeping tags)
+      // Sync Island Wildlife Visual Rigs (banking turns, grazing pauses, articulated snake slither & forked tongue, swim, hop, windup/lunge, KO)
       let predRingIdx = 0;
+      const nextWindupIds = new Set<string>();
       for (const actor of survivalState.wildlife.actors) {
         const rig = animalRigBindings.get(actor.id);
         const spec = getAnimalSpecies(actor.speciesId);
@@ -5407,20 +6129,30 @@ export function createThreeIslandGame(
           if (rig.sleepTag) rig.sleepTag.visible = false;
           continue;
         }
-        rig.bodyGroup.rotation.z = 0;
+        const turnLean = THREE.MathUtils.clamp((actor.turnBank ?? 0) * 0.42, -0.32, 0.32);
+        const isMoving = Math.hypot(actor.vx, actor.vz) > 0.12 && (actor.pauseTimer ?? 0) <= 0 && !actor.sleeping;
+        rig.bodyGroup.rotation.z = turnLean;
+        rig.bodyGroup.rotation.y = 0;
 
-        if (actor.attackState === 'windup' && predRingIdx < predWarnPool.length) {
-          const wr = predWarnPool[predRingIdx];
-          predRingIdx += 1;
-          wr.visible = true;
-          wr.position.set(actor.x, actor.y + 0.08, actor.z);
-          wr.scale.setScalar(0.95 + Math.sin(elapsedTime * 22) * 0.16);
+        if (actor.attackState === 'windup') {
+          nextWindupIds.add(actor.id);
+          if (!prevWindupIds.has(actor.id)) {
+            soundEngine.playPredatorGrowl();
+          }
+          if (predRingIdx < predWarnPool.length) {
+            const wr = predWarnPool[predRingIdx];
+            predRingIdx += 1;
+            wr.visible = true;
+            wr.position.set(actor.x, actor.y + 0.08, actor.z);
+            wr.scale.setScalar(0.95 + Math.sin(elapsedTime * 22) * 0.16);
+          }
         }
 
         if (actor.sleeping) {
           rig.bodyGroup.scale.set(1.08, 0.72, 1.08);
           rig.bodyGroup.position.y = -0.05;
           for (const leg of rig.legs) leg.rotation.x = 0;
+          if (rig.tongueGroup) rig.tongueGroup.visible = false;
           if (rig.sleepTag) {
             rig.sleepTag.visible = true;
             rig.sleepTag.position.y = 0.72 + Math.sin(elapsedTime * 2.5 + actor.phase) * 0.08;
@@ -5428,62 +6160,96 @@ export function createThreeIslandGame(
         } else {
           if (actor.attackState === 'windup') {
             rig.bodyGroup.scale.set(1.14, 0.82, 1.12);
-            rig.bodyGroup.rotation.x = -0.22;
+            rig.bodyGroup.rotation.x = -0.24;
             rig.bodyGroup.position.x = Math.sin(elapsedTime * 42) * 0.04;
           } else if (actor.attackState === 'strike') {
             rig.bodyGroup.scale.set(0.94, 1.1, 1.18);
             rig.bodyGroup.rotation.x = 0.28;
             rig.bodyGroup.position.x = 0;
           } else {
-            rig.bodyGroup.scale.set(1, 1, 1);
+            const breathe = 1 + Math.sin(elapsedTime * 3.1 + actor.phase) * 0.025;
+            rig.bodyGroup.scale.set(1, breathe, 1);
             rig.bodyGroup.rotation.x = 0;
             rig.bodyGroup.position.x = 0;
           }
           if (rig.sleepTag) rig.sleepTag.visible = false;
-          const stride = Math.sin(actor.phase * 2.6);
-          if (rig.legs.length > 0 && spec.archetype !== 'crab' && spec.archetype !== 'scorpion' && spec.archetype !== 'golem') {
+          const legAmp = isMoving ? 1.0 : 0.12;
+          const stride = Math.sin(actor.phase * 2.7);
+          if (rig.legs.length > 0 && spec.archetype !== 'crab' && spec.archetype !== 'scorpion' && spec.archetype !== 'golem' && spec.archetype !== 'serpent') {
             rig.legs.forEach((leg, lIdx) => {
               const phaseFlip = lIdx === 0 || lIdx === 3 ? 1 : -1;
-              leg.rotation.x = stride * 0.48 * phaseFlip;
+              leg.rotation.x = stride * 0.52 * phaseFlip * legAmp;
             });
           } else if (rig.legs.length > 0 && (spec.archetype === 'crab' || spec.archetype === 'scorpion')) {
             rig.legs.forEach((leg, lIdx) => {
-              leg.rotation.z = (lIdx % 2 === 0 ? 1 : -1) * Math.sin(actor.phase * 4.0 + lIdx) * 0.24;
+              leg.rotation.z = (lIdx % 2 === 0 ? 1 : -1) * Math.sin(actor.phase * 4.4 + lIdx) * 0.26 * legAmp;
             });
           } else if (rig.legs.length > 0 && spec.archetype === 'golem') {
             rig.legs.forEach((arm, aIdx) => {
-              arm.rotation.x = Math.sin(actor.phase * 1.8 + aIdx * Math.PI) * 0.35;
+              arm.rotation.x = Math.sin(actor.phase * 1.8 + aIdx * Math.PI) * 0.38 * legAmp;
             });
           }
 
           if (rig.headGroup) {
-            rig.headGroup.rotation.x = Math.sin(actor.phase * 1.4) * 0.1;
-            rig.headGroup.rotation.y = Math.cos(actor.phase * 0.85) * 0.12;
+            if ((actor.pauseTimer ?? 0) > 0 && !spec.aquatic && !spec.flying) {
+              // Grazing / curious sniff pause animation
+              rig.headGroup.rotation.x = 0.24 + Math.sin(elapsedTime * 4.8 + actor.phase) * 0.14;
+              rig.headGroup.rotation.y = Math.sin(elapsedTime * 2.1 + actor.phase) * 0.22;
+            } else {
+              rig.headGroup.rotation.x = Math.sin(actor.phase * 1.5) * 0.11;
+              rig.headGroup.rotation.y = Math.cos(actor.phase * 0.9) * 0.14 + turnLean * 0.55;
+            }
           }
           if (rig.tailGroup) {
-            rig.tailGroup.rotation.y = Math.sin(actor.phase * 3.1) * 0.28;
+            rig.tailGroup.rotation.y = Math.sin(actor.phase * (spec.aquatic ? 5.2 : 3.4)) * (spec.aquatic ? 0.46 : 0.32);
           }
           if (rig.haloGroup) {
             rig.haloGroup.rotation.y += dt * 1.6;
             rig.haloGroup.position.y = 1.32 + Math.sin(elapsedTime * 2.8 + actor.phase) * 0.08;
           }
 
-          if (spec.archetype === 'rabbit') {
-            rig.bodyGroup.position.y = Math.abs(Math.sin(actor.phase * 2.2)) * 0.22;
+          if (spec.archetype === 'serpent') {
+            // Smooth articulated S-wave snake slither + forked tongue flick
+            if (rig.segments && rig.segments.length > 0) {
+              const slitherAmp = isMoving ? 0.36 : 0.09;
+              const slitherFreq = isMoving ? 4.4 : 2.1;
+              rig.segments.forEach((seg, sIdx) => {
+                const wave = Math.sin(actor.phase * slitherFreq - sIdx * 0.72);
+                seg.rotation.y = wave * slitherAmp * (1 + sIdx * 0.05);
+                seg.position.y = Math.abs(Math.cos(actor.phase * slitherFreq - sIdx * 0.72)) * (isMoving ? 0.016 : 0.004);
+              });
+            }
+            if (rig.tongueGroup) {
+              const flickActive = Math.sin(elapsedTime * 2.8 + actor.phase * 2.0) > 0.55 || actor.attackState === 'windup';
+              rig.tongueGroup.visible = flickActive;
+              if (flickActive) {
+                rig.tongueGroup.scale.z = 0.78 + Math.abs(Math.sin(elapsedTime * 28)) * 0.55;
+                rig.tongueGroup.rotation.x = Math.sin(elapsedTime * 22) * 0.2;
+              }
+            }
+            rig.bodyGroup.position.y = isMoving ? Math.abs(Math.sin(actor.phase * 3.4)) * 0.018 : 0;
+          } else if (spec.archetype === 'rabbit') {
+            rig.bodyGroup.position.y = isMoving ? Math.abs(Math.sin(actor.phase * 2.4)) * 0.26 : Math.sin(elapsedTime * 3 + actor.phase) * 0.015;
+          } else if (spec.aquatic) {
+            rig.bodyGroup.rotation.y = Math.sin(actor.phase * 3.8) * 0.14;
+            rig.bodyGroup.rotation.x = Math.sin(actor.phase * 2.1) * 0.06;
+            rig.bodyGroup.position.y = Math.sin(elapsedTime * 3.2 + actor.phase) * 0.04;
           } else if (spec.archetype === 'crab') {
             rig.group.rotation.y = actor.yaw + Math.PI * 0.5;
-            rig.bodyGroup.position.y = Math.abs(Math.sin(actor.phase * 3.5)) * 0.05;
-            if (rig.clawL) rig.clawL.rotation.x = Math.sin(actor.phase * 3) * 0.35;
-            if (rig.clawR) rig.clawR.rotation.x = -Math.sin(actor.phase * 3) * 0.35;
+            rig.bodyGroup.position.y = isMoving ? Math.abs(Math.sin(actor.phase * 3.5)) * 0.055 : 0;
+            if (rig.clawL) rig.clawL.rotation.x = Math.sin(actor.phase * 3.2) * 0.38;
+            if (rig.clawR) rig.clawR.rotation.x = -Math.sin(actor.phase * 3.2) * 0.38;
           } else if (spec.flying) {
-            const flap = Math.sin(actor.phase * 3.4) * 0.52;
+            const flap = Math.sin(actor.phase * 3.8) * 0.56;
             if (rig.leftWing) rig.leftWing.rotation.z = 0.18 + flap;
             if (rig.rightWing) rig.rightWing.rotation.z = -0.18 - flap;
+            rig.bodyGroup.position.y = Math.sin(elapsedTime * 2.6 + actor.phase) * 0.08;
           } else {
-            rig.bodyGroup.position.y = Math.abs(Math.sin(actor.phase * 2.2)) * 0.06;
+            rig.bodyGroup.position.y = isMoving ? Math.abs(Math.sin(actor.phase * 2.4)) * 0.065 : Math.sin(elapsedTime * 2.8 + actor.phase) * 0.012;
           }
         }
       }
+      prevWindupIds = nextWindupIds;
       for (let i = predRingIdx; i < predWarnPool.length; i += 1) {
         predWarnPool[i].visible = false;
       }
@@ -5611,6 +6377,7 @@ export function createThreeIslandGame(
                 treeBind.shadowMesh.setMatrixAt(treeBind.index, shDummy.matrix);
                 treeBind.shadowMesh.instanceMatrix.needsUpdate = true;
               } else {
+                treeDummy.position.set(p.x, -50, p.z);
                 treeDummy.scale.setScalar(0);
                 treeDummy.updateMatrix();
                 treeBind.shadowMesh.setMatrixAt(treeBind.index, treeDummy.matrix);
@@ -5620,6 +6387,7 @@ export function createThreeIslandGame(
               treeBind.dirty = true;
             } else {
               // Hide stump when tree is back upright & restore shadow
+              treeDummy.position.set(p.x, -50, p.z);
               treeDummy.scale.setScalar(0);
               treeDummy.updateMatrix();
               treeBind.stumpMesh.setMatrixAt(treeBind.stumpIndex, treeDummy.matrix);
@@ -5664,18 +6432,21 @@ export function createThreeIslandGame(
         currentBiome = nextBiome;
         emitHud(nextBiome);
       }
-      if (survivalState.gameOutcome !== lastNotifiedOutcome) {
-        lastNotifiedOutcome = survivalState.gameOutcome;
+      const currentOutcome = survivalState.gameOutcome as GameOutcome;
+      if (currentOutcome !== lastNotifiedOutcome) {
+        lastNotifiedOutcome = currentOutcome;
         activeKeys.clear();
         joystickInput.dx = 0;
         joystickInput.dy = 0;
         clickWalkTarget = null;
-        if (survivalState.gameOutcome === 'victory') {
+        if (currentOutcome === 'victory') {
           soundEngine.playLevelUp();
-        } else if (survivalState.gameOutcome === 'defeat') {
+          clearSavedRun();
+        } else if (currentOutcome === 'defeat') {
           soundEngine.playHitDamage();
+          clearSavedRun();
         }
-        callbacks.onOutcomeChange?.(survivalState.gameOutcome);
+        callbacks.onOutcomeChange?.(currentOutcome);
       }
 
       // Realistic Character Pose, Swimming, Movement, Banana Climbing, & Spear/Axe Animations
@@ -5952,12 +6723,156 @@ export function createThreeIslandGame(
         }
       }
 
+      if (recoilTimer > 0) {
+        recoilTimer = Math.max(0, recoilTimer - dt);
+        survivor.bodyPivot.rotation.x -= Math.sin((recoilTimer / 0.25) * Math.PI) * 0.42;
+      }
+
       targetLookAt.set(playerState.x, playerState.y + CONFIG.CAMERA.LOOK_HEIGHT + climbBoostY * 0.5, playerState.z);
       const followAlpha = 1 - Math.exp(-CONFIG.CAMERA.FOLLOW_DAMP * dt);
       camLookAt.lerp(targetLookAt, followAlpha);
       desiredCamPos.set(camLookAt.x, camLookAt.y + camHeightOffset, camLookAt.z + camDepthOffset);
+      if (survivalState.activeEvent === 'earthquake') {
+        const quakeAmp = survivalState.eventPhase === 'active' ? 0.16 : 0.055;
+        desiredCamPos.x += Math.sin(elapsedTime * 39) * quakeAmp;
+        desiredCamPos.y += Math.cos(elapsedTime * 47) * quakeAmp * 0.7;
+        desiredCamPos.z += Math.sin(elapsedTime * 33) * quakeAmp;
+      }
+      if (hitShakeTimer > 0) {
+        hitShakeTimer = Math.max(0, hitShakeTimer - dt);
+        const hAmp = (hitShakeTimer / 0.28) * 0.34;
+        desiredCamPos.x += Math.sin(elapsedTime * 68) * hAmp;
+        desiredCamPos.y += Math.cos(elapsedTime * 54) * hAmp * 0.7;
+      }
       camera.position.copy(desiredCamPos);
       camera.lookAt(camLookAt);
+    } else if (screenState === 'cutscene') {
+      // 5.5s Dramatic 3D Airplane Crash & Rescue Parachute Intro Sequence
+      cutsceneTimer += dt;
+      const t = cutsceneTimer;
+      const wreck = worldData.wreckSite ?? {
+        x: CONFIG.ISLAND.AIRPLANE_WRECK.CX,
+        y: groundHeightAt(CONFIG.ISLAND.AIRPLANE_WRECK.CX, CONFIG.ISLAND.AIRPLANE_WRECK.CZ, worldData),
+        z: CONFIG.ISLAND.AIRPLANE_WRECK.CZ,
+      };
+      const spawnY = groundHeightAt(CONFIG.WORLD.SPAWN_X, CONFIG.WORLD.SPAWN_Z, worldData);
+
+      survivor.axeMesh.visible = false;
+      survivor.spearMesh.visible = false;
+      survivor.fireSpearMesh.visible = false;
+      survivor.bowMesh.visible = false;
+      survivor.hammerMesh.visible = false;
+      survivor.rodGroup.visible = false;
+      bobberMesh.visible = false;
+      fishingLine.visible = false;
+      focusRingMesh.visible = false;
+
+      if (t < 3.0) {
+        const p = Math.min(1, t / 3.0);
+        const startX = CONFIG.WORLD.SPAWN_X + 28;
+        const startY = 26;
+        const startZ = CONFIG.WORLD.SPAWN_Z - 34;
+        const px = THREE.MathUtils.lerp(startX, wreck.x, p) + Math.sin(p * Math.PI * 1.4) * 3.2;
+        const py = THREE.MathUtils.lerp(startY, wreck.y + 0.65, Math.pow(p, 1.15));
+        const pz = THREE.MathUtils.lerp(startZ, wreck.z, p);
+        cutscenePlaneGroup.visible = true;
+        cutscenePlaneGroup.position.set(px, py, pz);
+        cutscenePlaneGroup.lookAt(wreck.x, wreck.y + 0.65, wreck.z);
+        cutscenePlaneGroup.rotation.z += Math.sin(elapsedTime * 4.5) * 0.35 + p * 0.38;
+        cutscenePropeller.rotation.z += dt * 36;
+
+        if (Math.floor(t * 14) !== Math.floor((t - dt) * 14)) {
+          for (const puff of steamPool) {
+            if (!puff.active) {
+              puff.active = true;
+              puff.age = 0;
+              puff.life = 1.25;
+              puff.vx = (Math.random() - 0.5) * 0.8;
+              puff.vy = 1.2;
+              puff.vz = (Math.random() - 0.5) * 0.8;
+              puff.mesh.position.set(px, py + 0.3, pz);
+              puff.baseScale = 1.8;
+              puff.mesh.scale.setScalar(1.8);
+              puff.mesh.visible = true;
+              break;
+            }
+          }
+        }
+        if (wreckGroup) wreckGroup.visible = false;
+      } else {
+        cutscenePlaneGroup.visible = false;
+        if (wreckGroup) wreckGroup.visible = true;
+        if (!cutsceneCrashFxDone) {
+          cutsceneCrashFxDone = true;
+          soundEngine.playPlaneCrash();
+          hitShakeTimer = 0.55;
+          spawnBurstChips(wreck.x, wreck.y + 0.8, wreck.z, 'ember');
+          spawnBurstChips(wreck.x + 0.8, wreck.y + 0.6, wreck.z - 0.5, 'chipWood');
+          spawnDustPuff(wreck.x, wreck.y + 0.4, wreck.z);
+        }
+      }
+
+      if (t < 1.85) {
+        // Explorer still inside plane cabin before ejecting
+        survivor.root.visible = false;
+        cutsceneParachuteMesh.visible = false;
+      } else {
+        survivor.root.visible = true;
+        const dropProg = Math.min(1, (t - 1.85) / 2.25);
+        const easeOut = 1 - Math.pow(1 - dropProg, 2);
+        const ejectX = THREE.MathUtils.lerp(CONFIG.WORLD.SPAWN_X + 7.5, CONFIG.WORLD.SPAWN_X, easeOut);
+        const ejectY = THREE.MathUtils.lerp(16.5, spawnY, easeOut);
+        const ejectZ = THREE.MathUtils.lerp(CONFIG.WORLD.SPAWN_Z - 9.5, CONFIG.WORLD.SPAWN_Z, easeOut);
+        survivor.root.position.set(ejectX, ejectY, ejectZ);
+        survivor.root.rotation.y = Math.sin(elapsedTime * 2.2) * 0.25;
+        cutsceneParachuteMesh.visible = dropProg < 0.96;
+        if (cutsceneParachuteMesh.visible) {
+          cutsceneParachuteMesh.rotation.z = Math.sin(elapsedTime * 3.5) * 0.08;
+          survivor.leftArm.rotation.x = -2.3 + Math.sin(elapsedTime * 7) * 0.12;
+          survivor.rightArm.rotation.x = -2.3 - Math.sin(elapsedTime * 7) * 0.12;
+          survivor.leftLeg.rotation.x = Math.sin(elapsedTime * 6) * 0.24;
+          survivor.rightLeg.rotation.x = -Math.sin(elapsedTime * 6) * 0.24;
+        } else {
+          survivor.leftArm.rotation.x *= 0.85;
+          survivor.rightArm.rotation.x *= 0.85;
+          survivor.leftLeg.rotation.x *= 0.85;
+          survivor.rightLeg.rotation.x *= 0.85;
+        }
+      }
+
+      // Dramatic tracking camera swooping smoothly into gameplay angle at t -> 5.5s
+      if (t < 3.4) {
+        const focusX = t < 2.2 ? cutscenePlaneGroup.position.x : THREE.MathUtils.lerp(wreck.x, CONFIG.WORLD.SPAWN_X, (t - 2.2) / 1.2);
+        const focusY = t < 2.2 ? cutscenePlaneGroup.position.y : THREE.MathUtils.lerp(wreck.y + 1.5, spawnY + 1.8, (t - 2.2) / 1.2);
+        const focusZ = t < 2.2 ? cutscenePlaneGroup.position.z : THREE.MathUtils.lerp(wreck.z, CONFIG.WORLD.SPAWN_Z, (t - 2.2) / 1.2);
+        targetLookAt.set(focusX, focusY, focusZ);
+        camLookAt.lerp(targetLookAt, 1 - Math.exp(-5.5 * dt));
+        desiredCamPos.set(camLookAt.x + 12, camLookAt.y + 8.5, camLookAt.z + 18);
+      } else {
+        const swoopAlpha = Math.min(1, (t - 3.4) / 2.1);
+        targetLookAt.set(CONFIG.WORLD.SPAWN_X, spawnY + CONFIG.CAMERA.LOOK_HEIGHT, CONFIG.WORLD.SPAWN_Z);
+        camLookAt.lerp(targetLookAt, 1 - Math.exp(-6.5 * dt));
+        const endCamX = camLookAt.x;
+        const endCamY = camLookAt.y + camHeightOffset;
+        const endCamZ = camLookAt.z + camDepthOffset;
+        desiredCamPos.set(
+          THREE.MathUtils.lerp(camLookAt.x + 10, endCamX, swoopAlpha),
+          THREE.MathUtils.lerp(camLookAt.y + 8.5, endCamY, swoopAlpha),
+          THREE.MathUtils.lerp(camLookAt.z + 17, endCamZ, swoopAlpha)
+        );
+      }
+      if (hitShakeTimer > 0) {
+        hitShakeTimer = Math.max(0, hitShakeTimer - dt);
+        const sAmp = (hitShakeTimer / 0.55) * 0.45;
+        desiredCamPos.x += Math.sin(elapsedTime * 55) * sAmp;
+        desiredCamPos.y += Math.cos(elapsedTime * 48) * sAmp * 0.7;
+      }
+      camera.position.copy(desiredCamPos);
+      camera.lookAt(camLookAt);
+
+      if (cutsceneTimer >= 5.5) {
+        finishCutscene();
+      }
     } else if (screenState === 'playing' && survivalState.gameOutcome !== 'playing') {
       // Frozen outcome beat while Victory/Defeat modal is displayed
       targetLookAt.set(playerState.x, playerState.y + CONFIG.CAMERA.LOOK_HEIGHT, playerState.z);
@@ -6041,8 +6956,75 @@ export function createThreeIslandGame(
     rafId = requestAnimationFrame(loop);
   }
 
+  const finishCutscene = () => {
+    if (screenState !== 'cutscene') return;
+    cutscenePlaneGroup.visible = false;
+    cutsceneParachuteMesh.visible = false;
+    survivor.root.visible = true;
+    if (wreckGroup) wreckGroup.visible = true;
+    resetPlayerToSpawn();
+    survivor.leftArm.rotation.x = 0;
+    survivor.rightArm.rotation.x = 0;
+    survivor.leftLeg.rotation.x = 0;
+    survivor.rightLeg.rotation.x = 0;
+    screenState = 'playing';
+    emitHud(currentBiome);
+    callbacks.onScreenChange('playing', { mode: currentMode, seed: currentSeed });
+    callbacks.onNotice?.('هواپیما سقوط کرد! برای روشن کردن آتش کمپ ۲ چوب جمع کن و به آتش برگرد');
+  };
+
+  const clearSavedRun = () => {
+    safeStorageRemove(CONFIG.STORAGE_KEYS.SAVED_RUN);
+  };
+
+  const readSavedRunSnapshot = (): SavedRunSnapshot | null => {
+    const parsed = safeStorageGet<Partial<SavedRunSnapshot> | null>(
+      CONFIG.STORAGE_KEYS.SAVED_RUN,
+      null
+    );
+    if (!parsed || parsed.version !== 1 || !parsed.seed || !parsed.state || !parsed.player) {
+      return null;
+    }
+    return parsed as SavedRunSnapshot;
+  };
+
+  const saveCurrentRun = (): boolean => {
+    if (screenState !== 'playing' || survivalState.gameOutcome !== 'playing') {
+      return false;
+    }
+    try {
+      const snap = exportSavedRunSnapshot(
+        survivalState,
+        {
+          x: playerState.x,
+          y: playerState.y,
+          z: playerState.z,
+          yaw: playerState.yaw,
+        },
+        currentMode,
+        currentSeed
+      );
+      return safeStorageSet(CONFIG.STORAGE_KEYS.SAVED_RUN, snap);
+    } catch {
+      return false;
+    }
+  };
+
+  const onPageExitSave = () => {
+    saveCurrentRun();
+  };
+  const onVisibilitySave = () => {
+    if (document.visibilityState === 'hidden') {
+      saveCurrentRun();
+    }
+  };
+  window.addEventListener('pagehide', onPageExitSave);
+  window.addEventListener('beforeunload', onPageExitSave);
+  document.addEventListener('visibilitychange', onVisibilitySave);
+
   return {
     startRun: (mode: GameMode, forceNewIsland = false) => {
+      clearSavedRun();
       currentMode = mode;
       if (mode === 'normal' && forceNewIsland) {
         resetNormalSeed();
@@ -6057,14 +7039,95 @@ export function createThreeIslandGame(
       lastNotifiedOutcome = 'playing';
       clickWalkTarget = null;
       clickRingMesh.visible = false;
+      knockbackVel.x = 0;
+      knockbackVel.z = 0;
+      hitShakeTimer = 0;
+      recoilTimer = 0;
       lastStackSignature = '';
       syncSurvivorBackStack();
+      callbacks.onOutcomeChange?.('playing');
+      if (autostart) {
+        cutscenePlaneGroup.visible = false;
+        cutsceneParachuteMesh.visible = false;
+        survivor.root.visible = true;
+        if (wreckGroup) wreckGroup.visible = true;
+        screenState = 'playing';
+        emitHud(currentBiome);
+        callbacks.onScreenChange('playing', { mode: currentMode, seed: currentSeed });
+      } else {
+        cutsceneTimer = 0;
+        cutsceneCrashFxDone = false;
+        if (wreckGroup) wreckGroup.visible = false;
+        screenState = 'cutscene';
+        soundEngine.playPlaneCutscene();
+        emitHud(currentBiome);
+        callbacks.onScreenChange('cutscene', { mode: currentMode, seed: currentSeed });
+      }
+    },
+    getSavedRunSummary: () => {
+      const snap = readSavedRunSnapshot();
+      if (!snap) return null;
+      return {
+        mode: snap.mode,
+        seed: snap.seed,
+        dayCount: snap.state.dayCount,
+        playerLevel: snap.state.playerLevel,
+        coins: snap.state.coins,
+        savedAt: snap.savedAt,
+      };
+    },
+    resumeSavedRun: () => {
+      const snap = readSavedRunSnapshot();
+      if (!snap) return false;
+      currentMode = snap.mode;
+      if (snap.seed !== currentSeed) {
+        loadSeedWorld(snap.seed);
+      }
+      const restored = restoreSavedRunSnapshot(snap, worldData);
+      if (!restored) return false;
+      survivalState = restored.state;
+      playerState.x = restored.player.x;
+      playerState.y = restored.player.y;
+      playerState.z = restored.player.z;
+      playerState.yaw = restored.player.yaw;
+      playerState.walkPhase = 0;
+      currentBiome = detectBiomeAt(playerState.x, playerState.z, worldData);
+      survivor.root.position.set(playerState.x, playerState.y, playerState.z);
+      survivor.root.rotation.y = playerState.yaw;
+      survivor.root.visible = true;
+      cutscenePlaneGroup.visible = false;
+      cutsceneParachuteMesh.visible = false;
+      if (wreckGroup) wreckGroup.visible = true;
+      for (const treeBind of treeNodeVisuals.values()) {
+        treeBind.dirty = true;
+      }
+      templeDoorAnim = survivalState.templeUnlocked ? 1 : 0;
+      camLookAt.set(playerState.x, playerState.y + CONFIG.CAMERA.LOOK_HEIGHT, playerState.z);
+      lastNotifiedOutcome = 'playing';
+      clickWalkTarget = null;
+      clickRingMesh.visible = false;
+      knockbackVel.x = 0;
+      knockbackVel.z = 0;
+      hitShakeTimer = 0;
+      recoilTimer = 0;
+      lastStackSignature = '';
+      syncSurvivorBackStack();
+      callbacks.onOutcomeChange?.('playing');
       screenState = 'playing';
       emitHud(currentBiome);
-      callbacks.onOutcomeChange?.('playing');
       callbacks.onScreenChange('playing', { mode: currentMode, seed: currentSeed });
+      callbacks.onNotice?.('بازی ذخیره‌شده با موفقیت بارگذاری شد!');
+      return true;
+    },
+    skipCutscene: () => {
+      finishCutscene();
     },
     returnToMenu: () => {
+      const saved = saveCurrentRun();
+      cutscenePlaneGroup.visible = false;
+      cutsceneParachuteMesh.visible = false;
+      survivor.root.visible = true;
+      if (wreckGroup) wreckGroup.visible = true;
       screenState = 'title';
       lastNotifiedOutcome = 'playing';
       clickWalkTarget = null;
@@ -6073,6 +7136,9 @@ export function createThreeIslandGame(
       joystickInput.dy = 0;
       callbacks.onOutcomeChange?.('playing');
       callbacks.onScreenChange('title', { mode: currentMode, seed: currentSeed });
+      if (saved) {
+        callbacks.onNotice?.('پیشرفت بازی ذخیره شد! هرزمان می‌توانی ادامه بدهی');
+      }
     },
     setJoystickInput: (dx: number, dy: number) => {
       joystickInput.dx = dx;
@@ -6080,6 +7146,23 @@ export function createThreeIslandGame(
     },
     interact: () => {
       soundEngine.unlockAndStartAmbience();
+      if (survivalState.focusedTarget?.kind === 'temple_door') {
+        const res = openBuriedTempleDoor(survivalState, playerState.x, playerState.z);
+        if (res.opened) {
+          soundEngine.playTempleUnlock();
+          lastStackSignature = '';
+          syncSurvivorBackStack();
+          emitHud(currentBiome);
+          callbacks.onNotice?.(res.notice);
+          saveCurrentRun();
+          return;
+        }
+        if (res.notice) {
+          soundEngine.playClick();
+          callbacks.onNotice?.(res.notice);
+          return;
+        }
+      }
       requestPlayerInteract(survivalState);
     },
     eatFood: () => {
@@ -6121,6 +7204,19 @@ export function createThreeIslandGame(
       }
       return ok;
     },
+    lightFire: () => {
+      const ok = lightCampfire(survivalState);
+      if (ok) {
+        soundEngine.playFireIgnite();
+        lastStackSignature = '';
+        syncSurvivorBackStack();
+        const campY = groundHeightAt(CONFIG.ISLAND.CAMPFIRE.CX, CONFIG.ISLAND.CAMPFIRE.CZ, worldData);
+        spawnBurstChips(CONFIG.ISLAND.CAMPFIRE.CX, campY + 0.45, CONFIG.ISLAND.CAMPFIRE.CZ, 'ember');
+        emitHud(currentBiome);
+        callbacks.onNotice?.('آتش کمپ روشن شد! اکنون می‌توانی غذا بپزی و آتش را ارتقا دهی');
+      }
+      return ok;
+    },
     stokeFire: () => {
       const ok = stokeCampfire(survivalState);
       if (ok) {
@@ -6148,6 +7244,28 @@ export function createThreeIslandGame(
         callbacks.onNotice?.(unlockMsg);
       }
       return ok;
+    },
+    useAntidote: () => {
+      const ok = useAntidote(survivalState);
+      if (ok) {
+        soundEngine.playCraftSuccess();
+        emitHud(currentBiome);
+        callbacks.onNotice?.('پادزهر اثر کرد و سم از بدن پاک شد!');
+      }
+      return ok;
+    },
+    craftWorkshop: (recipeId: WorkshopRecipeId) => {
+      const res = craftWorkshopItem(survivalState, recipeId);
+      if (res.crafted) {
+        soundEngine.playCraftSuccess();
+        lastStackSignature = '';
+        syncSurvivorBackStack();
+        emitHud(currentBiome);
+      }
+      if (res.notice) {
+        callbacks.onNotice?.(res.notice);
+      }
+      return res;
     },
     upgradeSkill: (skillId: SkillId) => {
       const ok = upgradeSkill(survivalState, skillId);
@@ -6187,6 +7305,7 @@ export function createThreeIslandGame(
       const ok = triggerVictoryVoyage(survivalState);
       if (ok) {
         lastNotifiedOutcome = 'victory';
+        clearSavedRun();
         soundEngine.playLevelUp();
         emitHud(currentBiome);
         callbacks.onOutcomeChange?.('victory');
@@ -6200,11 +7319,15 @@ export function createThreeIslandGame(
       return soundEngine.isMuted();
     },
     destroy: () => {
+      saveCurrentRun();
       disposed = true;
       cancelAnimationFrame(rafId);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('resize', onResize);
+      window.removeEventListener('pagehide', onPageExitSave);
+      window.removeEventListener('beforeunload', onPageExitSave);
+      document.removeEventListener('visibilitychange', onVisibilitySave);
       resizeObserver.disconnect();
       renderer.domElement.removeEventListener('pointerdown', onCanvasPointerDown);
       renderer.domElement.removeEventListener('pointerup', onCanvasPointerUp);

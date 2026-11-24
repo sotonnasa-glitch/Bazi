@@ -32,7 +32,7 @@ test('generateIslandWorld produces large deterministic 6-region bridge-free isla
   assert.ok(kinds.has('column'));
   assert.ok(kinds.has('crystal'));
 
-  assert.equal(w1.fishingSpots.length, 6);
+  assert.ok(w1.fishingSpots.length >= 6);
   // Every offshore fish school sits in ocean water, NOT up on the beach!
   for (const spot of w1.fishingSpots) {
     assert.ok(

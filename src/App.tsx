@@ -13,6 +13,7 @@ import {
   type StrangeLandmarkId,
   type WeaponId,
   type WeatherKind,
+  type WorkshopRecipeId,
   type WorldEventKind,
 } from './game/config';
 import {
@@ -20,6 +21,7 @@ import {
   type ActiveRunInfo,
   type FlyingResourceEvent,
   type HudSnapshot,
+  type SavedRunSummary,
   type ThreeIslandController,
 } from './game/threeScene';
 import { formatDailyLabel, toPersianDigits } from './game/utils';
@@ -30,7 +32,7 @@ const BIOME_LABELS: Record<BiomeId, string> = {
   ruins: 'خرابه‌های باستانی',
   volcano: 'قله آتشفشان',
   mushroom: 'جنگل قارچ‌ها',
-  shipwreck: 'خلیج کشتی‌شکسته',
+  shipwreck: 'معبد مدفون در شن',
   spring: 'چشمه بلورین',
 };
 
@@ -91,13 +93,23 @@ const WORLD_EVENT_LABELS: Record<Exclude<WorldEventKind, 'none'>, { title: strin
     detail: 'برف سفید قله آتشفشان و دامنه‌ها را پوشاند!',
     tone: 'magic',
   },
+  earthquake: {
+    title: 'زلزله بزرگ جزیره!',
+    detail: 'زمین می‌لرزد و صخره‌ها از آسمان فرود می‌آیند — جاخالی بده!',
+    tone: 'danger',
+  },
+  lightning_storm: {
+    title: 'توفان سهمگین صاعقه!',
+    detail: 'آذرخش‌های پیاپی به سطح جزیره برخورد می‌کنند!',
+    tone: 'danger',
+  },
 };
 
 const LANDMARK_ACTION_LABELS: Record<StrangeLandmarkId, string> = {
   ruins: 'اجرای آیین خورشید',
   volcano: 'آهنگری گدازه (نیزه آتشین)',
   mushroom: 'جذب معجون اسپور',
-  shipwreck: 'گشودن گنج کاپیتان',
+  shipwreck: 'نیایش معبد مدفون',
   spring: 'نوشیدن از چشمه بلورین',
 };
 
@@ -105,7 +117,7 @@ const LANDMARK_SPECIAL_LABELS: Record<StrangeLandmarkId, string> = {
   ruins: 'پیشکش آفتاب (۲ صدف←۱۰ سکه)',
   volcano: 'کوره مذاب (۲ چوب←۷ سکه)',
   mushroom: 'شهد اسپور (توت و موز)',
-  shipwreck: 'معامله کشتی (۱ صید←۹ سکه)',
+  shipwreck: 'پیشکش سنگ‌نوشته (۱ صید←۹ سکه)',
   spring: 'آرزوی چشمه (+۲ صدف و ۵ سکه)',
 };
 
@@ -172,8 +184,22 @@ const INITIAL_HUD: HudSnapshot = {
     bow: CONFIG.SURVIVAL.WEAPON_XP_PER_LEVEL[1],
     hammer: CONFIG.SURVIVAL.WEAPON_XP_PER_LEVEL[1],
   },
-  fireLevel: 1,
+  fireLit: false,
+  fireLevel: 0,
+  canIgniteFire: false,
   canStokeFire: false,
+  venomTimer: 0,
+  antidotes: 0,
+  shellArmorCharges: 0,
+  elixirTimer: 0,
+  torchTimer: 0,
+  baitCharges: 0,
+  wreckLooted: false,
+  bonesFound: 0,
+  bonesTotal: 4,
+  templeUnlocked: false,
+  templeRelicClaimed: false,
+  disasterChallenge: null,
   xp: 0,
   playerLevel: 1,
   playerXp: 0,
@@ -255,9 +281,10 @@ export default function App() {
   const [hud, setHud] = useState<HudSnapshot>(INITIAL_HUD);
   const [flyingIcons, setFlyingIcons] = useState<FlyingIconAnim[]>([]);
   const [toastText, setToastText] = useState<string | null>(null);
-  const [activeModal, setActiveModal] = useState<'skills' | 'wildlife' | null>(null);
+  const [activeModal, setActiveModal] = useState<'skills' | 'wildlife' | 'workshop' | null>(null);
   const [wildlifeFilter, setWildlifeFilter] = useState<AnimalCategory | 'all'>('all');
   const [muted, setMuted] = useState(false);
+  const [savedRun, setSavedRun] = useState<SavedRunSummary | null>(null);
   const [damageFlash, setDamageFlash] = useState(false);
   const [damageNumbers, setDamageNumbers] = useState<
     Array<{ id: number; amount: number; x: number; y: number }>
@@ -381,6 +408,7 @@ export default function App() {
     );
 
     controllerRef.current = controller;
+    setSavedRun(controller.getSavedRunSummary());
 
     return () => {
       if (toastTimerRef.current !== null) {
@@ -401,7 +429,21 @@ export default function App() {
     }
     setOutcome('playing');
     controllerRef.current?.startRun(mode, forceNewIsland);
+    setSavedRun(null);
   }, []);
+
+  const handleResumeSavedRun = useCallback(() => {
+    soundEngine.playClick();
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    setOutcome('playing');
+    const ok = controllerRef.current?.resumeSavedRun() ?? false;
+    if (!ok) {
+      setSavedRun(null);
+      showToast('فایل ذخیره معتبری پیدا نشد');
+    }
+  }, [showToast]);
 
   const handleReturnToMenu = useCallback(() => {
     soundEngine.playClick();
@@ -411,6 +453,7 @@ export default function App() {
     setActiveModal(null);
     setOutcome('playing');
     controllerRef.current?.returnToMenu();
+    setSavedRun(controllerRef.current?.getSavedRunSummary() ?? null);
   }, []);
 
   const handleJoystickChange = useCallback((dx: number, dy: number) => {
@@ -442,9 +485,34 @@ export default function App() {
     controllerRef.current?.upgradeWeapon(id);
   }, []);
 
+  const handleSkipCutscene = useCallback(() => {
+    soundEngine.playClick();
+    controllerRef.current?.skipCutscene();
+  }, []);
+
+  const handleLightFire = useCallback(() => {
+    soundEngine.playClick();
+    controllerRef.current?.lightFire();
+  }, []);
+
   const handleStokeFire = useCallback(() => {
     soundEngine.playClick();
     controllerRef.current?.stokeFire();
+  }, []);
+
+  const handleUseAntidote = useCallback(() => {
+    soundEngine.playClick();
+    controllerRef.current?.useAntidote();
+  }, []);
+
+  const handleCraftWorkshop = useCallback((recipeId: WorkshopRecipeId) => {
+    soundEngine.playClick();
+    controllerRef.current?.craftWorkshop(recipeId);
+  }, []);
+
+  const handleInteract = useCallback(() => {
+    soundEngine.playClick();
+    controllerRef.current?.interact();
   }, []);
 
   const handleUpgradeSkill = useCallback((skillId: SkillId) => {
@@ -502,9 +570,14 @@ export default function App() {
   let survivalNotice: { text: string; tone: 'warn' | 'warm' } | null = null;
   if (toastText) {
     survivalNotice = { text: toastText, tone: 'warm' };
+  } else if (hud.venomTimer > 0) {
+    survivalNotice = {
+      text: `سم مار سمی فعال است (${toPersianDigits(hud.venomTimer)} ث)! از پادزهر یا چشمه بلورین استفاده کن`,
+      tone: 'warn',
+    };
   } else if (hud.predatorAlert) {
     survivalNotice = {
-      text: 'خطر شکارچی شب! به آتش نزدیک شو یا نیزه آتشین بساز',
+      text: 'خطر شکارچی شب! به آتش روشن نزدیک شو یا مشعل محافظ بساز',
       tone: 'warn',
     };
   } else if (hud.needSpearBlocked) {
@@ -520,7 +593,7 @@ export default function App() {
   } else if (hud.backpackFullBlocked) {
     survivalNotice = { text: 'کوله پر شد! کنار آتش کمپ خالی کن', tone: 'warn' };
   } else if (hud.lowEnergyBlocked) {
-    survivalNotice = { text: 'انرژی کم است! غذا بخور یا کنار آتش بمان', tone: 'warn' };
+    survivalNotice = { text: 'انرژی کم است! غذا بخور یا کنار آتش روشن بمان', tone: 'warn' };
   } else if (hud.activeAction === 'chop') {
     survivalNotice = { text: 'در حال قطع درخت با تبر...', tone: 'warm' };
   } else if (hud.activeAction === 'climb') {
@@ -539,6 +612,10 @@ export default function App() {
     survivalNotice = { text: 'در حال جمع‌آوری از طبیعت...', tone: 'warm' };
   } else if (hud.activeAction === 'secret_open') {
     survivalNotice = { text: 'گنجینه مخفی جزیره گشوده شد!', tone: 'warm' };
+  } else if (hud.activeAction === 'salvage') {
+    survivalNotice = { text: 'در حال جست‌وجو در لاشه هواپیما...', tone: 'warm' };
+  } else if (hud.activeAction === 'inspect') {
+    survivalNotice = { text: 'در حال بررسی استخوان‌های باستانی...', tone: 'warm' };
   } else if (hud.activeAction === 'build' && hud.nearbyPad) {
     survivalNotice = { text: `در حال ساخت ${PAD_LABELS[hud.nearbyPad.id]}...`, tone: 'warm' };
   } else if (hud.nearbyPad && hud.nearbyPad.totalWood < hud.nearbyPad.cost) {
@@ -548,7 +625,12 @@ export default function App() {
     };
   } else if (hud.activeAction === 'cook') {
     survivalNotice = { text: 'در حال کباب کردن روی آتش...', tone: 'warm' };
-  } else if (hud.nearCampfire) {
+  } else if (hud.nearCampfire && !hud.fireLit) {
+    survivalNotice = {
+      text: `آتش کمپ خاموش است! برای روشن کردن ${toPersianDigits(CONFIG.SURVIVAL.FIRE_IGNITE_WOOD_COST)} چوب جمع کن`,
+      tone: 'warn',
+    };
+  } else if (hud.nearCampfire && hud.fireLit) {
     survivalNotice = {
       text: `آتش کمپ سطح ${toPersianDigits(hud.fireLevel)} · ${FIRE_UNLOCK_HINTS[hud.fireLevel] ?? ''}`,
       tone: 'warm',
@@ -654,7 +736,25 @@ export default function App() {
               </p>
             </div>
 
-            <div className="pointer-events-auto self-center w-full max-w-[280px] flex flex-col gap-2.5">
+            <div className="pointer-events-auto self-center w-full max-w-[296px] flex flex-col gap-2.5">
+              {savedRun && (
+                <button
+                  type="button"
+                  data-testid="resume-saved-btn"
+                  onClick={handleResumeSavedRun}
+                  className="w-full min-h-[52px] px-4 py-2.5 rounded-2xl bg-gradient-to-b from-[#22c55e] to-[#15803d] border-2 border-[#bbf7d0] shadow-lg text-white font-extrabold text-sm transition-all cursor-pointer flex items-center justify-between gap-2"
+                  style={{ textShadow: '0 1px 0 rgba(20, 83, 45, 0.75)' }}
+                >
+                  <span className="flex items-center gap-2">
+                    <PlayArrowIcon className="w-5 h-5 shrink-0" />
+                    <span>ادامه بازی ذخیره‌شده</span>
+                  </span>
+                  <span className="px-2 py-0.5 rounded-lg bg-white/20 text-[10.5px] font-black tabular-nums">
+                    روز {toPersianDigits(savedRun.dayCount)} · سطح {toPersianDigits(savedRun.playerLevel)}
+                  </span>
+                </button>
+              )}
+
               <button
                 type="button"
                 data-start="true"
@@ -663,7 +763,7 @@ export default function App() {
                 style={{ textShadow: '0 2px 0 rgba(153, 62, 6, 0.7)' }}
               >
                 <PlayArrowIcon className="w-6 h-6 shrink-0" />
-                <span>شروع بازی</span>
+                <span>{savedRun ? 'شروع ماجراجویی جدید' : 'شروع بازی'}</span>
               </button>
 
               <div className="flex items-center gap-2">
@@ -688,6 +788,42 @@ export default function App() {
                   <span>جزیره جدید</span>
                 </button>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* 3D Airplane Crash Intro Cutscene Overlay */}
+        {screen === 'cutscene' && (
+          <div
+            data-testid="cutscene-overlay"
+            className="pointer-events-none absolute inset-0 z-25 flex flex-col justify-between p-4"
+          >
+            <div className="flex items-center justify-between">
+              <div className="hud-card px-3 py-1.5 rounded-2xl text-[11px] font-extrabold text-[#5a3b14]">
+                سقوط بر فراز جزیره ناشناخته...
+              </div>
+              <button
+                type="button"
+                onClick={handleToggleMute}
+                aria-label={muted ? 'وصل صدا' : 'قطع صدا'}
+                className="pointer-events-auto wood-btn p-2 rounded-2xl text-[#fff8eb] cursor-pointer flex items-center justify-center"
+              >
+                <VolumeIcon muted={muted} />
+              </button>
+            </div>
+
+            <div className="flex flex-col items-center gap-2.5 pb-4">
+              <div className="hud-card max-w-[440px] px-4 py-2.5 rounded-2xl text-center text-xs sm:text-sm font-extrabold text-[#3d2508] shadow-lg">
+                موتور هواپیما از کار افتاد! با چتر نجات روی جزیره فرود بیا، لاشه هواپیما را بگرد و برای روشن کردن آتش کمپ ۲ چوب جمع کن!
+              </div>
+              <button
+                type="button"
+                data-testid="skip-cutscene-btn"
+                onClick={handleSkipCutscene}
+                className="pointer-events-auto wood-btn-primary px-5 py-2 rounded-2xl text-white text-xs font-extrabold cursor-pointer shadow-lg"
+              >
+                رد کردن انیمیشن و ورود به جزیره
+              </button>
             </div>
           </div>
         )}
@@ -860,6 +996,55 @@ export default function App() {
                   </span>
                 </div>
 
+                <div
+                  className={`hud-card rounded-xl px-2 py-1 flex items-center gap-1 text-[10px] font-extrabold ${
+                    hud.templeRelicClaimed
+                      ? 'text-[#b45309]'
+                      : hud.bonesFound >= hud.bonesTotal
+                        ? 'text-[#0f766e] ring-1 ring-[#14b8a6]'
+                        : 'text-[#115e59]'
+                  }`}
+                  data-testid="hud-bones-badge"
+                >
+                  <span className="tabular-nums">
+                    {hud.templeRelicClaimed
+                      ? 'گنج معبد یافت شد'
+                      : hud.bonesFound >= hud.bonesTotal
+                        ? '۴/۴ استخوان · درِ معبد باز شدنی است!'
+                        : `استخوان ${toPersianDigits(hud.bonesFound)}/${toPersianDigits(hud.bonesTotal)}`}
+                  </span>
+                </div>
+
+                {hud.venomTimer > 0 && (
+                  <div
+                    className="rounded-xl px-2 py-1 flex items-center gap-1 text-[10px] font-black bg-[#dcfce7] border border-[#22c55e] text-[#14532d] shadow-sm"
+                    data-testid="hud-venom-badge"
+                  >
+                    <span>مسموم {toPersianDigits(hud.venomTimer)} ث</span>
+                  </div>
+                )}
+
+                {hud.shellArmorCharges > 0 && (
+                  <div className="hud-card rounded-xl px-2 py-1 text-[10px] font-extrabold text-[#0369a1]">
+                    سپر صدف ×{toPersianDigits(hud.shellArmorCharges)}
+                  </div>
+                )}
+                {hud.elixirTimer > 0 && (
+                  <div className="hud-card rounded-xl px-2 py-1 text-[10px] font-extrabold text-[#7e22ce]">
+                    چابکی {toPersianDigits(hud.elixirTimer)} ث
+                  </div>
+                )}
+                {hud.torchTimer > 0 && (
+                  <div className="hud-card rounded-xl px-2 py-1 text-[10px] font-extrabold text-[#c2410c]">
+                    مشعل {toPersianDigits(hud.torchTimer)} ث
+                  </div>
+                )}
+                {hud.baitCharges > 0 && (
+                  <div className="hud-card rounded-xl px-2 py-1 text-[10px] font-extrabold text-[#b45309]">
+                    طعمه ×{toPersianDigits(hud.baitCharges)}
+                  </div>
+                )}
+
                 {hud.hasSpear && (
                   <div
                     className={`hud-card rounded-xl px-2 py-1 flex items-center gap-1 text-[10px] font-extrabold ${
@@ -986,6 +1171,20 @@ export default function App() {
                   </span>
                 </button>
 
+                <button
+                  type="button"
+                  data-testid="open-workshop-btn"
+                  onClick={() => {
+                    soundEngine.playClick();
+                    setActiveModal((m) => (m === 'workshop' ? null : 'workshop'));
+                  }}
+                  className="pointer-events-auto wood-btn px-2 py-1 rounded-xl text-[#fff8eb] text-[10px] font-extrabold cursor-pointer flex items-center justify-center gap-1"
+                  style={{ textShadow: '0 1px 0 rgba(94, 41, 10, 0.7)' }}
+                >
+                  <FlameMiniSvg />
+                  <span>کارگاه و مبادله</span>
+                </button>
+
                 <div
                   className="hud-card rounded-xl px-2 py-1 flex items-center justify-center gap-1 text-[10px] font-extrabold text-[#4b3010] truncate max-w-[110px] sm:max-w-none"
                   data-testid="hud-biome"
@@ -1006,8 +1205,8 @@ export default function App() {
               </div>
             </div>
 
-            {/* Top-Center Stack: World Event Banner + Contextual Survival Notice */}
-            {(activeEventInfo || survivalNotice) && !activeModal && (
+            {/* Top-Center Stack: World Event Banner + Disaster Challenge Card + Contextual Survival Notice */}
+            {(activeEventInfo || hud.disasterChallenge || survivalNotice) && !activeModal && (
               <div className="absolute top-[138px] sm:top-[70px] left-1/2 -translate-x-1/2 max-w-[92%] flex flex-col items-center gap-1 pointer-events-none">
                 {activeEventInfo && (
                   <div
@@ -1028,6 +1227,26 @@ export default function App() {
                         {toPersianDigits(hud.eventTimer)} ث
                       </span>
                     </div>
+                  </div>
+                )}
+
+                {hud.disasterChallenge && (
+                  <div
+                    data-testid="disaster-challenge-banner"
+                    className={`px-3 py-1 rounded-xl shadow-sm border text-[10.5px] font-extrabold flex items-center gap-2 text-center ${
+                      hud.disasterChallenge.status === 'failed'
+                        ? 'bg-[#fee2e2]/95 text-[#991b1b] border-[#f87171]'
+                        : 'bg-[#fef3c7]/95 text-[#78350f] border-[#f59e0b]'
+                    }`}
+                  >
+                    <span>
+                      {hud.disasterChallenge.titleFa}: {hud.disasterChallenge.goalFa}
+                    </span>
+                    <span className="px-1.5 py-0.5 rounded-md bg-white/80 text-[9.5px] tabular-nums shrink-0">
+                      {hud.disasterChallenge.status === 'failed'
+                        ? 'آسیب دیده'
+                        : `+${toPersianDigits(hud.disasterChallenge.rewardCoins)} سکه و ۱ امتیاز`}
+                    </span>
                   </div>
                 )}
 
@@ -1178,9 +1397,9 @@ export default function App() {
               </div>
             </div>
 
-            {/* Bottom-Right: Contextual Survival Actions (Direct 3D Tap replaces interact button) */}
+            {/* Bottom-Right (above enlarged thumb joystick): Contextual Survival Actions */}
             <div
-              className="absolute bottom-3.5 right-3 flex flex-col items-start gap-1.5 max-w-[228px] sm:max-w-[300px]"
+              className="absolute bottom-[204px] sm:bottom-[224px] right-3 flex flex-col items-start gap-1.5 max-w-[228px] sm:max-w-[300px]"
               data-testid="hud-bottom-right"
             >
               {hud.canVictoryVoyage && (
@@ -1242,7 +1461,50 @@ export default function App() {
                 </button>
               )}
 
-              {hud.nearCampfire && hud.fireLevel < CONFIG.SURVIVAL.MAX_FIRE_LEVEL && (
+              {hud.focusedTarget && !hud.focusedTarget.blockedReason && (
+                <button
+                  type="button"
+                  data-testid="quick-interact-btn"
+                  onClick={handleInteract}
+                  className="pointer-events-auto wood-btn-primary px-3 py-2 rounded-2xl text-white text-[11.5px] font-extrabold cursor-pointer flex items-center gap-1.5 shadow-lg"
+                  style={{ textShadow: '0 1px 0 rgba(153, 62, 6, 0.75)' }}
+                >
+                  <SparkMiniSvg />
+                  <span>{hud.focusedTarget.labelFa} (F)</span>
+                </button>
+              )}
+
+              {hud.venomTimer > 0 && hud.antidotes > 0 && (
+                <button
+                  type="button"
+                  data-testid="use-antidote-btn"
+                  onClick={handleUseAntidote}
+                  className="pointer-events-auto px-3 py-1.5 rounded-xl bg-[#16a34a] hover:bg-[#15803d] text-white text-[11px] font-extrabold cursor-pointer flex items-center gap-1.5 shadow-md"
+                >
+                  <span>استفاده از پادزهر ({toPersianDigits(hud.antidotes)})</span>
+                </button>
+              )}
+
+              {hud.nearCampfire && !hud.fireLit && (
+                <button
+                  type="button"
+                  data-testid="light-fire-btn"
+                  disabled={!hud.canIgniteFire}
+                  onClick={handleLightFire}
+                  className={`pointer-events-auto px-3 py-2 rounded-xl text-[11.5px] font-extrabold flex items-center gap-1.5 transition-all ${
+                    hud.canIgniteFire
+                      ? 'wood-btn-primary text-white cursor-pointer'
+                      : 'hud-card text-[#7a5a32] opacity-80 cursor-not-allowed'
+                  }`}
+                >
+                  <FlameMiniSvg />
+                  <span>
+                    روشن کردن آتش کمپ ({toPersianDigits(CONFIG.SURVIVAL.FIRE_IGNITE_WOOD_COST)} چوب)
+                  </span>
+                </button>
+              )}
+
+              {hud.nearCampfire && hud.fireLit && hud.fireLevel < CONFIG.SURVIVAL.MAX_FIRE_LEVEL && (
                 <button
                   type="button"
                   data-testid="stoke-fire-btn"
@@ -1390,6 +1652,71 @@ export default function App() {
                     </div>
                   );
                 })}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Camp Workshop & Resource Exchange Modal (کارگاه و مبادله منابع) */}
+        {screen === 'playing' && activeModal === 'workshop' && (
+          <div
+            className="absolute inset-0 z-40 flex items-center justify-center p-3 bg-[#092842]/55"
+            onClick={() => setActiveModal(null)}
+            data-testid="workshop-modal"
+          >
+            <div
+              className="hud-card w-full max-w-[460px] max-h-[86vh] rounded-3xl p-4 flex flex-col gap-3 overflow-hidden text-[#3d2508]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-base font-extrabold">کارگاه و مبادله منابع کمپ</h2>
+                  <p className="text-[11px] font-bold text-[#755326] tabular-nums">
+                    سکه: {toPersianDigits(hud.coins)} · چوب: {toPersianDigits(hud.wood)} · موز:{' '}
+                    {toPersianDigits(hud.banana)} · توت: {toPersianDigits(hud.berries)} · صدف:{' '}
+                    {toPersianDigits(hud.shells)} · پادزهر: {toPersianDigits(hud.antidotes)}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  data-testid="close-modal-btn"
+                  onClick={() => {
+                    soundEngine.playClick();
+                    setActiveModal(null);
+                  }}
+                  className="wood-btn px-3 py-1.5 rounded-xl text-[#fff8eb] text-xs font-extrabold cursor-pointer"
+                >
+                  بستن
+                </button>
+              </div>
+
+              <div className="flex flex-col gap-2 overflow-y-auto pr-0.5">
+                {CONFIG.WORKSHOP_RECIPES.map((recipe) => (
+                  <div
+                    key={recipe.id}
+                    className="rounded-2xl bg-white/85 border border-[#e6cda1] p-2.5 flex items-center justify-between gap-2"
+                  >
+                    <div className="flex flex-col gap-0.5 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs font-extrabold text-[#3d2508]">{recipe.nameFa}</span>
+                        <span className="px-2 py-0.5 rounded-lg bg-[#fef3c7] text-[#92400e] text-[9.5px] font-extrabold">
+                          {recipe.costFa}
+                        </span>
+                      </div>
+                      <p className="text-[10px] font-bold text-[#6e4e24] leading-snug">
+                        {recipe.effectFa}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      data-testid={`craft-${recipe.id}`}
+                      onClick={() => handleCraftWorkshop(recipe.id)}
+                      className="shrink-0 wood-btn-primary px-3 py-1.5 rounded-xl text-white text-[11px] font-extrabold cursor-pointer"
+                    >
+                      ساخت
+                    </button>
+                  </div>
+                ))}
               </div>
             </div>
           </div>

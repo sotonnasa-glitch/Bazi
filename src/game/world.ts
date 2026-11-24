@@ -69,6 +69,16 @@ export interface SecretSpot {
   biome: BiomeId;
 }
 
+export interface AncientBoneSite {
+  id: string;
+  nameFa: string;
+  loreFa: string;
+  x: number;
+  y: number;
+  z: number;
+  rotationY: number;
+}
+
 export interface IslandWorldData {
   seed: string;
   lobePhaseA: number;
@@ -80,6 +90,8 @@ export interface IslandWorldData {
   buildPads: BuildPadSite[];
   landmarkSites: LandmarkActionSite[];
   secretSpots: SecretSpot[];
+  ancientBoneSites: AncientBoneSite[];
+  wreckSite: { x: number; y: number; z: number; rotationY: number };
 }
 
 export interface Vector2 {
@@ -325,7 +337,7 @@ export function generateIslandWorld(seed: string): IslandWorldData {
   const meta = { lobePhaseA, lobePhaseB, lobePhaseC };
   const props: IslandProp[] = [];
 
-  const { RUINS, VOLCANO, MUSHROOM, SHIPWRECK, SPRING, CAMPFIRE } = CONFIG.ISLAND;
+  const { RUINS, VOLCANO, MUSHROOM, SHIPWRECK, SPRING, CAMPFIRE, AIRPLANE_WRECK } = CONFIG.ISLAND;
 
   const obstacles: Array<{ id: string; x: number; z: number; radius: number }> = [
     { id: 'obs-obelisk', x: RUINS.CX, z: RUINS.CZ, radius: 1.9 },
@@ -334,14 +346,17 @@ export function generateIslandWorld(seed: string): IslandWorldData {
     { id: 'obs-lighthouse', x: SHIPWRECK.LIGHTHOUSE_CX, z: SHIPWRECK.LIGHTHOUSE_CZ, radius: 1.35 },
     { id: 'obs-spring', x: SPRING.CX, z: SPRING.CZ, radius: SPRING.COLLIDER_R },
     { id: 'obs-campfire', x: CAMPFIRE.CX, z: CAMPFIRE.CZ, radius: CAMPFIRE.COLLIDER_R },
+    { id: 'obs-wreck', x: AIRPLANE_WRECK.CX, z: AIRPLANE_WRECK.CZ, radius: AIRPLANE_WRECK.COLLIDER_R },
   ];
 
-  // 6 Scenic Coastal Fishing Spots: wade slightly into shallow ocean water to spear fish swimming offshore!
+  // 8 Scenic Coastal Fishing Spots around beaches & coves
   const fishingAngles = [
     Math.PI * 0.48, // South Lagoon cove (closest to Campfire!)
-    Math.PI * 0.16, // SE near Shipwreck
+    Math.PI * 0.16, // SE near Skull Cove
     -Math.PI * 0.14, // East beach
+    -Math.PI * 0.32, // NE volcanic coast
     -Math.PI * 0.52, // North coast near Spring
+    -Math.PI * 0.78, // NW ruins bay
     Math.PI * 0.86, // West cove
     Math.PI * 0.68, // SW Mushroom cove
   ];
@@ -475,7 +490,7 @@ export function generateIslandWorld(seed: string): IslandWorldData {
     },
     {
       id: 'pirate_vault',
-      nameFa: 'صندوق مخفی دزدان دریایی',
+      nameFa: 'گنجینه مخفی خلیج استخوان',
       x: SHIPWRECK.HEADLAND_CX + 6.5,
       z: SHIPWRECK.HEADLAND_CZ + 7.5,
       rot: -1.4,
@@ -525,6 +540,84 @@ export function generateIslandWorld(seed: string): IslandWorldData {
       z: bestZ,
       rotationY: s.rot,
       biome: s.biome,
+    };
+  });
+
+  const wreckSite = {
+    x: AIRPLANE_WRECK.CX,
+    y: groundHeightAt(AIRPLANE_WRECK.CX, AIRPLANE_WRECK.CZ, meta),
+    z: AIRPLANE_WRECK.CZ,
+    rotationY: -0.58,
+  };
+
+  // 4 Mysterious Ancient Bone Shrines scattered across biomes & trails
+  const boneDefs: Array<{
+    id: string;
+    nameFa: string;
+    loreFa: string;
+    x: number;
+    z: number;
+    rot: number;
+  }> = [
+    {
+      id: 'bone-ruins-edge',
+      nameFa: 'استخوان‌های باستانی نگهبان',
+      loreFa: 'کتیبه‌ای در میان استخوان‌ها از طوفانی کهن و راز معبد خورشید می‌گوید.',
+      x: RUINS.CX + 11.5,
+      z: RUINS.CZ + 9.5,
+      rot: 0.45,
+    },
+    {
+      id: 'bone-volcano-pass',
+      nameFa: 'بقایای کاوشگر آتشفشان',
+      loreFa: 'استخوان‌های سوخته در خاکستر؛ یادگاری از نخستین کاوشگران قله آتش.',
+      x: VOLCANO.CX - 15.5,
+      z: VOLCANO.CZ + 10.5,
+      rot: -1.1,
+    },
+    {
+      id: 'bone-skull-cove',
+      nameFa: 'محراب دنده و جمجمه خلیج',
+      loreFa: 'جمجمه‌های باستانی رو به دریا؛ هشدار دزدان قدیمی خلیج.',
+      x: SHIPWRECK.HULL_CX - 10.5,
+      z: SHIPWRECK.HULL_CZ - 8.5,
+      rot: 2.1,
+    },
+    {
+      id: 'bone-jungle-trail',
+      nameFa: 'اسکلت گمشده بیشه‌زار',
+      loreFa: 'در دل علف‌ها بقایای مسافری قدیمی و پادزهری دست‌نخورده یافت شد.',
+      x: -11.5,
+      z: 27.5,
+      rot: 0.85,
+    },
+  ];
+
+  const ancientBoneSites: AncientBoneSite[] = boneDefs.map((b) => {
+    let bx = b.x;
+    let bz = b.z;
+    let by = groundHeightAt(bx, bz, meta);
+    if (by < 0.45) {
+      for (let step = 1; step <= 6; step += 1) {
+        const tx = b.x * (1 - step * 0.08);
+        const tz = b.z * (1 - step * 0.08);
+        const ty = groundHeightAt(tx, tz, meta);
+        if (ty >= 0.45) {
+          bx = tx;
+          bz = tz;
+          by = ty;
+          break;
+        }
+      }
+    }
+    return {
+      id: b.id,
+      nameFa: b.nameFa,
+      loreFa: b.loreFa,
+      x: bx,
+      y: by,
+      z: bz,
+      rotationY: b.rot,
     };
   });
 
@@ -611,6 +704,10 @@ export function generateIslandWorld(seed: string): IslandWorldData {
     }
     for (const secret of secretSpots) {
       if (Math.hypot(x - secret.x, z - secret.z) < 3.0 + radius) return false;
+    }
+    if (Math.hypot(x - AIRPLANE_WRECK.CX, z - AIRPLANE_WRECK.CZ) < 5.2 + radius) return false;
+    for (const bone of ancientBoneSites) {
+      if (Math.hypot(x - bone.x, z - bone.z) < 2.2 + radius) return false;
     }
     for (const spot of fishingSpots) {
       if (Math.hypot(x - spot.x, z - spot.z) < 2.8 + radius) return false;
@@ -747,6 +844,8 @@ export function generateIslandWorld(seed: string): IslandWorldData {
     buildPads,
     landmarkSites,
     secretSpots,
+    ancientBoneSites,
+    wreckSite,
   };
 }
 

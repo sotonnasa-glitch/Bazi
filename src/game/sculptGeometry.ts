@@ -2136,5 +2136,435 @@ export function buildLightningBoltGeometry(): THREE.BufferGeometry {
   return bolt;
 }
 
+// Sculpted Human Skull (Cranium + Cheekbones + Jaw + Dark Eye Sockets & Nasal Hollow)
+export function buildHumanSkullGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+
+  const cranium = new THREE.SphereGeometry(0.28, 14, 12);
+  cranium.scale(0.95, 1.02, 1.12);
+  cranium.translate(0, 0.24, -0.02);
+  setLinearAttrColors(cranium, 0.94, 0.89, 0.78);
+  parts.push(cranium);
+
+  const brow = new THREE.CapsuleGeometry(0.065, 0.22, 4, 8);
+  brow.rotateZ(Math.PI * 0.5);
+  brow.translate(0, 0.25, 0.22);
+  setLinearAttrColors(brow, 0.9, 0.85, 0.74);
+  parts.push(brow);
+
+  const jaw = new THREE.SphereGeometry(0.16, 10, 8);
+  jaw.scale(0.92, 0.78, 1.05);
+  jaw.translate(0, 0.08, 0.14);
+  setLinearAttrColors(jaw, 0.88, 0.82, 0.7);
+  parts.push(jaw);
+
+  for (const side of [-1, 1]) {
+    const cheek = new THREE.SphereGeometry(0.085, 8, 6);
+    cheek.scale(1.1, 0.85, 0.9);
+    cheek.translate(side * 0.14, 0.15, 0.2);
+    setLinearAttrColors(cheek, 0.91, 0.86, 0.75);
+    parts.push(cheek);
+
+    const eyeSocket = new THREE.SphereGeometry(0.068, 8, 8);
+    eyeSocket.scale(1.05, 0.95, 0.6);
+    eyeSocket.translate(side * 0.1, 0.2, 0.25);
+    setLinearAttrColors(eyeSocket, 0.16, 0.14, 0.12);
+    parts.push(eyeSocket);
+  }
+
+  const noseHole = new THREE.ConeGeometry(0.036, 0.08, 5);
+  noseHole.rotateX(-0.25);
+  noseHole.translate(0, 0.14, 0.27);
+  setLinearAttrColors(noseHole, 0.18, 0.15, 0.13);
+  parts.push(noseHole);
+
+  for (let t = -2; t <= 2; t += 1) {
+    const tooth = new THREE.BoxGeometry(0.032, 0.04, 0.03);
+    tooth.translate(t * 0.042, 0.045, 0.27 - Math.abs(t) * 0.018);
+    setLinearAttrColors(tooth, 0.96, 0.92, 0.83);
+    parts.push(tooth);
+  }
+
+  return safeMerge(parts, new THREE.SphereGeometry(0.24, 10, 8));
+}
+
+// Sculpted Weathered Bone (Femur shaft + double condyle knobs on both ends)
+export function buildFemurBoneGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const shaft = new THREE.CapsuleGeometry(0.042, 0.56, 4, 8);
+  shaft.rotateZ(Math.PI * 0.5);
+  setLinearAttrColors(shaft, 0.93, 0.88, 0.77);
+  parts.push(shaft);
+
+  for (const endSide of [-1, 1]) {
+    for (const knobSide of [-1, 1]) {
+      const knob = new THREE.SphereGeometry(0.058, 7, 6);
+      knob.translate(endSide * 0.3, knobSide * 0.035, 0.01 * knobSide);
+      setLinearAttrColors(knob, 0.9, 0.84, 0.72);
+      parts.push(knob);
+    }
+  }
+
+  return safeMerge(parts, new THREE.CapsuleGeometry(0.045, 0.55, 4, 8));
+}
+
+// Bush / Explorer Propeller Airplane Fuselage + Wings + Tail (facing +Z)
+export function buildAirplaneFuselageWingGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+
+  // Main fuselage body (capsule along Z)
+  const hull = new THREE.CapsuleGeometry(0.62, 2.3, 6, 12);
+  hull.rotateX(Math.PI * 0.5);
+  hull.scale(0.95, 1.0, 1.15);
+  setLinearAttrColors(hull, 0.94, 0.38, 0.24);
+  parts.push(hull);
+
+  // Cream/white racing stripe band along mid hull
+  const stripe = new THREE.CylinderGeometry(0.635, 0.635, 1.5, 12);
+  stripe.rotateX(Math.PI * 0.5);
+  stripe.scale(0.98, 0.34, 1.0);
+  stripe.translate(0, 0.02, -0.05);
+  setLinearAttrColors(stripe, 0.98, 0.95, 0.88);
+  parts.push(stripe);
+
+  // Nose cowling (dark metallic slate)
+  const cowl = new THREE.CylinderGeometry(0.42, 0.58, 0.55, 12);
+  cowl.rotateX(Math.PI * 0.5);
+  cowl.translate(0, -0.02, 1.65);
+  setLinearAttrColors(cowl, 0.28, 0.33, 0.38);
+  parts.push(cowl);
+
+  // Glass cockpit canopy
+  const canopy = new THREE.SphereGeometry(0.48, 12, 10);
+  canopy.scale(0.86, 0.72, 1.55);
+  canopy.translate(0, 0.5, 0.32);
+  setLinearAttrColors(canopy, 0.56, 0.84, 0.96);
+  parts.push(canopy);
+
+  // Main swept high wings
+  for (const side of [-1, 1]) {
+    const wing = new THREE.BoxGeometry(2.55, 0.12, 0.92);
+    wing.rotateY(side * -0.1);
+    wing.rotateZ(side * 0.04);
+    wing.translate(side * 1.52, 0.38, 0.24);
+    setLinearAttrColors(wing, 0.97, 0.78, 0.28);
+    parts.push(wing);
+
+    const wingTip = new THREE.BoxGeometry(0.32, 0.14, 0.72);
+    wingTip.rotateY(side * -0.1);
+    wingTip.translate(side * 2.86, 0.42, 0.1);
+    setLinearAttrColors(wingTip, 0.9, 0.25, 0.2);
+    parts.push(wingTip);
+
+    // Wing strut
+    const strut = new THREE.CylinderGeometry(0.035, 0.035, 0.82, 6);
+    strut.rotateZ(side * -0.58);
+    strut.translate(side * 0.95, 0.05, 0.28);
+    setLinearAttrColors(strut, 0.32, 0.36, 0.4);
+    parts.push(strut);
+  }
+
+  // Tail fin (vertical stabilizer)
+  const tailFin = new THREE.BoxGeometry(0.11, 0.95, 0.72);
+  tailFin.rotateX(-0.22);
+  tailFin.translate(0, 0.68, -1.62);
+  setLinearAttrColors(tailFin, 0.9, 0.25, 0.2);
+  parts.push(tailFin);
+
+  // Horizontal stabilizers
+  const hTail = new THREE.BoxGeometry(1.75, 0.09, 0.48);
+  hTail.translate(0, 0.22, -1.66);
+  setLinearAttrColors(hTail, 0.97, 0.78, 0.28);
+  parts.push(hTail);
+
+  // Landing gear struts + wheels
+  for (const side of [-1, 1]) {
+    const gear = new THREE.CylinderGeometry(0.04, 0.04, 0.6, 6);
+    gear.rotateZ(side * 0.32);
+    gear.translate(side * 0.46, -0.68, 0.55);
+    setLinearAttrColors(gear, 0.3, 0.34, 0.38);
+    parts.push(gear);
+
+    const tire = new THREE.CylinderGeometry(0.2, 0.2, 0.14, 10);
+    tire.rotateZ(Math.PI * 0.5);
+    tire.translate(side * 0.56, -0.94, 0.55);
+    setLinearAttrColors(tire, 0.14, 0.15, 0.17);
+    parts.push(tire);
+  }
+
+  return safeMerge(parts, new THREE.BoxGeometry(2.5, 0.9, 3.2));
+}
+
+// Airplane Propeller (centered at origin, rotates around Z)
+export function buildAirplanePropellerGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const spinner = new THREE.ConeGeometry(0.22, 0.36, 10);
+  spinner.rotateX(Math.PI * 0.5);
+  spinner.translate(0, 0, 0.12);
+  setLinearAttrColors(spinner, 0.88, 0.24, 0.2);
+  parts.push(spinner);
+
+  for (const side of [-1, 1]) {
+    const blade = new THREE.BoxGeometry(0.18, 1.05, 0.045);
+    blade.rotateY(side * 0.22);
+    blade.translate(0, side * 0.54, 0.02);
+    setLinearAttrColors(blade, 0.24, 0.26, 0.3);
+    parts.push(blade);
+
+    const tip = new THREE.BoxGeometry(0.18, 0.16, 0.05);
+    tip.rotateY(side * 0.22);
+    tip.translate(0, side * 1.04, 0.02);
+    setLinearAttrColors(tip, 0.98, 0.8, 0.18);
+    parts.push(tip);
+  }
+
+  return safeMerge(parts, new THREE.BoxGeometry(0.2, 1.8, 0.1));
+}
+
+// Rescue Parachute Canopy & Suspension Cords (centered above player)
+export function buildParachuteCanopyGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+
+  const dome = new THREE.SphereGeometry(1.15, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.52);
+  dome.scale(1.05, 0.72, 1.05);
+  dome.translate(0, 1.45, 0);
+  setLinearAttrColors(dome, 0.98, 0.54, 0.16);
+  parts.push(dome);
+
+  const band = new THREE.SphereGeometry(1.165, 16, 6, 0, Math.PI * 2, Math.PI * 0.26, Math.PI * 0.18);
+  band.scale(1.05, 0.72, 1.05);
+  band.translate(0, 1.45, 0);
+  setLinearAttrColors(band, 0.98, 0.96, 0.9);
+  parts.push(band);
+
+  for (let i = 0; i < 4; i += 1) {
+    const ang = (i / 4) * Math.PI * 2 + Math.PI * 0.25;
+    const tx = Math.cos(ang) * 0.85;
+    const tz = Math.sin(ang) * 0.85;
+    const cord = buildTaperedCurveTube(
+      [new THREE.Vector3(tx * 0.2, 0.05, tz * 0.2), new THREE.Vector3(tx, 1.44, tz)],
+      0.018,
+      0.018,
+      4,
+      5
+    );
+    setLinearAttrColors(cord, 0.88, 0.86, 0.8);
+    parts.push(cord);
+  }
+
+  return safeMerge(parts, new THREE.SphereGeometry(1.0, 12, 8));
+}
+
+// Ancient Bone Shrine (Weathered skull + crossed femurs + curved rib fragment on a stone slab)
+export function buildAncientBoneShrineGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+
+  const slab = new THREE.CylinderGeometry(0.68, 0.82, 0.18, 9);
+  slab.translate(0, 0.09, 0);
+  setLinearAttrColors(slab, 0.39, 0.41, 0.44);
+  parts.push(slab);
+
+  const skull = buildHumanSkullGeometry();
+  skull.scale(0.95, 0.95, 0.95);
+  skull.rotateY(0.28);
+  skull.rotateX(-0.12);
+  skull.translate(0.02, 0.2, 0.06);
+  parts.push(skull);
+
+  const femurA = buildFemurBoneGeometry();
+  femurA.scale(1.05, 1.05, 1.05);
+  femurA.rotateY(0.55);
+  femurA.rotateZ(0.08);
+  femurA.translate(-0.18, 0.22, -0.14);
+  parts.push(femurA);
+
+  const femurB = buildFemurBoneGeometry();
+  femurB.scale(0.92, 0.92, 0.92);
+  femurB.rotateY(-0.68);
+  femurB.rotateZ(-0.1);
+  femurB.translate(0.2, 0.2, -0.1);
+  parts.push(femurB);
+
+  const rib = buildTaperedCurveTube(
+    [
+      new THREE.Vector3(-0.34, 0.16, 0.22),
+      new THREE.Vector3(-0.42, 0.46, 0.05),
+      new THREE.Vector3(-0.24, 0.62, -0.18),
+    ],
+    0.04,
+    0.025,
+    8,
+    6
+  );
+  setLinearAttrColors(rib, 0.9, 0.85, 0.74);
+  parts.push(rib);
+
+  return safeMerge(parts, new THREE.SphereGeometry(0.4, 10, 8));
+}
+
+// Half-Buried Stone Temple in Sand with Ancient Human Bone Inscriptions (سنگ‌نوشته‌های باستانی با استخوان‌های آدم)
+export function buildBuriedStoneTempleGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+
+  // Sand dune bank wrapping & half-burying the temple base/rear
+  const sandMound = new THREE.SphereGeometry(4.3, 18, 12, 0, Math.PI * 2, 0, Math.PI * 0.52);
+  sandMound.scale(1.18, 0.36, 1.15);
+  sandMound.translate(0, -0.18, -0.55);
+  setLinearAttrColors(sandMound, 0.92, 0.81, 0.56);
+  parts.push(sandMound);
+
+  // Tilted/sunken temple stone terrace plinth
+  const plinth = buildSculptedStoneSlabGeometry(5.6, 0.62, 5.2, 3.1);
+  plinth.translate(0, 0.16, 0);
+  setLinearAttrColors(plinth, 0.66, 0.58, 0.44);
+  parts.push(plinth);
+
+  const innerFloor = buildSculptedStoneSlabGeometry(4.2, 0.28, 3.8, 5.7);
+  innerFloor.translate(0, 0.52, -0.15);
+  setLinearAttrColors(innerFloor, 0.58, 0.5, 0.38);
+  parts.push(innerFloor);
+
+  // Dark inner sanctuary chamber walls (back + left + right + roof) leaving +Z doorway open
+  const backWall = buildSculptedStoneSlabGeometry(4.4, 3.1, 0.72, 6.4);
+  backWall.translate(0, 1.95, -1.75);
+  setLinearAttrColors(backWall, 0.45, 0.4, 0.32);
+  parts.push(backWall);
+
+  for (const side of [-1, 1]) {
+    const sideWall = buildSculptedStoneSlabGeometry(0.74, 3.0, 3.8, 7.2 + side);
+    sideWall.translate(side * 1.95, 1.9, -0.05);
+    setLinearAttrColors(sideWall, 0.54, 0.47, 0.37);
+    parts.push(sideWall);
+
+    // Fluted weathered front temple pillars
+    const pillar = buildWeatheredRuinsPillarGeometry();
+    pillar.scale(0.95, 1.2, 0.95);
+    pillar.translate(side * 1.48, 0.45, 1.65);
+    setLinearAttrColors(pillar, 0.71, 0.63, 0.49);
+    parts.push(pillar);
+
+    // Stone inscription stele flanking the entrance inlaid with human bone & skull carvings
+    const stele = buildSculptedStoneSlabGeometry(0.95, 1.85, 0.34, 9.1 + side);
+    stele.rotateY(side * -0.26);
+    stele.translate(side * 2.48, 1.15, 1.38);
+    setLinearAttrColors(stele, 0.62, 0.55, 0.43);
+    parts.push(stele);
+
+    const steleSkull = buildHumanSkullGeometry();
+    steleSkull.scale(0.86, 0.86, 0.65);
+    steleSkull.rotateY(side * -0.26);
+    steleSkull.translate(side * 2.46, 1.48, 1.56);
+    parts.push(steleSkull);
+
+    const steleFemurA = buildFemurBoneGeometry();
+    steleFemurA.scale(0.85, 0.85, 0.85);
+    steleFemurA.rotateZ(0.55);
+    steleFemurA.rotateY(side * -0.26);
+    steleFemurA.translate(side * 2.46, 1.0, 1.56);
+    parts.push(steleFemurA);
+
+    const steleFemurB = buildFemurBoneGeometry();
+    steleFemurB.scale(0.85, 0.85, 0.85);
+    steleFemurB.rotateZ(-0.55);
+    steleFemurB.rotateY(side * -0.26);
+    steleFemurB.translate(side * 2.46, 1.0, 1.56);
+    parts.push(steleFemurB);
+  }
+
+  // Massive carved lintel & broken sandstone pediment roof
+  const lintel = buildSculptedStoneSlabGeometry(4.6, 0.86, 1.35, 8.3);
+  lintel.translate(0, 3.55, 1.48);
+  setLinearAttrColors(lintel, 0.69, 0.61, 0.47);
+  parts.push(lintel);
+
+  const roofSlab = buildSculptedStoneSlabGeometry(4.5, 0.62, 3.6, 10.4);
+  roofSlab.rotateX(0.06);
+  roofSlab.translate(0, 3.52, -0.25);
+  setLinearAttrColors(roofSlab, 0.56, 0.49, 0.39);
+  parts.push(roofSlab);
+
+  // Ancient Bone Inscription Reliefs across the upper lintel (central skull + flanking skulls + femurs)
+  const centerSkull = buildHumanSkullGeometry();
+  centerSkull.scale(1.18, 1.18, 0.85);
+  centerSkull.translate(0, 3.42, 2.08);
+  parts.push(centerSkull);
+
+  for (const side of [-1, 1]) {
+    const lintelSkull = buildHumanSkullGeometry();
+    lintelSkull.scale(0.76, 0.76, 0.65);
+    lintelSkull.translate(side * 1.25, 3.46, 2.04);
+    parts.push(lintelSkull);
+
+    const lintelBone = buildFemurBoneGeometry();
+    lintelBone.scale(0.95, 0.95, 0.95);
+    lintelBone.rotateZ(side * 0.2);
+    lintelBone.translate(side * 0.62, 3.54, 2.08);
+    parts.push(lintelBone);
+  }
+
+  // Interior sanctuary pedestal for the hidden temple relic
+  const altarPedestal = buildSculptedStoneSlabGeometry(1.1, 0.85, 1.1, 12.2);
+  altarPedestal.translate(0, 0.88, -0.35);
+  setLinearAttrColors(altarPedestal, 0.48, 0.44, 0.37);
+  parts.push(altarPedestal);
+
+  return safeMerge(parts, new THREE.BoxGeometry(4.2, 3.2, 3.6));
+}
+
+// Heavy Carved Stone Door Slab sealing the Buried Temple (slides open when all 4 bones are collected)
+export function buildTempleDoorSlabGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const doorSlab = buildSculptedStoneSlabGeometry(2.35, 2.75, 0.38, 15.6);
+  doorSlab.translate(0, 1.38, 0);
+  setLinearAttrColors(doorSlab, 0.52, 0.46, 0.36);
+  parts.push(doorSlab);
+
+  // Carved bone-cross seal in the center of the stone door
+  const sealRing = new THREE.TorusGeometry(0.56, 0.065, 7, 18);
+  sealRing.translate(0, 1.48, 0.19);
+  setLinearAttrColors(sealRing, 0.82, 0.68, 0.32);
+  parts.push(sealRing);
+
+  const sealSkull = buildHumanSkullGeometry();
+  sealSkull.scale(0.85, 0.85, 0.65);
+  sealSkull.translate(0, 1.38, 0.24);
+  parts.push(sealSkull);
+
+  for (const side of [-1, 1]) {
+    const crossBone = buildFemurBoneGeometry();
+    crossBone.scale(0.95, 0.95, 0.95);
+    crossBone.rotateZ(side * 0.68);
+    crossBone.translate(0, 1.42, 0.21);
+    parts.push(crossBone);
+  }
+
+  return safeMerge(parts, new THREE.BoxGeometry(2.2, 2.6, 0.36));
+}
+
+// Hidden Ancient Temple Relic: Golden Sun-Bone Crown & Emerald Core
+export function buildTempleRelicCrownGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const baseRing = new THREE.TorusGeometry(0.32, 0.065, 8, 18);
+  baseRing.rotateX(Math.PI * 0.5);
+  baseRing.translate(0, 0.12, 0);
+  setLinearAttrColors(baseRing, 1.0, 0.82, 0.24);
+  parts.push(baseRing);
+
+  for (let i = 0; i < 6; i += 1) {
+    const a = (i / 6) * Math.PI * 2;
+    const spike = new THREE.ConeGeometry(0.065, 0.34, 6);
+    spike.translate(Math.cos(a) * 0.28, 0.3, Math.sin(a) * 0.28);
+    setLinearAttrColors(spike, 1.0, 0.88, 0.35);
+    parts.push(spike);
+  }
+
+  const gem = new THREE.OctahedronGeometry(0.24, 0);
+  gem.scale(0.9, 1.35, 0.9);
+  gem.translate(0, 0.38, 0);
+  setLinearAttrColors(gem, 0.22, 0.96, 0.84);
+  parts.push(gem);
+
+  return safeMerge(parts, new THREE.OctahedronGeometry(0.3, 0));
+}
 
 

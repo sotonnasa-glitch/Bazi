@@ -33,6 +33,7 @@ export function createSeededRandom(seed: string | number): () => number {
 export interface StorageLike {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
+  removeItem?(key: string): void;
 }
 
 export function safeStorageGet<T>(key: string, fallback: T, storage?: StorageLike): T {
@@ -58,6 +59,23 @@ export function safeStorageSet(key: string, value: unknown, storage?: StorageLik
       return false;
     }
     target.setItem(key, JSON.stringify(value));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function safeStorageRemove(key: string, storage?: StorageLike): boolean {
+  try {
+    const target = storage ?? (typeof window !== 'undefined' ? window.localStorage : undefined);
+    if (!target) {
+      return false;
+    }
+    if (typeof target.removeItem === 'function') {
+      target.removeItem(key);
+    } else {
+      target.setItem(key, 'null');
+    }
     return true;
   } catch {
     return false;
