@@ -12,6 +12,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      ARVAN_API_KEY: ${{ secrets.ARVAN_API_KEY }}
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -38,8 +40,6 @@ jobs:
 
       - name: Deploy edge worker to Arvan
         if: ${{ env.ARVAN_API_KEY != '' }}
-        env:
-          ARVAN_API_KEY: ${{ secrets.ARVAN_API_KEY }}
         id: arvan-deploy
         uses: hatamiarash7/ar-ec-action@v1
         with:
@@ -49,8 +49,6 @@ jobs:
 
       - name: Note missing Arvan API key
         if: ${{ env.ARVAN_API_KEY == '' }}
-        env:
-          ARVAN_API_KEY: ${{ secrets.ARVAN_API_KEY }}
         run: echo "::notice title=Arvan deployment skipped::Add ARVAN_API_KEY in repository Actions secrets to enable deployment."
 
       - name: Package static build for upload
