@@ -37,7 +37,9 @@ jobs:
           commit_message: "deploy: publish static game build"
 
       - name: Deploy edge worker to Arvan
-        if: ${{ secrets.ARVAN_API_KEY != '' }}
+        if: ${{ env.ARVAN_API_KEY != '' }}
+        env:
+          ARVAN_API_KEY: ${{ secrets.ARVAN_API_KEY }}
         id: arvan-deploy
         uses: hatamiarash7/ar-ec-action@v1
         with:
@@ -46,7 +48,9 @@ jobs:
           file: arvan-edge-worker.js
 
       - name: Note missing Arvan API key
-        if: ${{ secrets.ARVAN_API_KEY == '' }}
+        if: ${{ env.ARVAN_API_KEY == '' }}
+        env:
+          ARVAN_API_KEY: ${{ secrets.ARVAN_API_KEY }}
         run: echo "::notice title=Arvan deployment skipped::Add ARVAN_API_KEY in repository Actions secrets to enable deployment."
 
       - name: Package static build for upload
