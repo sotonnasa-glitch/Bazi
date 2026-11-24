@@ -9,10 +9,10 @@ import {
   type DayPhase,
   type GameMode,
   type GameOutcome,
-  type SkillId,
   type StrangeLandmarkId,
   type WeaponId,
   type WeatherKind,
+  type WildlifeDifficulty,
   type WorkshopRecipeId,
   type WorldEventKind,
 } from './game/config';
@@ -24,7 +24,7 @@ import {
   type SavedRunSummary,
   type ThreeIslandController,
 } from './game/threeScene';
-import { formatDailyLabel, toPersianDigits } from './game/utils';
+import { toPersianDigits } from './game/utils';
 import { ANIMAL_SPECIES, type AnimalCategory } from './game/wildlife';
 
 const BIOME_LABELS: Record<BiomeId, string> = {
@@ -57,7 +57,10 @@ const WEATHER_LABELS: Record<WeatherKind, string> = {
   fog: 'مه‌آلود',
 };
 
-const WORLD_EVENT_LABELS: Record<Exclude<WorldEventKind, 'none'>, { title: string; detail: string; tone: 'danger' | 'magic' | 'gold' }> = {
+const WORLD_EVENT_LABELS: Record<
+  Exclude<WorldEventKind, 'none'>,
+  { title: string; detail: string; tone: 'danger' | 'magic' | 'gold' }
+> = {
   low_tide: {
     title: 'جزر بزرگ دریا',
     detail: 'آب عقب رفت؛ صدف‌ها و کف دریا آشکار شدند!',
@@ -142,6 +145,13 @@ const CATEGORY_LABELS: Record<AnimalCategory | 'all', string> = {
   strange: 'موجودات عجیب',
 };
 
+const WEAPON_ANIM_CLASS: Record<WeaponId, string> = {
+  axe: 'anim-axe-chop',
+  spear: 'anim-spear-jab',
+  bow: 'anim-bow-draw',
+  hammer: 'anim-hammer-slam',
+};
+
 const INITIAL_HUD: HudSnapshot = {
   coins: 0,
   wood: 0,
@@ -215,6 +225,8 @@ const INITIAL_HUD: HudSnapshot = {
   discoveredAnimals: [],
   secretsFound: 0,
   secretsTotal: CONFIG.SURVIVAL.SECRETS_COUNT,
+  mysteriesFound: 0,
+  mysteriesTotal: CONFIG.SURVIVAL.MYSTERY_SPOTS_COUNT,
   canVictoryVoyage: false,
   gameOutcome: 'playing',
   nearCampfire: false,
@@ -230,6 +242,7 @@ const INITIAL_HUD: HudSnapshot = {
   buildings: { shelter: false, rack: false, pier: false, boat: false },
   nearbyPad: null,
   nearbyLandmark: null,
+  wildlifeDifficulty: 'normal',
 };
 
 interface FlyingIconAnim {
@@ -281,8 +294,9 @@ export default function App() {
   const [hud, setHud] = useState<HudSnapshot>(INITIAL_HUD);
   const [flyingIcons, setFlyingIcons] = useState<FlyingIconAnim[]>([]);
   const [toastText, setToastText] = useState<string | null>(null);
-  const [activeModal, setActiveModal] = useState<'skills' | 'wildlife' | 'workshop' | null>(null);
+  const [activeModal, setActiveModal] = useState<'wildlife' | 'workshop' | 'settings' | null>(null);
   const [wildlifeFilter, setWildlifeFilter] = useState<AnimalCategory | 'all'>('all');
+  const [wildlifeDifficulty, setWildlifeDifficultyState] = useState<WildlifeDifficulty>('normal');
   const [muted, setMuted] = useState(false);
   const [savedRun, setSavedRun] = useState<SavedRunSummary | null>(null);
   const [damageFlash, setDamageFlash] = useState(false);
@@ -294,8 +308,6 @@ export default function App() {
   >([]);
   const damageIdRef = useRef(0);
   const damageFlashTimerRef = useRef<number | null>(null);
-
-  const dailyLabel = useMemo(() => formatDailyLabel(), []);
 
   useEffect(() => {
     document.body.dataset.state = outcome !== 'playing' ? 'gameover' : screen;
@@ -309,7 +321,7 @@ export default function App() {
     toastTimerRef.current = window.setTimeout(() => {
       setToastText(null);
       toastTimerRef.current = null;
-    }, 3200);
+    }, 3400);
   }, []);
 
   const triggerFlyIcon = useCallback((evt: FlyingResourceEvent) => {
@@ -421,6 +433,7 @@ export default function App() {
     );
 
     controllerRef.current = controller;
+    setWildlifeDifficultyState(controller.getWildlifeDifficulty());
     setSavedRun(controller.getSavedRunSummary());
 
     return () => {
@@ -453,13 +466,14 @@ export default function App() {
     setOutcome('playing');
     const ok = controllerRef.current?.resumeSavedRun() ?? false;
     if (!ok) {
+      soundEngine.playError();
       setSavedRun(null);
       showToast('فایل ذخیره معتبری پیدا نشد');
     }
   }, [showToast]);
 
   const handleReturnToMenu = useCallback(() => {
-    soundEngine.playClick();
+    soundEngine.playModalClose();
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
     }
@@ -479,23 +493,25 @@ export default function App() {
   }, []);
 
   const handleEatFood = useCallback(() => {
-    soundEngine.playClick();
-    controllerRef.current?.eatFood();
+    if (!controllerRef.current?.eatFood()) {
+      soundEngine.playError();
+    }
   }, []);
 
   const handleCraftSpear = useCallback(() => {
-    soundEngine.playClick();
-    controllerRef.current?.craftSpear();
+    if (!controllerRef.current?.craftSpear()) {
+      soundEngine.playError();
+    }
   }, []);
 
   const handleSelectWeapon = useCallback((id: WeaponId) => {
-    soundEngine.playClick();
     controllerRef.current?.selectWeapon(id);
   }, []);
 
   const handleUpgradeWeapon = useCallback((id: WeaponId) => {
-    soundEngine.playClick();
-    controllerRef.current?.upgradeWeapon(id);
+    if (!controllerRef.current?.upgradeWeapon(id)) {
+      soundEngine.playError();
+    }
   }, []);
 
   const handleSkipCutscene = useCallback(() => {
@@ -504,23 +520,28 @@ export default function App() {
   }, []);
 
   const handleLightFire = useCallback(() => {
-    soundEngine.playClick();
-    controllerRef.current?.lightFire();
+    if (!controllerRef.current?.lightFire()) {
+      soundEngine.playError();
+    }
   }, []);
 
   const handleStokeFire = useCallback(() => {
-    soundEngine.playClick();
-    controllerRef.current?.stokeFire();
+    if (!controllerRef.current?.stokeFire()) {
+      soundEngine.playError();
+    }
   }, []);
 
   const handleUseAntidote = useCallback(() => {
-    soundEngine.playClick();
-    controllerRef.current?.useAntidote();
+    if (!controllerRef.current?.useAntidote()) {
+      soundEngine.playError();
+    }
   }, []);
 
   const handleCraftWorkshop = useCallback((recipeId: WorkshopRecipeId) => {
-    soundEngine.playClick();
-    controllerRef.current?.craftWorkshop(recipeId);
+    const res = controllerRef.current?.craftWorkshop(recipeId);
+    if (!res?.crafted) {
+      soundEngine.playError();
+    }
   }, []);
 
   const handleInteract = useCallback(() => {
@@ -528,19 +549,18 @@ export default function App() {
     controllerRef.current?.interact();
   }, []);
 
-  const handleUpgradeSkill = useCallback((skillId: SkillId) => {
-    soundEngine.playClick();
-    controllerRef.current?.upgradeSkill(skillId);
-  }, []);
-
   const handleTriggerLandmark = useCallback((id: StrangeLandmarkId) => {
-    soundEngine.playClick();
-    controllerRef.current?.triggerLandmark(id);
+    const res = controllerRef.current?.triggerLandmark(id);
+    if (!res?.triggered) {
+      soundEngine.playError();
+    }
   }, []);
 
   const handleTriggerLandmarkSpecial = useCallback((id: StrangeLandmarkId) => {
-    soundEngine.playClick();
-    controllerRef.current?.triggerLandmarkSpecial(id);
+    const res = controllerRef.current?.triggerLandmarkSpecial(id);
+    if (!res?.triggered) {
+      soundEngine.playError();
+    }
   }, []);
 
   const handleToggleMute = useCallback(() => {
@@ -548,18 +568,35 @@ export default function App() {
     setMuted(nextMuted);
   }, []);
 
+  const handleChangeDifficulty = useCallback((diff: WildlifeDifficulty) => {
+    soundEngine.playClick();
+    setWildlifeDifficultyState(diff);
+    controllerRef.current?.setWildlifeDifficulty(diff);
+  }, []);
+
+  const toggleModal = useCallback((modal: 'wildlife' | 'workshop' | 'settings') => {
+    setActiveModal((prev) => {
+      if (prev === modal) {
+        soundEngine.playModalClose();
+        return null;
+      }
+      soundEngine.playModalOpen();
+      return modal;
+    });
+  }, []);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (screen === 'title' && (event.key === 'Enter' || event.key === ' ')) {
+      if (activeModal && event.key === 'Escape') {
+        event.preventDefault();
+        soundEngine.playModalClose();
+        setActiveModal(null);
+      } else if (screen === 'title' && !activeModal && (event.key === 'Enter' || event.key === ' ')) {
         event.preventDefault();
         handleStartMode('normal', false);
       } else if (screen === 'playing' && event.key === 'Escape') {
         event.preventDefault();
-        if (activeModal) {
-          setActiveModal(null);
-        } else {
-          handleReturnToMenu();
-        }
+        handleReturnToMenu();
       } else if (screen === 'playing' && !activeModal && event.code === 'KeyE') {
         handleEatFood();
       }
@@ -585,12 +622,12 @@ export default function App() {
     survivalNotice = { text: toastText, tone: 'warm' };
   } else if (hud.venomTimer > 0) {
     survivalNotice = {
-      text: `سم مار سمی فعال است (${toPersianDigits(hud.venomTimer)} ث)! از پادزهر یا چشمه بلورین استفاده کن`,
+      text: `سم مار فعال است (${toPersianDigits(hud.venomTimer)} ث) · پادزهر یا چشمه بلورین`,
       tone: 'warn',
     };
   } else if (hud.predatorAlert) {
     survivalNotice = {
-      text: 'خطر شکارچی شب! به آتش روشن نزدیک شو یا مشعل محافظ بساز',
+      text: 'خطر شکارچی شب! به آتش روشن نزدیک شو یا مشعل بساز',
       tone: 'warn',
     };
   } else if (hud.needSpearBlocked) {
@@ -614,7 +651,7 @@ export default function App() {
   } else if (hud.activeAction === 'cast_fish') {
     survivalNotice = { text: 'در حال ماهی‌گیری با قلاب...', tone: 'warm' };
   } else if (hud.activeAction === 'spear_fish') {
-    survivalNotice = { text: 'در حال شکار ماهی با نیزه در آب...', tone: 'warm' };
+    survivalNotice = { text: 'در حال صید ماهی با نیزه در آب...', tone: 'warm' };
   } else if (hud.activeAction === 'hunt') {
     survivalNotice = { text: 'در حال شکار و تعقیب جانور...', tone: 'warm' };
   } else if (hud.activeAction === 'bow_hunt') {
@@ -624,7 +661,9 @@ export default function App() {
   } else if (hud.activeAction === 'forage') {
     survivalNotice = { text: 'در حال جمع‌آوری از طبیعت...', tone: 'warm' };
   } else if (hud.activeAction === 'secret_open') {
-    survivalNotice = { text: 'گنجینه مخفی جزیره گشوده شد!', tone: 'warm' };
+    survivalNotice = { text: 'گشودن صندوق مخفی جزیره...', tone: 'warm' };
+  } else if (hud.activeAction === 'mystery_open') {
+    survivalNotice = { text: 'بررسی شیء مرموز جزیره...', tone: 'warm' };
   } else if (hud.activeAction === 'salvage') {
     survivalNotice = { text: 'در حال جست‌وجو در لاشه هواپیما...', tone: 'warm' };
   } else if (hud.activeAction === 'inspect') {
@@ -640,17 +679,17 @@ export default function App() {
     survivalNotice = { text: 'در حال کباب کردن روی آتش...', tone: 'warm' };
   } else if (hud.nearCampfire && !hud.fireLit) {
     survivalNotice = {
-      text: `آتش کمپ خاموش است! برای روشن کردن ${toPersianDigits(CONFIG.SURVIVAL.FIRE_IGNITE_WOOD_COST)} چوب جمع کن`,
+      text: `آتش کمپ خاموش است · ${toPersianDigits(CONFIG.SURVIVAL.FIRE_IGNITE_WOOD_COST)} چوب جمع کن`,
       tone: 'warn',
     };
   } else if (hud.nearCampfire && hud.fireLit) {
     survivalNotice = {
-      text: `آتش کمپ سطح ${toPersianDigits(hud.fireLevel)} · ${FIRE_UNLOCK_HINTS[hud.fireLevel] ?? ''}`,
+      text: `آتش سطح ${toPersianDigits(hud.fireLevel)} · ${FIRE_UNLOCK_HINTS[hud.fireLevel] ?? ''}`,
       tone: 'warm',
     };
   } else if (hud.focusedTarget && !hud.focusedTarget.blockedReason) {
     survivalNotice = {
-      text: `${hud.focusedTarget.labelFa} (روی هدف ضربه بزن یا F)`,
+      text: `${hud.focusedTarget.labelFa} (ضربه یا F)`,
       tone: 'warm',
     };
   }
@@ -663,6 +702,12 @@ export default function App() {
       ? 1
       : Math.max(0, Math.min(1, hud.playerXp / Math.max(1, hud.playerXpToNext)));
 
+  const quickIsCombat =
+    hud.focusedTarget?.kind === 'prey' &&
+    (hud.focusedTarget.action === 'hunt' || hud.focusedTarget.action === 'bow_hunt');
+  const quickIsSecretOrMystery =
+    hud.focusedTarget?.kind === 'secret' || hud.focusedTarget?.kind === 'mystery';
+
   return (
     <main className="game-stage-shell" dir="rtl" lang="fa">
       <div ref={frameRef} className="game-viewport-frame" data-testid="game-viewport">
@@ -674,7 +719,10 @@ export default function App() {
         />
 
         {/* Lower-Half Virtual Joystick Overlay */}
-        <VirtualJoystick enabled={screen === 'playing' && outcome === 'playing' && !activeModal} onChange={handleJoystickChange} />
+        <VirtualJoystick
+          enabled={screen === 'playing' && outcome === 'playing' && !activeModal}
+          onChange={handleJoystickChange}
+        />
 
         {/* Damage Screen Red Vignette & Floating Damage Numbers */}
         {screen === 'playing' && (
@@ -752,35 +800,82 @@ export default function App() {
 
         {/* Title Screen Overlay */}
         {screen === 'title' && (
-          <div className="pointer-events-none absolute inset-0 z-20 flex flex-col justify-between px-5 pt-7 pb-5">
-            <div className="flex flex-col items-center text-center">
-              <h1
-                className="text-4xl font-extrabold text-white leading-tight tracking-tight"
-                style={{
-                  textShadow: '0 4px 0 #1875ad, 0 10px 22px rgba(8, 52, 88, 0.52)',
-                }}
-              >
-                {CONFIG.GAME_TITLE}
-              </h1>
-              <p className="mt-2 px-3.5 py-1 rounded-full bg-[#fef7e4]/95 border border-white/80 shadow-sm text-[11px] font-extrabold text-[#114f78]">
-                فصل‌های نادر، ۴ سلاح ارتقاپذیر، رازهای مخفی، شنا، قایق و ۳۲ جانور
-              </p>
+          <div className="pointer-events-none absolute inset-0 z-20 flex flex-col justify-between px-5 pt-5 pb-6">
+            <div className="flex flex-col items-center">
+              <div className="w-full flex items-center justify-end">
+                <div className="pointer-events-auto flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    data-testid="open-settings-btn"
+                    onClick={() => toggleModal('settings')}
+                    aria-label="تنظیمات"
+                    title="تنظیمات"
+                    className="btn-game btn-wood w-10 h-10 rounded-xl text-[#fff8eb] cursor-pointer flex items-center justify-center shrink-0"
+                  >
+                    <SettingsGearSvg className="w-5 h-5" />
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="toggle-mute-btn"
+                    onClick={handleToggleMute}
+                    aria-label={muted ? 'وصل صدا' : 'قطع صدا'}
+                    className="btn-game btn-wood w-10 h-10 rounded-xl text-[#fff8eb] cursor-pointer flex items-center justify-center shrink-0"
+                  >
+                    <span className={!muted ? 'anim-sound-wave inline-flex' : 'inline-flex'}>
+                      <VolumeIcon muted={muted} />
+                    </span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="relative mt-3 sm:mt-4 flex flex-col items-center text-center anim-title-float">
+                <div
+                  className="pointer-events-none absolute -inset-x-10 -inset-y-4 rounded-full blur-xl opacity-55"
+                  style={{
+                    background:
+                      'radial-gradient(ellipse at center, rgba(12, 46, 74, 0.72) 0%, rgba(12, 46, 74, 0) 72%)',
+                  }}
+                  aria-hidden="true"
+                />
+                <div className="relative flex items-center gap-2 mb-1 opacity-95" aria-hidden="true">
+                  <span className="w-8 h-[2px] rounded-full bg-gradient-to-l from-[#ffe066] to-transparent" />
+                  <CompassMiniSvg className="w-4 h-4 drop-shadow-[0_2px_4px_rgba(8,36,60,0.6)]" />
+                  <span className="w-8 h-[2px] rounded-full bg-gradient-to-r from-[#ffe066] to-transparent" />
+                </div>
+                <div className="relative select-none">
+                  <span
+                    aria-hidden="true"
+                    className="font-display text-6xl sm:text-7xl leading-none block text-[#114d78]"
+                    style={{
+                      textShadow:
+                        '0 4px 0 #0a3454, 0 8px 18px rgba(5, 28, 48, 0.68), 0 0 28px rgba(255, 214, 102, 0.35)',
+                    }}
+                  >
+                    جزیره بقا
+                  </span>
+                  <h1
+                    className="font-display text-6xl sm:text-7xl leading-none absolute inset-0 bg-gradient-to-b from-[#fffef8] via-[#ffeaa3] to-[#ffb938] bg-clip-text text-transparent"
+                  >
+                    جزیره بقا
+                  </h1>
+                </div>
+              </div>
             </div>
 
-            <div className="pointer-events-auto self-center w-full max-w-[296px] flex flex-col gap-2.5">
+            <div className="pointer-events-auto self-center w-full max-w-[300px] flex flex-col gap-2.5">
               {savedRun && (
                 <button
                   type="button"
                   data-testid="resume-saved-btn"
                   onClick={handleResumeSavedRun}
-                  className="w-full min-h-[52px] px-4 py-2.5 rounded-2xl bg-gradient-to-b from-[#22c55e] to-[#15803d] border-2 border-[#bbf7d0] shadow-lg text-white font-extrabold text-sm transition-all cursor-pointer flex items-center justify-between gap-2"
-                  style={{ textShadow: '0 1px 0 rgba(20, 83, 45, 0.75)' }}
+                  className="btn-game btn-emerald anim-btn-sheen w-full min-h-[52px] px-4 py-2.5 rounded-2xl text-white font-extrabold text-sm cursor-pointer flex items-center justify-between gap-2"
+                  style={{ textShadow: '0 1px 2px rgba(6, 78, 59, 0.7)' }}
                 >
-                  <span className="flex items-center gap-2">
-                    <PlayArrowIcon className="w-5 h-5 shrink-0" />
-                    <span>ادامه بازی ذخیره‌شده</span>
+                  <span className="flex items-center gap-2 whitespace-nowrap">
+                    <PlayArrowIcon className="w-5 h-5 shrink-0 anim-play-nudge" />
+                    <span>ادامه بازی</span>
                   </span>
-                  <span className="px-2 py-0.5 rounded-lg bg-white/20 text-[10.5px] font-black tabular-nums">
+                  <span className="text-[11px] font-black tabular-nums text-[#ecfdf5] whitespace-nowrap">
                     روز {toPersianDigits(savedRun.dayCount)} · سطح {toPersianDigits(savedRun.playerLevel)}
                   </span>
                 </button>
@@ -790,70 +885,68 @@ export default function App() {
                 type="button"
                 data-start="true"
                 onClick={() => handleStartMode('normal', false)}
-                className="wood-btn-primary w-full min-h-[54px] px-5 py-3 rounded-2xl text-white font-extrabold text-lg transition-all cursor-pointer flex items-center justify-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
-                style={{ textShadow: '0 2px 0 rgba(153, 62, 6, 0.7)' }}
+                className="btn-game btn-primary-amber anim-btn-sheen w-full min-h-[56px] px-5 py-3 rounded-2xl text-white font-black text-lg cursor-pointer flex items-center justify-center gap-2.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                style={{ textShadow: '0 2px 0 rgba(145, 58, 5, 0.7)' }}
               >
-                <PlayArrowIcon className="w-6 h-6 shrink-0" />
-                <span>{savedRun ? 'شروع ماجراجویی جدید' : 'شروع بازی'}</span>
+                <PlayArrowIcon className="w-6 h-6 shrink-0 anim-play-nudge" />
+                <span className="whitespace-nowrap">
+                  {savedRun ? 'بازی جدید' : 'شروع بازی'}
+                </span>
               </button>
 
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleStartMode('daily', false)}
-                  className="wood-btn flex-1 min-h-[44px] px-3 py-2 rounded-xl text-[#fff8eb] font-bold text-xs transition-all cursor-pointer flex items-center justify-center gap-1.5"
-                  style={{ textShadow: '0 1px 0 rgba(94, 41, 10, 0.7)' }}
-                >
-                  <SunMiniIcon className="w-4 h-4 shrink-0 text-[#ffe066]" />
-                  <span>چالش روز ({dailyLabel})</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => handleStartMode('normal', true)}
-                  className="wood-btn min-h-[44px] px-3 py-2 rounded-xl text-[#fff8eb] font-bold text-xs transition-all cursor-pointer flex items-center justify-center gap-1"
-                  style={{ textShadow: '0 1px 0 rgba(94, 41, 10, 0.7)' }}
-                  title="ساخت جزیره تصادفی جدید"
-                >
-                  <RefreshMiniIcon className="w-4 h-4 shrink-0 text-[#ffe066]" />
-                  <span>جزیره جدید</span>
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => handleStartMode('normal', true)}
+                className="btn-game btn-wood w-full min-h-[44px] px-4 py-2 rounded-xl text-[#fff8eb] font-bold text-xs cursor-pointer flex items-center justify-center gap-1.5 whitespace-nowrap"
+                style={{ textShadow: '0 1px 0 rgba(88, 38, 9, 0.7)' }}
+                title="ساخت جزیره تصادفی جدید"
+              >
+                <RefreshMiniIcon className="w-4 h-4 shrink-0 text-[#ffe066] anim-compass-wiggle" />
+                <span>جزیره جدید</span>
+              </button>
             </div>
           </div>
         )}
 
-        {/* 3D Airplane Crash Intro Cutscene Overlay */}
+        {/* 3D Airplane Crash Intro Cutscene Overlay (Clean Cinematic HUD) */}
         {screen === 'cutscene' && (
           <div
             data-testid="cutscene-overlay"
-            className="pointer-events-none absolute inset-0 z-25 flex flex-col justify-between p-4"
+            className="pointer-events-none absolute inset-0 z-25 flex flex-col justify-between p-3.5 sm:p-5"
           >
-            <div className="flex items-center justify-between">
-              <div className="hud-card px-3 py-1.5 rounded-2xl text-[11px] font-extrabold text-[#5a3b14]">
-                سقوط بر فراز جزیره ناشناخته...
+            <div className="flex items-center justify-between gap-3">
+              <div className="hud-glass-dark px-3.5 py-1.5 rounded-xl text-xs font-bold text-[#fff3d6] flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-[#ffb822] animate-pulse shrink-0" />
+                <span className="whitespace-nowrap">سقوط بر فراز جزیره ناشناخته</span>
               </div>
+
               <button
                 type="button"
+                data-testid="toggle-mute-btn"
                 onClick={handleToggleMute}
                 aria-label={muted ? 'وصل صدا' : 'قطع صدا'}
-                className="pointer-events-auto wood-btn p-2 rounded-2xl text-[#fff8eb] cursor-pointer flex items-center justify-center"
+                className="pointer-events-auto btn-game btn-wood w-10 h-10 rounded-xl text-[#fff8eb] cursor-pointer flex items-center justify-center shrink-0"
               >
-                <VolumeIcon muted={muted} />
+                <span className={!muted ? 'anim-sound-wave inline-flex' : 'inline-flex'}>
+                  <VolumeIcon muted={muted} />
+                </span>
               </button>
             </div>
 
-            <div className="flex flex-col items-center gap-2.5 pb-4">
-              <div className="hud-card max-w-[440px] px-4 py-2.5 rounded-2xl text-center text-xs sm:text-sm font-extrabold text-[#3d2508] shadow-lg">
-                موتور هواپیما از کار افتاد! با چتر نجات روی جزیره فرود بیا، لاشه هواپیما را بگرد و برای روشن کردن آتش کمپ ۲ چوب جمع کن!
-              </div>
+            <div className="flex flex-col items-center gap-3 pb-3">
+              <p className="hud-glass-dark max-w-[460px] px-4 py-3 rounded-2xl text-center text-xs sm:text-sm font-semibold leading-relaxed text-[#f8fafc] text-balance">
+                موتور هواپیما از کار افتاد! با چتر نجات روی جزیره فرود بیا، لاشه هواپیما را بگرد و برای روشن کردن آتش کمپ ۲ چوب جمع کن.
+              </p>
+
               <button
                 type="button"
                 data-testid="skip-cutscene-btn"
                 onClick={handleSkipCutscene}
-                className="pointer-events-auto wood-btn-primary px-5 py-2 rounded-2xl text-white text-xs font-extrabold cursor-pointer shadow-lg"
+                className="pointer-events-auto btn-game btn-primary-amber anim-btn-sheen min-h-[44px] px-5 py-2.5 rounded-xl text-white text-xs sm:text-sm font-extrabold cursor-pointer flex items-center gap-2 whitespace-nowrap"
+                style={{ textShadow: '0 1px 1px rgba(145, 58, 5, 0.7)' }}
               >
-                رد کردن انیمیشن و ورود به جزیره
+                <span>ورود فوری به جزیره</span>
+                <SkipChevronsSvg className="w-4 h-4 anim-skip-glide" />
               </button>
             </div>
           </div>
@@ -863,486 +956,469 @@ export default function App() {
         {screen === 'ending_cutscene' && (
           <div
             data-testid="ending-cutscene-overlay"
-            className="pointer-events-none absolute inset-0 z-25 flex flex-col justify-between p-4"
+            className="pointer-events-none absolute inset-0 z-25 flex flex-col justify-between p-3.5 sm:p-5"
           >
-            <div className="flex items-center justify-between">
-              <div className="hud-card px-3 py-1.5 rounded-2xl text-[11px] font-extrabold text-[#154f7a]">
-                به سوی خانه — قایق در آب انداخته شد
+            <div className="flex items-center justify-between gap-3">
+              <div className="hud-glass-dark px-3.5 py-1.5 rounded-xl text-xs font-bold text-[#bdeeff] flex items-center gap-2">
+                <BoatMiniSvg className="anim-boat-rock" />
+                <span className="whitespace-nowrap">به سوی خانه · قایق به آب انداخته شد</span>
               </div>
+
               <button
                 type="button"
+                data-testid="toggle-mute-btn"
                 onClick={handleToggleMute}
                 aria-label={muted ? 'وصل صدا' : 'قطع صدا'}
-                className="pointer-events-auto wood-btn p-2 rounded-2xl text-[#fff8eb] cursor-pointer flex items-center justify-center"
+                className="pointer-events-auto btn-game btn-wood w-10 h-10 rounded-xl text-[#fff8eb] cursor-pointer flex items-center justify-center shrink-0"
               >
-                <VolumeIcon muted={muted} />
+                <span className={!muted ? 'anim-sound-wave inline-flex' : 'inline-flex'}>
+                  <VolumeIcon muted={muted} />
+                </span>
               </button>
             </div>
 
-            <div className="flex flex-col items-center gap-2.5 pb-4">
-              <div className="hud-card max-w-[440px] px-4 py-2.5 rounded-2xl text-center text-xs sm:text-sm font-extrabold text-[#3d2508] shadow-lg">
-                قایق چوبی آماده شد! بازمانده قایق را به آب می‌اندازد، سوار می‌شود و با پاروزدن جزیره را به سوی خانه ترک می‌کند!
-              </div>
+            <div className="flex flex-col items-center gap-3 pb-3">
+              <p className="hud-glass-dark max-w-[460px] px-4 py-3 rounded-2xl text-center text-xs sm:text-sm font-semibold leading-relaxed text-[#f8fafc] text-balance">
+                قایق چوبی آماده شد! بازمانده قایق را به آب می‌اندازد و با پاروزدن میان موج‌ها جزیره را به سوی خانه ترک می‌کند.
+              </p>
+
               <button
                 type="button"
                 data-testid="skip-ending-btn"
                 onClick={handleSkipCutscene}
-                className="pointer-events-auto wood-btn-primary px-5 py-2 rounded-2xl text-white text-xs font-extrabold cursor-pointer shadow-lg"
+                className="pointer-events-auto btn-game btn-primary-amber anim-btn-sheen min-h-[44px] px-5 py-2.5 rounded-xl text-white text-xs sm:text-sm font-extrabold cursor-pointer flex items-center gap-2 whitespace-nowrap"
+                style={{ textShadow: '0 1px 1px rgba(145, 58, 5, 0.7)' }}
               >
-                رد کردن و نمایش نتیجه پیروزی
+                <span>نمایش نتیجه پیروزی</span>
+                <SkipChevronsSvg className="w-4 h-4 anim-skip-glide" />
               </button>
             </div>
           </div>
         )}
 
-        {/* Survival RTL HTML HUD Overlay over Canvas */}
+        {/* Clean Zero-Overlap Survival HUD Overlay */}
         {screen === 'playing' && activeRun && (
           <div className="pointer-events-none absolute inset-0 z-20">
-            {/* Top Bar: Right Resources & Left Status/Actions (never overlapping on mobile) */}
-            <div className="pointer-events-none absolute top-2 inset-x-2 flex items-start justify-between gap-1.5 sm:gap-3">
-              {/* Top-Right: Coins, Resources & Day/Weather indicator */}
+            {/* Unified Top Stack: Header Bar -> Resource Ribbon -> Status Line -> Event/Notice Banners */}
+            <div className="pointer-events-none absolute top-2 inset-x-2 sm:inset-x-3 flex flex-col gap-1.5">
+              {/* Row 1: Level & Energy (Right) + Menu & Modals Toolbar (Left) */}
               <div
-                className="flex flex-col items-start gap-1 sm:gap-1.5 max-w-[46%] sm:max-w-[540px] min-w-0"
-                data-testid="hud-top-right"
+                className="flex items-center justify-between gap-1.5 flex-wrap"
+                data-testid="hud-top-left"
               >
-                <div className="flex items-center gap-1 flex-wrap max-w-full">
-                <HudCounterPill
-                  ref={(el) => {
-                    counterRefs.current.coin = el;
-                  }}
-                  label="سکه"
-                  value={hud.coins}
-                  icon={<CoinSvg />}
-                  accentClass="text-[#a15c07]"
-                />
-                <HudCounterPill
-                  ref={(el) => {
-                    counterRefs.current.wood = el;
-                  }}
-                  label="چوب"
-                  value={hud.wood}
-                  icon={<WoodSvg />}
-                />
-                <HudCounterPill
-                  ref={(el) => {
-                    counterRefs.current.fish = el;
-                  }}
-                  label="ماهی"
-                  value={hud.fish}
-                  icon={<FishSvg />}
-                />
-                <HudCounterPill
-                  ref={(el) => {
-                    counterRefs.current.cookedFish = el;
-                  }}
-                  label="ماهی کبابی"
-                  value={hud.cookedFish}
-                  icon={<CookedFishSvg />}
-                  accentClass="text-[#9e3f08]"
-                />
-                <HudCounterPill
-                  ref={(el) => {
-                    counterRefs.current.banana = el;
-                  }}
-                  label="موز"
-                  value={hud.banana}
-                  icon={<BananaSvg />}
-                />
-                {hud.roastedBanana > 0 && (
-                  <HudCounterPill
-                    ref={(el) => {
-                      counterRefs.current.roastedBanana = el;
-                    }}
-                    label="موز کبابی"
-                    value={hud.roastedBanana}
-                    icon={<RoastedBananaSvg />}
-                    accentClass="text-[#9e3f08]"
-                  />
-                )}
-                {hud.meat > 0 && (
-                  <HudCounterPill
-                    ref={(el) => {
-                      counterRefs.current.meat = el;
-                    }}
-                    label="گوشت خام"
-                    value={hud.meat}
-                    icon={<MeatSvg />}
-                    accentClass="text-[#9b2c1a]"
-                  />
-                )}
-                {(hud.cookedMeat > 0 || hud.huntedCount > 0) && (
-                  <HudCounterPill
-                    ref={(el) => {
-                      counterRefs.current.cookedMeat = el;
-                    }}
-                    label="گوشت کبابی"
-                    value={hud.cookedMeat}
-                    icon={<CookedMeatSvg />}
-                    accentClass="text-[#9e3f08]"
-                  />
-                )}
-                <HudCounterPill
-                  ref={(el) => {
-                    counterRefs.current.berries = el;
-                  }}
-                  label="توت"
-                  value={hud.berries}
-                  icon={<BerrySvg />}
-                />
-                <HudCounterPill
-                  ref={(el) => {
-                    counterRefs.current.shell = el;
-                  }}
-                  label="صدف"
-                  value={hud.shells}
-                  icon={<ShellSvg />}
-                />
-              </div>
-
-              <div className="flex items-center gap-1 sm:gap-1.5 flex-wrap max-w-full">
-                <div
-                  className={`hud-card rounded-xl px-2 py-1 flex items-center gap-1.5 text-[10px] font-extrabold ${
-                    hud.weather === 'storm'
-                      ? 'text-[#1c355e]'
-                      : hud.isNight
-                        ? 'text-[#1c2b59]'
-                        : 'text-[#4b3010]'
-                  }`}
-                  data-testid="hud-day-weather"
-                >
-                  <PhaseWeatherIcon phase={hud.phase} weather={hud.weather} />
-                  <span>
-                    روز {toPersianDigits(hud.dayCount)} · {PHASE_LABELS[hud.phase]} ·{' '}
-                    {WEATHER_LABELS[hud.weather]}
-                  </span>
-                </div>
-
-                {(isWetWeather || hud.groundWetness >= 0.35) && (
+                {/* Player Level & Energy Card */}
+                <div className="hud-glass-warm rounded-2xl px-2.5 py-1.5 flex items-center gap-2.5 shrink-0">
                   <div
-                    className="hud-card rounded-xl px-2 py-1 flex items-center gap-1 text-[9.5px] font-extrabold text-[#0f5b82]"
-                    data-testid="hud-weather-effect"
+                    className="flex flex-col gap-0.5 min-w-[66px] sm:min-w-[82px]"
+                    data-testid="hud-player-level"
                   >
-                    <RainDropMiniSvg />
-                    <span>
-                      {hud.weather === 'storm'
-                        ? 'توفان: حرکت کندتر • صید ۲ برابر'
-                        : hud.weather === 'rain'
-                          ? 'زمین خیس • صید و رشد بیشتر'
-                          : 'زمین خیس'}
-                    </span>
-                  </div>
-                )}
-
-                {hud.season !== 'summer' && (
-                  <div
-                    className={`hud-card rounded-xl px-2 py-1 flex items-center gap-1 text-[10px] font-extrabold ${
-                      hud.season === 'autumn' ? 'text-[#b54d0c]' : 'text-[#0e5e8a]'
-                    }`}
-                    data-testid="hud-season-badge"
-                  >
-                    <SeasonMiniSvg season={hud.season} />
-                    <span>{hud.season === 'autumn' ? 'فصل پاییز' : 'فصل زمستان'}</span>
-                  </div>
-                )}
-
-                {hud.isSwimming && (
-                  <div
-                    className="hud-card rounded-xl px-2 py-1 flex items-center gap-1 text-[10px] font-extrabold text-[#0c668f]"
-                    data-testid="hud-swim-badge"
-                  >
-                    <RainDropMiniSvg />
-                    <span>در حال شنا</span>
-                  </div>
-                )}
-
-                <div
-                  className="hud-card rounded-xl px-2 py-1 flex items-center gap-1 text-[10px] font-extrabold text-[#7d4910]"
-                  data-testid="hud-secrets-badge"
-                >
-                  <SecretChestMiniSvg />
-                  <span className="tabular-nums">
-                    اسرار {toPersianDigits(hud.secretsFound)}/{toPersianDigits(hud.secretsTotal)}
-                  </span>
-                </div>
-
-                <div
-                  className={`hud-card rounded-xl px-2 py-1 flex items-center gap-1 text-[10px] font-extrabold ${
-                    hud.templeRelicClaimed
-                      ? 'text-[#b45309]'
-                      : hud.bonesFound >= hud.bonesTotal
-                        ? 'text-[#0f766e] ring-1 ring-[#14b8a6]'
-                        : 'text-[#115e59]'
-                  }`}
-                  data-testid="hud-bones-badge"
-                >
-                  <span className="tabular-nums">
-                    {hud.templeRelicClaimed
-                      ? 'گنج معبد یافت شد'
-                      : hud.bonesFound >= hud.bonesTotal
-                        ? '۴/۴ استخوان · درِ معبد باز شدنی است!'
-                        : `استخوان ${toPersianDigits(hud.bonesFound)}/${toPersianDigits(hud.bonesTotal)}`}
-                  </span>
-                </div>
-
-                {hud.venomTimer > 0 && (
-                  <div
-                    className="rounded-xl px-2 py-1 flex items-center gap-1 text-[10px] font-black bg-[#dcfce7] border border-[#22c55e] text-[#14532d] shadow-sm"
-                    data-testid="hud-venom-badge"
-                  >
-                    <span>مسموم {toPersianDigits(hud.venomTimer)} ث</span>
-                  </div>
-                )}
-
-                {hud.shellArmorCharges > 0 && (
-                  <div className="hud-card rounded-xl px-2 py-1 text-[10px] font-extrabold text-[#0369a1]">
-                    سپر صدف ×{toPersianDigits(hud.shellArmorCharges)}
-                  </div>
-                )}
-                {hud.elixirTimer > 0 && (
-                  <div className="hud-card rounded-xl px-2 py-1 text-[10px] font-extrabold text-[#7e22ce]">
-                    چابکی {toPersianDigits(hud.elixirTimer)} ث
-                  </div>
-                )}
-                {hud.torchTimer > 0 && (
-                  <div className="hud-card rounded-xl px-2 py-1 text-[10px] font-extrabold text-[#c2410c]">
-                    مشعل {toPersianDigits(hud.torchTimer)} ث
-                  </div>
-                )}
-                {hud.baitCharges > 0 && (
-                  <div className="hud-card rounded-xl px-2 py-1 text-[10px] font-extrabold text-[#b45309]">
-                    طعمه ×{toPersianDigits(hud.baitCharges)}
-                  </div>
-                )}
-
-                {hud.hasSpear && (
-                  <div
-                    className={`hud-card rounded-xl px-2 py-1 flex items-center gap-1 text-[10px] font-extrabold ${
-                      hud.hasFireSpear ? 'text-[#b5380d]' : 'text-[#3a4d1a]'
-                    }`}
-                    data-testid="hud-spear-badge"
-                  >
-                    <SpearMiniSvg fire={hud.hasFireSpear} />
-                    <span>{hud.hasFireSpear ? 'نیزه آتشین' : 'نیزه'}</span>
-                  </div>
-                )}
-
-                {hud.buildings.boat && (
-                  <div
-                    className="hud-card rounded-xl px-2 py-1 flex items-center gap-1 text-[10px] font-extrabold text-[#165e8a]"
-                    data-testid="hud-boat-badge"
-                  >
-                    <BoatMiniSvg />
-                    <span>
-                      {hud.playerLevel >= CONFIG.SURVIVAL.VICTORY_MIN_LEVEL
-                        ? 'قایق آماده بازگشت'
-                        : `قایق (سطح ${toPersianDigits(CONFIG.SURVIVAL.VICTORY_MIN_LEVEL)} برای پیروزی)`}
-                    </span>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Top-Left: Player Level + Energy Bar + Audio + Skills + Wildlife Guide + Biome + Menu */}
-            <div
-              className="flex flex-col items-end gap-1 sm:gap-1.5 max-w-[52%] sm:max-w-none min-w-0"
-              data-testid="hud-top-left"
-            >
-              <div className="flex items-center gap-1 sm:gap-1.5 flex-wrap justify-end">
-                <button
-                  type="button"
-                  data-testid="toggle-mute-btn"
-                  onClick={handleToggleMute}
-                  aria-label={muted ? 'وصل صدا' : 'قطع صدا'}
-                  title={muted ? 'وصل صدا' : 'قطع صدا'}
-                  className="pointer-events-auto wood-btn p-1.5 sm:p-2 rounded-2xl text-[#fff8eb] text-[10px] font-extrabold cursor-pointer flex items-center justify-center"
-                  style={{ textShadow: '0 1px 0 rgba(94, 41, 10, 0.7)' }}
-                >
-                  <VolumeIcon muted={muted} />
-                </button>
-
-                <div
-                  className="hud-card rounded-2xl px-2 py-1 sm:px-2.5 sm:py-1.5 flex flex-col gap-0.5 min-w-[74px] sm:min-w-[90px]"
-                  data-testid="hud-player-level"
-                >
-                  <div className="flex items-center justify-between gap-1.5 sm:gap-2 text-[9.5px] sm:text-[10px] font-extrabold text-[#5a3b14]">
-                    <span>سطح {toPersianDigits(hud.playerLevel)}</span>
-                    <span className="tabular-nums text-[8.5px] sm:text-[9px] text-[#8a5d1f]">
-                      {hud.playerLevel >= CONFIG.PLAYER.MAX_LEVEL
-                        ? 'اوج'
-                        : `${toPersianDigits(hud.playerXp)}/${toPersianDigits(hud.playerXpToNext)}`}
-                    </span>
-                  </div>
-                  <div className="w-14 sm:w-20 h-2 rounded-full wood-well p-0.5 overflow-hidden">
-                    <div
-                      className="h-full rounded-full bg-gradient-to-l from-[#3bc9db] to-[#ffd233] transition-transform duration-200 origin-right"
-                      style={{ transform: `scaleX(${Math.max(0.05, playerXpRatio)})` }}
-                    />
-                  </div>
-                </div>
-
-                <div className="hud-card rounded-2xl px-2 py-1 sm:px-2.5 sm:py-1.5 flex items-center gap-1.5 sm:gap-2 min-w-[104px] sm:min-w-[126px]">
-                  <EnergyBoltSvg />
-                  <div className="flex-1 flex flex-col gap-0.5">
-                    <div className="flex items-center justify-between text-[9.5px] sm:text-[10px] font-extrabold text-[#5a3b14]">
-                      <span>انرژی</span>
-                      <span className="tabular-nums">
-                        {toPersianDigits(hud.energy)} / {toPersianDigits(hud.maxEnergy)}
+                    <div className="flex items-center justify-between gap-1.5 text-[10px] font-extrabold text-[#4b3010] whitespace-nowrap">
+                      <span>سطح {toPersianDigits(hud.playerLevel)}</span>
+                      <span className="tabular-nums text-[9px] text-[#8a5d1f]">
+                        {hud.playerLevel >= CONFIG.PLAYER.MAX_LEVEL
+                          ? 'اوج'
+                          : `${toPersianDigits(hud.playerXp)}/${toPersianDigits(hud.playerXpToNext)}`}
                       </span>
                     </div>
-                    <div className="w-14 sm:w-24 h-2 sm:h-2.5 rounded-full wood-well p-0.5 overflow-hidden">
+                    <div className="w-full h-1.5 rounded-full wood-well overflow-hidden">
                       <div
-                        className={`h-full rounded-full transition-transform duration-200 origin-right ${
-                          energyRatio < 0.28
-                            ? 'bg-gradient-to-l from-[#ff5e3a] to-[#ffb703]'
-                            : 'bg-gradient-to-l from-[#74e344] to-[#ffd233]'
-                        }`}
-                        style={{ transform: `scaleX(${Math.max(0.04, energyRatio)})` }}
+                        className="h-full rounded-full bg-gradient-to-l from-[#3bc9db] to-[#ffd233] transition-transform duration-200 origin-right"
+                        style={{ transform: `scaleX(${Math.max(0.05, playerXpRatio)})` }}
                       />
                     </div>
                   </div>
-                </div>
-              </div>
 
-              <div className="grid grid-cols-2 sm:flex sm:items-center gap-1 sm:flex-wrap sm:justify-end">
-                <button
-                  type="button"
-                  data-testid="open-skills-btn"
-                  onClick={() => {
-                    soundEngine.playClick();
-                    setActiveModal((m) => (m === 'skills' ? null : 'skills'));
-                  }}
-                  className="pointer-events-auto wood-btn px-2 py-1 rounded-xl text-[#fff8eb] text-[10px] font-extrabold cursor-pointer flex items-center justify-center gap-1"
-                  style={{ textShadow: '0 1px 0 rgba(94, 41, 10, 0.7)' }}
-                >
-                  <SkillStarSvg />
-                  <span>مهارت‌ها</span>
-                  {hud.skillPoints > 0 && (
-                    <span className="px-1 rounded-full bg-[#ffe055] text-[#69320e] text-[9px] font-black tabular-nums">
-                      {toPersianDigits(hud.skillPoints)}
-                    </span>
-                  )}
-                </button>
+                  <div className="w-px h-6 bg-[#dec79c] shrink-0" aria-hidden="true" />
 
-                <button
-                  type="button"
-                  data-testid="open-wildlife-btn"
-                  onClick={() => {
-                    soundEngine.playClick();
-                    setActiveModal((m) => (m === 'wildlife' ? null : 'wildlife'));
-                  }}
-                  className="pointer-events-auto wood-btn px-2 py-1 rounded-xl text-[#fff8eb] text-[10px] font-extrabold cursor-pointer flex items-center justify-center gap-1"
-                  style={{ textShadow: '0 1px 0 rgba(94, 41, 10, 0.7)' }}
-                >
-                  <PawMiniSvg />
-                  <span>
-                    جانوران ({toPersianDigits(hud.discoveredAnimals.length)}/
-                    {toPersianDigits(ANIMAL_SPECIES.length)})
-                  </span>
-                </button>
-
-                <button
-                  type="button"
-                  data-testid="open-workshop-btn"
-                  onClick={() => {
-                    soundEngine.playClick();
-                    setActiveModal((m) => (m === 'workshop' ? null : 'workshop'));
-                  }}
-                  className="pointer-events-auto wood-btn px-2 py-1 rounded-xl text-[#fff8eb] text-[10px] font-extrabold cursor-pointer flex items-center justify-center gap-1"
-                  style={{ textShadow: '0 1px 0 rgba(94, 41, 10, 0.7)' }}
-                >
-                  <FlameMiniSvg />
-                  <span>کارگاه و مبادله</span>
-                </button>
-
-                <div
-                  className="hud-card rounded-xl px-2 py-1 flex items-center justify-center gap-1 text-[10px] font-extrabold text-[#4b3010] truncate max-w-[110px] sm:max-w-none"
-                  data-testid="hud-biome"
-                >
-                  <CompassMiniSvg />
-                  <span className="truncate">{BIOME_LABELS[hud.biome]}</span>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={handleReturnToMenu}
-                  className="pointer-events-auto wood-btn px-2 py-1 rounded-xl text-[#fff8eb] text-[10px] font-extrabold cursor-pointer flex items-center justify-center gap-1"
-                  style={{ textShadow: '0 1px 0 rgba(94, 41, 10, 0.7)' }}
-                >
-                  <HomeMiniSvg />
-                  <span>منو</span>
-                </button>
-              </div>
-            </div>
-            </div>
-
-            {/* Top-Center Stack: World Event Banner + Disaster Challenge Card + Contextual Survival Notice */}
-            {(activeEventInfo || hud.disasterChallenge || survivalNotice) && !activeModal && (
-              <div className="absolute top-[156px] sm:top-[70px] left-1/2 -translate-x-1/2 max-w-[92%] flex flex-col items-center gap-1 pointer-events-none">
-                {activeEventInfo && (
-                  <div
-                    data-testid="world-event-banner"
-                    className={`px-3.5 py-1.5 rounded-2xl shadow-md flex items-center gap-2 text-center border ${
-                      activeEventInfo.tone === 'danger'
-                        ? 'bg-[#fff0ec]/95 text-[#a1220c] border-[#ff7c61]'
-                        : activeEventInfo.tone === 'magic'
-                          ? 'bg-[#ecf8ff]/95 text-[#0e5682] border-[#66c2f5]'
-                          : 'bg-[#fff6dc]/95 text-[#8a4f0a] border-[#ffc44d]'
-                    }`}
-                  >
-                    <SparkMiniSvg />
-                    <div className="flex items-center gap-1.5 text-[11px] font-extrabold whitespace-nowrap">
-                      <span>{activeEventInfo.title}</span>
-                      <span className="px-1.5 py-0.5 rounded-lg bg-white/75 text-[9.5px] font-black tabular-nums">
-                        {hud.eventPhase === 'warning' ? 'هشدار' : 'در جریان'} ·{' '}
-                        {toPersianDigits(hud.eventTimer)} ث
-                      </span>
+                  <div className="flex items-center gap-1.5 min-w-[92px] sm:min-w-[114px]">
+                    <EnergyBoltSvg />
+                    <div className="flex-1 flex flex-col gap-0.5">
+                      <div className="flex items-center justify-between gap-1 text-[10px] font-extrabold text-[#4b3010] whitespace-nowrap">
+                        <span>انرژی</span>
+                        <span className="tabular-nums">
+                          {toPersianDigits(hud.energy)}/{toPersianDigits(hud.maxEnergy)}
+                        </span>
+                      </div>
+                      <div className="w-full h-2 rounded-full wood-well p-[1px] overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-transform duration-200 origin-right ${
+                            energyRatio < 0.28
+                              ? 'bg-gradient-to-l from-[#ff5e3a] to-[#ffb703]'
+                              : 'bg-gradient-to-l from-[#6ee040] to-[#ffd233]'
+                          }`}
+                          style={{ transform: `scaleX(${Math.max(0.04, energyRatio)})` }}
+                        />
+                      </div>
                     </div>
                   </div>
-                )}
+                </div>
 
-                {hud.disasterChallenge && (
-                  <div
-                    data-testid="disaster-challenge-banner"
-                    className={`px-3 py-1 rounded-xl shadow-sm border text-[10.5px] font-extrabold flex items-center gap-2 text-center ${
-                      hud.disasterChallenge.status === 'failed'
-                        ? 'bg-[#fee2e2]/95 text-[#991b1b] border-[#f87171]'
-                        : 'bg-[#fef3c7]/95 text-[#78350f] border-[#f59e0b]'
-                    }`}
+                {/* Compact Animated Toolbar: Workshop, Wildlife, Mute, Menu */}
+                <div className="flex items-center gap-1 sm:gap-1.5">
+                  <button
+                    type="button"
+                    data-testid="open-workshop-btn"
+                    onClick={() => toggleModal('workshop')}
+                    className="pointer-events-auto btn-game btn-wood min-h-[38px] px-2.5 py-1.5 rounded-xl text-[#fff8eb] text-[10.5px] font-extrabold cursor-pointer flex items-center gap-1 whitespace-nowrap shrink-0"
+                    style={{ textShadow: '0 1px 0 rgba(88, 38, 9, 0.7)' }}
+                  >
+                    <FlameMiniSvg className="w-3.5 h-3.5 shrink-0 anim-flame-dance" />
+                    <span>کارگاه</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    data-testid="open-wildlife-btn"
+                    onClick={() => toggleModal('wildlife')}
+                    className="pointer-events-auto btn-game btn-wood min-h-[38px] px-2.5 py-1.5 rounded-xl text-[#fff8eb] text-[10.5px] font-extrabold cursor-pointer flex items-center gap-1 whitespace-nowrap shrink-0"
+                    style={{ textShadow: '0 1px 0 rgba(88, 38, 9, 0.7)' }}
+                  >
+                    <PawMiniSvg className="w-3.5 h-3.5 shrink-0 anim-paw-step" />
+                    <span className="tabular-nums">
+                      {toPersianDigits(hud.discoveredAnimals.length)}/{toPersianDigits(ANIMAL_SPECIES.length)}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    data-testid="open-settings-btn"
+                    onClick={() => toggleModal('settings')}
+                    aria-label="تنظیمات"
+                    title="تنظیمات"
+                    className="pointer-events-auto btn-game btn-wood min-h-[38px] w-9 rounded-xl text-[#fff8eb] cursor-pointer flex items-center justify-center shrink-0"
+                  >
+                    <SettingsGearSvg className="w-4 h-4" />
+                  </button>
+
+                  <button
+                    type="button"
+                    data-testid="toggle-mute-btn"
+                    onClick={handleToggleMute}
+                    aria-label={muted ? 'وصل صدا' : 'قطع صدا'}
+                    title={muted ? 'وصل صدا' : 'قطع صدا'}
+                    className="pointer-events-auto btn-game btn-wood min-h-[38px] w-9 rounded-xl text-[#fff8eb] cursor-pointer flex items-center justify-center shrink-0"
+                  >
+                    <span className={!muted ? 'anim-sound-wave inline-flex' : 'inline-flex'}>
+                      <VolumeIcon muted={muted} />
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleReturnToMenu}
+                    aria-label="منوی اصلی"
+                    title="منوی اصلی"
+                    className="pointer-events-auto btn-game btn-wood min-h-[38px] px-2.5 py-1.5 rounded-xl text-[#fff8eb] text-[10.5px] font-extrabold cursor-pointer flex items-center gap-1 whitespace-nowrap shrink-0"
+                    style={{ textShadow: '0 1px 0 rgba(88, 38, 9, 0.7)' }}
+                  >
+                    <HomeMiniSvg />
+                    <span className="hidden sm:inline">منو</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Row 2: Unified Resource Ribbon + Crisp Unboxed Status Metadata */}
+              <div className="flex flex-col items-start gap-1" data-testid="hud-top-right">
+                <div className="hud-glass-warm rounded-xl px-2.5 py-1 flex items-center gap-2.5 flex-wrap max-w-full">
+                  <HudResourceItem
+                    ref={(el) => {
+                      counterRefs.current.coin = el;
+                    }}
+                    label="سکه"
+                    value={hud.coins}
+                    icon={<CoinSvg />}
+                    accentClass="text-[#a15c07]"
+                  />
+                  <HudResourceItem
+                    ref={(el) => {
+                      counterRefs.current.wood = el;
+                    }}
+                    label="چوب"
+                    value={hud.wood}
+                    icon={<WoodSvg />}
+                  />
+                  <HudResourceItem
+                    ref={(el) => {
+                      counterRefs.current.fish = el;
+                    }}
+                    label="ماهی"
+                    value={hud.fish}
+                    icon={<FishSvg />}
+                  />
+                  <HudResourceItem
+                    ref={(el) => {
+                      counterRefs.current.cookedFish = el;
+                    }}
+                    label="ماهی کبابی"
+                    value={hud.cookedFish}
+                    icon={<CookedFishSvg />}
+                    accentClass="text-[#9e3f08]"
+                  />
+                  <HudResourceItem
+                    ref={(el) => {
+                      counterRefs.current.banana = el;
+                    }}
+                    label="موز"
+                    value={hud.banana}
+                    icon={<BananaSvg />}
+                  />
+                  {hud.roastedBanana > 0 && (
+                    <HudResourceItem
+                      ref={(el) => {
+                        counterRefs.current.roastedBanana = el;
+                      }}
+                      label="موز کبابی"
+                      value={hud.roastedBanana}
+                      icon={<RoastedBananaSvg />}
+                      accentClass="text-[#9e3f08]"
+                    />
+                  )}
+                  {hud.meat > 0 && (
+                    <HudResourceItem
+                      ref={(el) => {
+                        counterRefs.current.meat = el;
+                      }}
+                      label="گوشت خام"
+                      value={hud.meat}
+                      icon={<MeatSvg />}
+                      accentClass="text-[#9b2c1a]"
+                    />
+                  )}
+                  {(hud.cookedMeat > 0 || hud.huntedCount > 0) && (
+                    <HudResourceItem
+                      ref={(el) => {
+                        counterRefs.current.cookedMeat = el;
+                      }}
+                      label="گوشت کبابی"
+                      value={hud.cookedMeat}
+                      icon={<CookedMeatSvg />}
+                      accentClass="text-[#9e3f08]"
+                    />
+                  )}
+                  <HudResourceItem
+                    ref={(el) => {
+                      counterRefs.current.berries = el;
+                    }}
+                    label="توت"
+                    value={hud.berries}
+                    icon={<BerrySvg />}
+                  />
+                  <HudResourceItem
+                    ref={(el) => {
+                      counterRefs.current.shell = el;
+                    }}
+                    label="صدف"
+                    value={hud.shells}
+                    icon={<ShellSvg />}
+                  />
+                </div>
+
+                {/* Unboxed Status Metadata Strip (Zero-Pill Rule) */}
+                <div
+                  className="px-1.5 flex items-center gap-x-2 gap-y-0.5 flex-wrap text-[10.5px] font-bold text-[#fffdf5]"
+                  style={{ textShadow: '0 1px 4px rgba(5, 28, 52, 0.85)' }}
+                >
+                  <span className="inline-flex items-center gap-1 whitespace-nowrap" data-testid="hud-day-weather">
+                    <PhaseWeatherIcon phase={hud.phase} weather={hud.weather} />
+                    <span>
+                      روز {toPersianDigits(hud.dayCount)} · {PHASE_LABELS[hud.phase]} ·{' '}
+                      {WEATHER_LABELS[hud.weather]}
+                    </span>
+                  </span>
+
+                  <span className="opacity-65">·</span>
+
+                  <span className="inline-flex items-center gap-1 whitespace-nowrap" data-testid="hud-biome">
+                    <CompassMiniSvg className="w-3.5 h-3.5 shrink-0 anim-compass-wiggle" />
+                    <span>{BIOME_LABELS[hud.biome]}</span>
+                  </span>
+
+                  <span className="opacity-65">·</span>
+
+                  <span
+                    className="inline-flex items-center gap-1 tabular-nums whitespace-nowrap"
+                    data-testid="hud-secrets-badge"
+                  >
+                    <SecretChestMiniSvg />
+                    <span>
+                      اسرار {toPersianDigits(hud.secretsFound)}/{toPersianDigits(hud.secretsTotal)}
+                    </span>
+                  </span>
+
+                  <span className="opacity-65">·</span>
+
+                  <span
+                    className="inline-flex items-center gap-1 tabular-nums whitespace-nowrap text-[#e0f2fe]"
+                    data-testid="hud-mysteries-badge"
                   >
                     <span>
-                      {hud.disasterChallenge.titleFa}: {hud.disasterChallenge.goalFa}
+                      مرموز {toPersianDigits(hud.mysteriesFound)}/{toPersianDigits(hud.mysteriesTotal)}
                     </span>
-                    <span className="px-1.5 py-0.5 rounded-md bg-white/80 text-[9.5px] tabular-nums shrink-0">
-                      {hud.disasterChallenge.status === 'failed'
-                        ? 'آسیب دیده'
-                        : `+${toPersianDigits(hud.disasterChallenge.rewardCoins)} سکه و ۱ امتیاز`}
-                    </span>
-                  </div>
-                )}
+                  </span>
 
-                {survivalNotice && (
-                  <div
-                    data-testid="survival-notice"
-                    className={`px-3.5 py-1 rounded-full text-[11px] font-extrabold shadow-md text-center whitespace-nowrap overflow-hidden text-ellipsis max-w-full ${
-                      survivalNotice.tone === 'warn'
-                        ? 'bg-[#fff0e0]/95 text-[#b5380d] border border-[#ffb370]'
-                        : 'bg-[#fff7dc]/95 text-[#8a4f0a] border border-[#ffd670]'
+                  <span className="opacity-65">·</span>
+
+                  <span
+                    className={`tabular-nums whitespace-nowrap ${
+                      hud.templeRelicClaimed
+                        ? 'text-[#fde68a]'
+                        : hud.bonesFound >= hud.bonesTotal
+                          ? 'text-[#5eead4]'
+                          : ''
                     }`}
+                    data-testid="hud-bones-badge"
                   >
-                    {survivalNotice.text}
-                  </div>
-                )}
-              </div>
-            )}
+                    {hud.templeRelicClaimed
+                      ? 'گنج معبد یافت شد'
+                      : hud.bonesFound >= hud.bonesTotal
+                        ? '۴/۴ استخوان · معبد آماده!'
+                        : `استخوان ${toPersianDigits(hud.bonesFound)}/${toPersianDigits(hud.bonesTotal)}`}
+                  </span>
 
-            {/* Bottom-Left: Weapon Bar + Backpack Capacity */}
+                  {(isWetWeather || hud.groundWetness >= 0.35) && (
+                    <span className="text-[#bae6fd] whitespace-nowrap" data-testid="hud-weather-effect">
+                      · {hud.weather === 'storm' ? 'توفان (صید ۲×)' : 'زمین خیس'}
+                    </span>
+                  )}
+
+                  {hud.season !== 'summer' && (
+                    <span
+                      className={`inline-flex items-center gap-1 whitespace-nowrap ${
+                        hud.season === 'autumn' ? 'text-[#fed7aa]' : 'text-[#bae6fd]'
+                      }`}
+                      data-testid="hud-season-badge"
+                    >
+                      · <SeasonMiniSvg season={hud.season} />
+                      <span>{hud.season === 'autumn' ? 'پاییز' : 'زمستان'}</span>
+                    </span>
+                  )}
+
+                  {hud.isSwimming && (
+                    <span className="text-[#7dd3fc] whitespace-nowrap" data-testid="hud-swim-badge">
+                      · در حال شنا
+                    </span>
+                  )}
+
+                  {hud.hasSpear && (
+                    <span
+                      className={`inline-flex items-center gap-1 whitespace-nowrap ${
+                        hud.hasFireSpear ? 'text-[#fdba74]' : ''
+                      }`}
+                      data-testid="hud-spear-badge"
+                    >
+                      · {hud.hasFireSpear ? 'نیزه آتشین' : 'نیزه'}
+                    </span>
+                  )}
+
+                  {hud.buildings.boat && (
+                    <span className="text-[#bae6fd] whitespace-nowrap" data-testid="hud-boat-badge">
+                      ·{' '}
+                      {hud.playerLevel >= CONFIG.SURVIVAL.VICTORY_MIN_LEVEL
+                        ? 'قایق آماده بازگشت'
+                        : `قایق (سطح ${toPersianDigits(CONFIG.SURVIVAL.VICTORY_MIN_LEVEL)})`}
+                    </span>
+                  )}
+
+                  {hud.venomTimer > 0 && (
+                    <span
+                      className="text-[#86efac] font-black tabular-nums whitespace-nowrap"
+                      data-testid="hud-venom-badge"
+                    >
+                      · مسموم {toPersianDigits(hud.venomTimer)} ث
+                    </span>
+                  )}
+
+                  {hud.shellArmorCharges > 0 && (
+                    <span className="text-[#7dd3fc] tabular-nums whitespace-nowrap">
+                      · سپر صدف ×{toPersianDigits(hud.shellArmorCharges)}
+                    </span>
+                  )}
+                  {hud.elixirTimer > 0 && (
+                    <span className="text-[#e9d5ff] tabular-nums whitespace-nowrap">
+                      · چابکی {toPersianDigits(hud.elixirTimer)} ث
+                    </span>
+                  )}
+                  {hud.torchTimer > 0 && (
+                    <span className="text-[#fed7aa] tabular-nums whitespace-nowrap">
+                      · مشعل {toPersianDigits(hud.torchTimer)} ث
+                    </span>
+                  )}
+                  {hud.baitCharges > 0 && (
+                    <span className="text-[#fde68a] tabular-nums whitespace-nowrap">
+                      · طعمه ×{toPersianDigits(hud.baitCharges)}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Event / Disaster Challenge / Notice Stack (in natural flow -> NEVER overlaps header!) */}
+              {(activeEventInfo || hud.disasterChallenge || survivalNotice) && !activeModal && (
+                <div className="self-center max-w-[94%] sm:max-w-[520px] flex flex-col items-center gap-1 mt-0.5">
+                  {activeEventInfo && (
+                    <div
+                      data-testid="world-event-banner"
+                      className={`px-3.5 py-1 rounded-xl shadow-md flex items-center gap-2 text-center border ${
+                        activeEventInfo.tone === 'danger'
+                          ? 'bg-[#fff0ec]/95 text-[#991b1b] border-[#fca5a5]'
+                          : activeEventInfo.tone === 'magic'
+                            ? 'bg-[#ecf8ff]/95 text-[#0e5682] border-[#7dd3fc]'
+                            : 'bg-[#fff7dc]/95 text-[#8a4f0a] border-[#fcd34d]'
+                      }`}
+                    >
+                      <SparkMiniSvg />
+                      <div className="flex items-center gap-1.5 text-[11px] font-extrabold whitespace-nowrap">
+                        <span>{activeEventInfo.title}</span>
+                        <span className="px-1.5 py-0.5 rounded-md bg-white/75 text-[9.5px] font-black tabular-nums">
+                          {hud.eventPhase === 'warning' ? 'هشدار' : 'در جریان'} ·{' '}
+                          {toPersianDigits(hud.eventTimer)} ث
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {hud.disasterChallenge && (
+                    <div
+                      data-testid="disaster-challenge-banner"
+                      className={`px-3 py-1 rounded-xl shadow-sm border text-[10.5px] font-extrabold flex items-center gap-2 text-center ${
+                        hud.disasterChallenge.status === 'failed'
+                          ? 'bg-[#fee2e2]/95 text-[#991b1b] border-[#fca5a5]'
+                          : 'bg-[#fef3c7]/95 text-[#78350f] border-[#fbbf24]'
+                      }`}
+                    >
+                      <span>
+                        {hud.disasterChallenge.titleFa}: {hud.disasterChallenge.goalFa}
+                      </span>
+                      <span className="px-1.5 py-0.5 rounded-md bg-white/80 text-[9.5px] tabular-nums shrink-0">
+                        {hud.disasterChallenge.status === 'failed'
+                          ? 'آسیب دیده'
+                          : `+${toPersianDigits(hud.disasterChallenge.rewardCoins)} سکه`}
+                      </span>
+                    </div>
+                  )}
+
+                  {survivalNotice && (
+                    <div
+                      data-testid="survival-notice"
+                      className={`px-3.5 py-1 rounded-xl text-[11px] font-bold shadow-md text-center max-w-full truncate ${
+                        survivalNotice.tone === 'warn'
+                          ? 'bg-[#7c1d13]/90 text-[#fff5f2] border border-[#fca5a5]/50'
+                          : 'bg-[#0e263d]/86 text-[#fff9e6] border border-white/20'
+                      }`}
+                    >
+                      {survivalNotice.text}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Bottom-Left: Weapon Dock with Per-Weapon Animations + Backpack Meter */}
             <div
-              className="absolute bottom-3.5 left-3 flex flex-col items-end gap-1.5"
+              className="absolute bottom-3 left-2.5 sm:bottom-3.5 sm:left-3 flex flex-col items-end gap-1.5"
               data-testid="hud-bottom-left"
             >
-              {/* Upgradable 4-Weapon Bar */}
               <div
-                className="pointer-events-auto hud-card rounded-2xl p-1 grid grid-cols-2 sm:flex sm:items-center gap-1"
+                className="pointer-events-auto hud-glass-warm rounded-2xl p-1 grid grid-cols-2 sm:flex sm:items-center gap-1"
                 data-testid="weapon-bar"
               >
                 {CONFIG.WEAPON_SPECS.map((spec) => {
@@ -1358,7 +1434,7 @@ export default function App() {
                   const canUpgrade =
                     unlocked &&
                     lvl < CONFIG.SURVIVAL.MAX_WEAPON_LEVEL &&
-                    (hud.skillPoints > 0 || hud.wood >= CONFIG.SURVIVAL.WEAPON_UPGRADE_WOOD_COST);
+                    hud.wood >= CONFIG.SURVIVAL.WEAPON_UPGRADE_WOOD_COST;
                   const lockHint =
                     spec.id === 'spear'
                       ? '۲ چوب'
@@ -1376,7 +1452,7 @@ export default function App() {
                           } else if (spec.id === 'spear' && hud.canCraftSpear) {
                             handleCraftSpear();
                           } else {
-                            soundEngine.playClick();
+                            soundEngine.playError();
                             showToast(
                               spec.id === 'spear'
                                 ? 'برای ساخت نیزه ۲ چوب لازم است'
@@ -1384,16 +1460,24 @@ export default function App() {
                             );
                           }
                         }}
-                        className={`px-1.5 py-1 rounded-xl flex flex-col gap-0.5 text-[10px] font-extrabold transition-all cursor-pointer ${
+                        className={`btn-game px-2 py-1 rounded-xl flex flex-col gap-0.5 text-[10px] font-extrabold cursor-pointer whitespace-nowrap ${
                           active
-                            ? 'wood-btn-primary text-white'
+                            ? 'btn-primary-amber text-white'
                             : unlocked
                               ? 'bg-[#fff9e8] text-[#4b3010] hover:bg-[#ffefc9]'
                               : 'bg-[#ead9bc]/75 text-[#8b6f47]'
                         }`}
                       >
                         <div className="flex items-center gap-1">
-                          <WeaponMiniSvg id={spec.id} fireSpear={hud.hasFireSpear} />
+                          <span
+                            className={
+                              active || unlocked
+                                ? `${WEAPON_ANIM_CLASS[spec.id]} inline-flex`
+                                : 'inline-flex'
+                            }
+                          >
+                            <WeaponMiniSvg id={spec.id} fireSpear={hud.hasFireSpear} />
+                          </span>
                           <span className="hidden sm:inline">{spec.nameFa}</span>
                           <span
                             className={`text-[9px] tabular-nums px-1 rounded-md ${
@@ -1434,8 +1518,8 @@ export default function App() {
                           type="button"
                           data-testid={`upgrade-weapon-${spec.id}`}
                           onClick={() => handleUpgradeWeapon(spec.id)}
-                          title={`ارتقای ${spec.nameFa} (۱ امتیاز یا ${toPersianDigits(CONFIG.SURVIVAL.WEAPON_UPGRADE_WOOD_COST)} چوب)`}
-                          className="w-5 h-5 rounded-lg bg-[#27a347] hover:bg-[#2eb852] text-white text-xs font-black flex items-center justify-center cursor-pointer shadow-sm"
+                          title={`ارتقای ${spec.nameFa} (${toPersianDigits(CONFIG.SURVIVAL.WEAPON_UPGRADE_WOOD_COST)} چوب)`}
+                          className="btn-game btn-emerald anim-upgrade-bounce w-6 h-6 rounded-lg text-white text-xs font-black flex items-center justify-center cursor-pointer"
                         >
                           +
                         </button>
@@ -1446,30 +1530,30 @@ export default function App() {
               </div>
 
               <div
-                className={`hud-card rounded-2xl px-2.5 py-1.5 flex items-center gap-2 ${
+                className={`hud-glass-warm rounded-xl px-2.5 py-1.5 flex items-center gap-2 ${
                   backpackFull ? 'ring-2 ring-[#ff7b29]' : ''
                 }`}
               >
                 <BackpackSvg />
-                <div className="flex flex-col leading-tight">
-                  <span className="text-[10px] font-bold text-[#755326]">
+                <div className="flex items-center gap-1.5 leading-tight whitespace-nowrap">
+                  <span className="text-[10.5px] font-bold text-[#6e4c21]">
                     {backpackFull ? 'کوله پر شد!' : 'کوله'}
                   </span>
                   <span
                     dir="ltr"
-                    className={`text-xs font-extrabold tabular-nums ${
+                    className={`text-xs font-black tabular-nums ${
                       backpackFull ? 'text-[#c9410e]' : 'text-[#3d2508]'
                     }`}
                   >
-                    {toPersianDigits(hud.backpackUsed)} / {toPersianDigits(hud.backpackCapacity)}
+                    {toPersianDigits(hud.backpackUsed)}/{toPersianDigits(hud.backpackCapacity)}
                   </span>
                 </div>
               </div>
             </div>
 
-            {/* Bottom-Right (above enlarged thumb joystick): Contextual Survival Actions */}
+            {/* Bottom-Right (above Virtual Joystick): Contextual Survival Actions with Bespoke Animations */}
             <div
-              className="absolute bottom-[204px] sm:bottom-[224px] right-3 flex flex-col items-start gap-1.5 max-w-[228px] sm:max-w-[300px]"
+              className="absolute bottom-[198px] sm:bottom-[220px] right-2.5 sm:right-3 flex flex-col items-start gap-1.5 max-w-[240px] sm:max-w-[310px]"
               data-testid="hud-bottom-right"
             >
               {hud.canVictoryVoyage && (
@@ -1477,10 +1561,10 @@ export default function App() {
                   type="button"
                   data-testid="victory-voyage-btn"
                   onClick={handleVictoryVoyage}
-                  className="pointer-events-auto wood-btn-primary px-3 py-2 rounded-2xl text-white text-[11.5px] font-extrabold cursor-pointer flex items-center gap-2"
-                  style={{ textShadow: '0 1px 0 rgba(153, 62, 6, 0.75)' }}
+                  className="pointer-events-auto btn-game btn-primary-amber anim-btn-sheen min-h-[44px] px-3.5 py-2 rounded-xl text-white text-xs font-extrabold cursor-pointer flex items-center gap-2 whitespace-nowrap"
+                  style={{ textShadow: '0 1px 1px rgba(145, 58, 5, 0.7)' }}
                 >
-                  <BoatMiniSvg />
+                  <BoatMiniSvg className="w-4 h-4 shrink-0 anim-boat-rock" />
                   <span>سفر پیروزمندانه به خانه</span>
                 </button>
               )}
@@ -1490,14 +1574,16 @@ export default function App() {
                   type="button"
                   data-testid="eat-food-btn"
                   onClick={handleEatFood}
-                  className="pointer-events-auto wood-btn-primary px-2.5 py-1.5 rounded-xl text-white text-[11px] font-extrabold cursor-pointer flex items-center gap-1.5"
-                  style={{ textShadow: '0 1px 0 rgba(153, 62, 6, 0.7)' }}
+                  className="pointer-events-auto btn-game btn-primary-amber min-h-[42px] px-3 py-1.5 rounded-xl text-white text-[11px] font-extrabold cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
+                  style={{ textShadow: '0 1px 0 rgba(145, 58, 5, 0.7)' }}
                 >
-                  {hud.bestFoodKind === 'cookedMeat' && <CookedMeatSvg />}
-                  {hud.bestFoodKind === 'roastedBanana' && <RoastedBananaSvg />}
-                  {hud.bestFoodKind === 'cookedFish' && <CookedFishSvg />}
-                  {hud.bestFoodKind === 'banana' && <BananaSvg />}
-                  {hud.bestFoodKind === 'berries' && <BerrySvg />}
+                  <span className="anim-steam-wisp inline-flex shrink-0">
+                    {hud.bestFoodKind === 'cookedMeat' && <CookedMeatSvg />}
+                    {hud.bestFoodKind === 'roastedBanana' && <RoastedBananaSvg />}
+                    {hud.bestFoodKind === 'cookedFish' && <CookedFishSvg />}
+                    {hud.bestFoodKind === 'banana' && <BananaSvg />}
+                    {hud.bestFoodKind === 'berries' && <BerrySvg />}
+                  </span>
                   <span>
                     {hud.bestFoodKind === 'cookedMeat'
                       ? `گوشت کبابی (+${toPersianDigits(CONFIG.SURVIVAL.COOKED_MEAT_ENERGY_RESTORE)})`
@@ -1518,13 +1604,15 @@ export default function App() {
                   data-testid="craft-spear-btn"
                   disabled={!hud.canCraftSpear}
                   onClick={handleCraftSpear}
-                  className={`pointer-events-auto px-2.5 py-1.5 rounded-xl text-[11px] font-extrabold flex items-center gap-1.5 transition-all ${
+                  className={`pointer-events-auto btn-game min-h-[42px] px-3 py-1.5 rounded-xl text-[11px] font-extrabold flex items-center gap-1.5 whitespace-nowrap ${
                     hud.canCraftSpear
-                      ? 'wood-btn-primary text-white cursor-pointer'
-                      : 'hud-card text-[#7a5a32] opacity-80 cursor-not-allowed'
+                      ? 'btn-primary-amber text-white cursor-pointer'
+                      : 'hud-glass-warm text-[#7a5a32] opacity-80 cursor-not-allowed'
                   }`}
                 >
-                  <SpearMiniSvg fire={false} />
+                  <span className={hud.canCraftSpear ? 'anim-spear-jab inline-flex' : 'inline-flex'}>
+                    <SpearMiniSvg fire={false} />
+                  </span>
                   <span>
                     ساخت نیزه ({toPersianDigits(CONFIG.SURVIVAL.SPEAR_CRAFT_WOOD_COST)} چوب)
                   </span>
@@ -1536,15 +1624,28 @@ export default function App() {
                   type="button"
                   data-testid="quick-interact-btn"
                   onClick={handleInteract}
-                  className={`pointer-events-auto px-3 py-2 rounded-2xl text-white text-[11.5px] font-extrabold cursor-pointer flex items-center gap-1.5 shadow-lg ${
-                    hud.focusedTarget.kind === 'prey' &&
-                    (hud.focusedTarget.action === 'hunt' || hud.focusedTarget.action === 'bow_hunt')
-                      ? 'bg-gradient-to-b from-[#ef4444] to-[#b91c1c] border-2 border-[#fecaca]'
-                      : 'wood-btn-primary'
+                  className={`pointer-events-auto btn-game min-h-[44px] px-3.5 py-2 rounded-xl text-white text-[11.5px] font-extrabold cursor-pointer flex items-center gap-2 whitespace-nowrap ${
+                    quickIsCombat
+                      ? 'btn-crimson'
+                      : quickIsSecretOrMystery
+                        ? 'btn-violet'
+                        : 'btn-primary-amber'
                   }`}
-                  style={{ textShadow: '0 1px 0 rgba(120, 20, 10, 0.75)' }}
+                  style={{ textShadow: '0 1px 1px rgba(40, 12, 12, 0.55)' }}
                 >
-                  <SparkMiniSvg />
+                  {quickIsCombat ? (
+                    <span className="anim-attack-pulse inline-flex shrink-0">
+                      <WeaponMiniSvg id={hud.equippedWeapon} fireSpear={hud.hasFireSpear} />
+                    </span>
+                  ) : quickIsSecretOrMystery ? (
+                    <span className="anim-chest-wiggle inline-flex shrink-0">
+                      <SecretChestMiniSvg />
+                    </span>
+                  ) : (
+                    <span className="anim-star-twinkle inline-flex shrink-0">
+                      <SparkMiniSvg />
+                    </span>
+                  )}
                   <span>{hud.focusedTarget.labelFa} (F)</span>
                 </button>
               )}
@@ -1554,8 +1655,9 @@ export default function App() {
                   type="button"
                   data-testid="use-antidote-btn"
                   onClick={handleUseAntidote}
-                  className="pointer-events-auto px-3 py-1.5 rounded-xl bg-[#16a34a] hover:bg-[#15803d] text-white text-[11px] font-extrabold cursor-pointer flex items-center gap-1.5 shadow-md"
+                  className="pointer-events-auto btn-game btn-emerald min-h-[42px] px-3 py-1.5 rounded-xl text-white text-[11px] font-extrabold cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
                 >
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#bbf7d0] anim-potion-pulse shrink-0" />
                   <span>استفاده از پادزهر ({toPersianDigits(hud.antidotes)})</span>
                 </button>
               )}
@@ -1566,13 +1668,13 @@ export default function App() {
                   data-testid="light-fire-btn"
                   disabled={!hud.canIgniteFire}
                   onClick={handleLightFire}
-                  className={`pointer-events-auto px-3 py-2 rounded-xl text-[11.5px] font-extrabold flex items-center gap-1.5 transition-all ${
+                  className={`pointer-events-auto btn-game min-h-[44px] px-3.5 py-2 rounded-xl text-[11.5px] font-extrabold flex items-center gap-1.5 whitespace-nowrap ${
                     hud.canIgniteFire
-                      ? 'wood-btn-primary text-white cursor-pointer'
-                      : 'hud-card text-[#7a5a32] opacity-80 cursor-not-allowed'
+                      ? 'btn-primary-amber anim-btn-sheen text-white cursor-pointer'
+                      : 'hud-glass-warm text-[#7a5a32] opacity-85 cursor-not-allowed'
                   }`}
                 >
-                  <FlameMiniSvg />
+                  <FlameMiniSvg className="w-4 h-4 shrink-0 anim-flame-dance" />
                   <span>
                     روشن کردن آتش کمپ ({toPersianDigits(CONFIG.SURVIVAL.FIRE_IGNITE_WOOD_COST)} چوب)
                   </span>
@@ -1585,13 +1687,13 @@ export default function App() {
                   data-testid="stoke-fire-btn"
                   disabled={!hud.canStokeFire}
                   onClick={handleStokeFire}
-                  className={`pointer-events-auto px-2.5 py-1.5 rounded-xl text-[11px] font-extrabold flex items-center gap-1.5 transition-all ${
+                  className={`pointer-events-auto btn-game min-h-[42px] px-3 py-1.5 rounded-xl text-[11px] font-extrabold flex items-center gap-1.5 whitespace-nowrap ${
                     hud.canStokeFire
-                      ? 'wood-btn-primary text-white cursor-pointer'
-                      : 'hud-card text-[#7a5a32] opacity-80 cursor-not-allowed'
+                      ? 'btn-primary-amber text-white cursor-pointer'
+                      : 'hud-glass-warm text-[#7a5a32] opacity-85 cursor-not-allowed'
                   }`}
                 >
-                  <FlameMiniSvg />
+                  <FlameMiniSvg className="w-3.5 h-3.5 shrink-0 anim-flame-dance" />
                   <span>
                     چوب در آتش (سطح {toPersianDigits(hud.fireLevel + 1)} ·{' '}
                     {toPersianDigits(CONFIG.SURVIVAL.FIRE_FUEL_WOOD_COST)} چوب)
@@ -1606,13 +1708,13 @@ export default function App() {
                     data-testid="landmark-power-btn"
                     disabled={hud.nearbyLandmark.cooldown > 0}
                     onClick={() => handleTriggerLandmark(hud.nearbyLandmark!.id)}
-                    className={`pointer-events-auto px-2.5 py-1.5 rounded-xl text-[11px] font-extrabold flex items-center gap-1.5 transition-all ${
+                    className={`pointer-events-auto btn-game min-h-[42px] px-3 py-1.5 rounded-xl text-[11px] font-extrabold flex items-center gap-1.5 whitespace-nowrap ${
                       hud.nearbyLandmark.cooldown <= 0
-                        ? 'wood-btn-primary text-white cursor-pointer'
-                        : 'hud-card text-[#7a5a32] opacity-85 cursor-not-allowed'
+                        ? 'btn-ocean text-white cursor-pointer'
+                        : 'hud-glass-warm text-[#7a5a32] opacity-85 cursor-not-allowed'
                     }`}
                   >
-                    <SparkMiniSvg />
+                    <SparkMiniSvg className="w-3.5 h-3.5 shrink-0 anim-star-twinkle" />
                     <span>
                       {hud.nearbyLandmark.cooldown <= 0
                         ? LANDMARK_ACTION_LABELS[hud.nearbyLandmark.id]
@@ -1625,13 +1727,13 @@ export default function App() {
                     data-testid="landmark-special-btn"
                     disabled={hud.nearbyLandmark.specialCooldown > 0}
                     onClick={() => handleTriggerLandmarkSpecial(hud.nearbyLandmark!.id)}
-                    className={`pointer-events-auto px-2.5 py-1.5 rounded-xl text-[10.5px] font-extrabold flex items-center gap-1.5 transition-all ${
+                    className={`pointer-events-auto btn-game min-h-[40px] px-3 py-1.5 rounded-xl text-[10.5px] font-extrabold flex items-center gap-1.5 whitespace-nowrap ${
                       hud.nearbyLandmark.specialCooldown <= 0
-                        ? 'wood-btn text-[#fff8eb] cursor-pointer'
-                        : 'hud-card text-[#7a5a32] opacity-85 cursor-not-allowed'
+                        ? 'btn-wood text-[#fff8eb] cursor-pointer'
+                        : 'hud-glass-warm text-[#7a5a32] opacity-85 cursor-not-allowed'
                     }`}
                   >
-                    <CompassMiniSvg />
+                    <CompassMiniSvg className="w-3.5 h-3.5 shrink-0 anim-compass-wiggle" />
                     <span>
                       {hud.nearbyLandmark.specialCooldown <= 0
                         ? LANDMARK_SPECIAL_LABELS[hud.nearbyLandmark.id]
@@ -1644,108 +1746,23 @@ export default function App() {
           </div>
         )}
 
-        {/* Skill Tree Modal (درخت مهارت) */}
-        {screen === 'playing' && activeModal === 'skills' && (
-          <div
-            className="absolute inset-0 z-40 flex items-center justify-center p-3 bg-[#092842]/55"
-            onClick={() => setActiveModal(null)}
-            data-testid="skills-modal"
-          >
-            <div
-              className="hud-card w-full max-w-[440px] max-h-[86vh] rounded-3xl p-4 flex flex-col gap-3 overflow-hidden text-[#3d2508]"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <h2 className="text-base font-extrabold">درخت مهارت بقا</h2>
-                  <p className="text-[11px] font-bold text-[#755326]">
-                    امتیاز مهارت: {toPersianDigits(hud.skillPoints)} · تجربه:{' '}
-                    {toPersianDigits(hud.xp)}/{toPersianDigits(CONFIG.SURVIVAL.XP_PER_SKILL_POINT)}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  data-testid="close-modal-btn"
-                  onClick={() => {
-                    soundEngine.playClick();
-                    setActiveModal(null);
-                  }}
-                  className="wood-btn px-3 py-1.5 rounded-xl text-[#fff8eb] text-xs font-extrabold cursor-pointer"
-                >
-                  بستن
-                </button>
-              </div>
-
-              <div className="flex flex-col gap-2 overflow-y-auto pr-0.5">
-                {CONFIG.SKILL_TREE.map((spec) => {
-                  const lvl = hud.skills[spec.id];
-                  const maxed = lvl >= spec.maxLevel;
-                  const canAfford = !maxed && (hud.skillPoints > 0 || hud.wood >= spec.woodCost);
-                  return (
-                    <div
-                      key={spec.id}
-                      className="rounded-2xl bg-white/80 border border-[#e6cda1] p-2.5 flex items-center justify-between gap-2"
-                    >
-                      <div className="flex flex-col gap-0.5 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-extrabold text-[#3d2508]">{spec.name}</span>
-                          <div className="flex items-center gap-1">
-                            {Array.from({ length: spec.maxLevel }).map((_, idx) => (
-                              <span
-                                key={idx}
-                                className={`w-2.5 h-2.5 rounded-full ${
-                                  idx < lvl ? 'bg-[#f5941d]' : 'bg-[#e3cfa8]'
-                                }`}
-                              />
-                            ))}
-                          </div>
-                        </div>
-                        <p className="text-[10px] font-bold text-[#6e4e24] leading-snug">
-                          {spec.desc}
-                        </p>
-                      </div>
-
-                      <button
-                        type="button"
-                        data-testid={`upgrade-skill-${spec.id}`}
-                        disabled={!canAfford}
-                        onClick={() => handleUpgradeSkill(spec.id)}
-                        className={`shrink-0 px-3 py-1.5 rounded-xl text-[11px] font-extrabold transition-all ${
-                          maxed
-                            ? 'bg-[#d9ebc4] text-[#3c6e18] cursor-default'
-                            : canAfford
-                              ? 'wood-btn-primary text-white cursor-pointer'
-                              : 'bg-[#ead9bc] text-[#8d704a] cursor-not-allowed'
-                        }`}
-                      >
-                        {maxed
-                          ? 'تکمیل'
-                          : hud.skillPoints > 0
-                            ? 'ارتقا (۱ امتیاز)'
-                            : `ارتقا (${toPersianDigits(spec.woodCost)} چوب)`}
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Camp Workshop & Resource Exchange Modal (کارگاه و مبادله منابع) */}
+        {/* Camp Workshop & Resource Exchange Modal */}
         {screen === 'playing' && activeModal === 'workshop' && (
           <div
-            className="absolute inset-0 z-40 flex items-center justify-center p-3 bg-[#092842]/55"
-            onClick={() => setActiveModal(null)}
+            className="absolute inset-0 z-40 flex items-center justify-center p-3 bg-[#082238]/60"
+            onClick={() => {
+              soundEngine.playModalClose();
+              setActiveModal(null);
+            }}
             data-testid="workshop-modal"
           >
             <div
-              className="hud-card w-full max-w-[460px] max-h-[86vh] rounded-3xl p-4 flex flex-col gap-3 overflow-hidden text-[#3d2508]"
+              className="hud-card anim-modal-in w-full max-w-[460px] max-h-[86vh] rounded-3xl p-4 flex flex-col gap-3 overflow-hidden text-[#3d2508]"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-center justify-between gap-2">
                 <div>
-                  <h2 className="text-base font-extrabold">کارگاه و مبادله منابع کمپ</h2>
+                  <h2 className="font-display text-xl leading-tight">کارگاه و مبادله منابع</h2>
                   <p className="text-[11px] font-bold text-[#755326] tabular-nums">
                     سکه: {toPersianDigits(hud.coins)} · چوب: {toPersianDigits(hud.wood)} · موز:{' '}
                     {toPersianDigits(hud.banana)} · توت: {toPersianDigits(hud.berries)} · صدف:{' '}
@@ -1756,10 +1773,10 @@ export default function App() {
                   type="button"
                   data-testid="close-modal-btn"
                   onClick={() => {
-                    soundEngine.playClick();
+                    soundEngine.playModalClose();
                     setActiveModal(null);
                   }}
-                  className="wood-btn px-3 py-1.5 rounded-xl text-[#fff8eb] text-xs font-extrabold cursor-pointer"
+                  className="btn-game btn-wood min-h-[38px] px-3.5 py-1.5 rounded-xl text-[#fff8eb] text-xs font-extrabold cursor-pointer"
                 >
                   بستن
                 </button>
@@ -1774,11 +1791,11 @@ export default function App() {
                     <div className="flex flex-col gap-0.5 flex-1">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-xs font-extrabold text-[#3d2508]">{recipe.nameFa}</span>
-                        <span className="px-2 py-0.5 rounded-lg bg-[#fef3c7] text-[#92400e] text-[9.5px] font-extrabold">
+                        <span className="px-2 py-0.5 rounded-md bg-[#fef3c7] text-[#92400e] text-[9.5px] font-extrabold">
                           {recipe.costFa}
                         </span>
                       </div>
-                      <p className="text-[10px] font-bold text-[#6e4e24] leading-snug">
+                      <p className="text-[10.5px] font-semibold text-[#6e4e24] leading-snug">
                         {recipe.effectFa}
                       </p>
                     </div>
@@ -1786,7 +1803,7 @@ export default function App() {
                       type="button"
                       data-testid={`craft-${recipe.id}`}
                       onClick={() => handleCraftWorkshop(recipe.id)}
-                      className="shrink-0 wood-btn-primary px-3 py-1.5 rounded-xl text-white text-[11px] font-extrabold cursor-pointer"
+                      className="btn-game btn-primary-amber shrink-0 min-h-[38px] px-3.5 py-1.5 rounded-xl text-white text-[11px] font-extrabold cursor-pointer whitespace-nowrap"
                     >
                       ساخت
                     </button>
@@ -1797,33 +1814,36 @@ export default function App() {
           </div>
         )}
 
-        {/* Wildlife Field Guide Modal (۳۲ گونه جانور جزیره) */}
+        {/* Wildlife Field Guide Modal */}
         {screen === 'playing' && activeModal === 'wildlife' && (
           <div
-            className="absolute inset-0 z-40 flex items-center justify-center p-3 bg-[#092842]/55"
-            onClick={() => setActiveModal(null)}
+            className="absolute inset-0 z-40 flex items-center justify-center p-3 bg-[#082238]/60"
+            onClick={() => {
+              soundEngine.playModalClose();
+              setActiveModal(null);
+            }}
             data-testid="wildlife-modal"
           >
             <div
-              className="hud-card w-full max-w-[520px] max-h-[86vh] rounded-3xl p-4 flex flex-col gap-2.5 overflow-hidden text-[#3d2508]"
+              className="hud-card anim-modal-in w-full max-w-[520px] max-h-[86vh] rounded-3xl p-4 flex flex-col gap-2.5 overflow-hidden text-[#3d2508]"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-center justify-between gap-2">
                 <div>
-                  <h2 className="text-base font-extrabold">دانشنامه جانوران جزیره</h2>
-                  <p className="text-[11px] font-bold text-[#755326]">
+                  <h2 className="font-display text-xl leading-tight">دانشنامه جانوران جزیره</h2>
+                  <p className="text-[11px] font-bold text-[#755326] tabular-nums">
                     {toPersianDigits(hud.discoveredAnimals.length)} از{' '}
-                    {toPersianDigits(ANIMAL_SPECIES.length)} گونه مشاهده شده (روزگرد، ساحلی، شکارچی شب، اسرارآمیز)
+                    {toPersianDigits(ANIMAL_SPECIES.length)} گونه مشاهده شده
                   </p>
                 </div>
                 <button
                   type="button"
                   data-testid="close-modal-btn"
                   onClick={() => {
-                    soundEngine.playClick();
+                    soundEngine.playModalClose();
                     setActiveModal(null);
                   }}
-                  className="wood-btn px-3 py-1.5 rounded-xl text-[#fff8eb] text-xs font-extrabold cursor-pointer"
+                  className="btn-game btn-wood min-h-[38px] px-3.5 py-1.5 rounded-xl text-[#fff8eb] text-xs font-extrabold cursor-pointer"
                 >
                   بستن
                 </button>
@@ -1838,9 +1858,9 @@ export default function App() {
                       soundEngine.playClick();
                       setWildlifeFilter(cat);
                     }}
-                    className={`px-2.5 py-1 rounded-xl text-[10px] font-extrabold cursor-pointer transition-all ${
+                    className={`btn-game px-2.5 py-1.5 rounded-xl text-[10.5px] font-extrabold cursor-pointer whitespace-nowrap ${
                       wildlifeFilter === cat
-                        ? 'wood-btn-primary text-white'
+                        ? 'btn-primary-amber text-white'
                         : 'bg-[#f5e7ca] text-[#5e4018]'
                     }`}
                   >
@@ -1878,7 +1898,7 @@ export default function App() {
                           </span>
                         )}
                       </div>
-                      <div className="flex items-center justify-between text-[9px] font-bold text-[#755326]">
+                      <div className="flex items-center justify-between text-[9.5px] font-bold text-[#755326]">
                         <span className="truncate">{spec.habitatFa}</span>
                         <span className={seen ? 'text-[#2b7a1f]' : 'text-[#9c7848]'}>
                           {seen ? 'دیده شد' : 'نایافته'}
@@ -1899,7 +1919,7 @@ export default function App() {
             data-testid="gameover-modal"
             data-outcome={outcome}
           >
-            <div className="hud-card w-full max-w-[380px] rounded-3xl p-5 flex flex-col items-center text-center gap-3.5 text-[#3d2508]">
+            <div className="hud-card anim-modal-in w-full max-w-[390px] rounded-3xl p-5 flex flex-col items-center text-center gap-3.5 text-[#3d2508]">
               <div
                 className={`w-16 h-16 rounded-2xl flex items-center justify-center shadow-md ${
                   outcome === 'victory'
@@ -1911,45 +1931,66 @@ export default function App() {
               </div>
 
               <div>
-                <h2 className="text-xl font-black">
+                <h2 className="font-display text-2xl">
                   {outcome === 'victory' ? 'پیروزی! جزیره را فتح کردی' : 'انرژی تمام شد!'}
                 </h2>
-                <p className="mt-1 text-xs font-bold text-[#6e4e24]">
+                <p className="mt-1 text-xs font-semibold text-[#6e4e24] leading-relaxed text-balance">
                   {outcome === 'victory'
                     ? 'با قایق دست‌ساز خود پیروزمندانه به خانه بازگشتی!'
-                    : 'در نبرد با بلایای جزیره و شکارچیان انرژی‌ات پایان یافت. دوباره تلاش کن!'}
+                    : 'در نبرد با بلایای جزیره، تله‌های پنهان و شکارچیان انرژی‌ات پایان یافت. دوباره تلاش کن!'}
                 </p>
               </div>
 
               <div className="w-full grid grid-cols-3 gap-2 text-center">
-                <div className="rounded-2xl bg-white/85 border border-[#e6cda1] p-2">
-                  <div className="text-[10px] font-bold text-[#755326]">روز بقا</div>
-                  <div className="text-sm font-black tabular-nums">{toPersianDigits(hud.dayCount)}</div>
-                </div>
-                <div className="rounded-2xl bg-white/85 border border-[#e6cda1] p-2">
-                  <div className="text-[10px] font-bold text-[#755326]">سطح</div>
-                  <div className="text-sm font-black tabular-nums">{toPersianDigits(hud.playerLevel)}</div>
-                </div>
-                <div className="rounded-2xl bg-white/85 border border-[#e6cda1] p-2">
-                  <div className="text-[10px] font-bold text-[#755326]">سکه</div>
-                  <div className="text-sm font-black tabular-nums text-[#a15c07]">{toPersianDigits(hud.coins)}</div>
-                </div>
-                <div className="rounded-2xl bg-white/85 border border-[#e6cda1] p-2">
-                  <div className="text-[10px] font-bold text-[#755326]">اسرار</div>
-                  <div className="text-sm font-black tabular-nums">
-                    {toPersianDigits(hud.secretsFound)}/{toPersianDigits(hud.secretsTotal)}
+                {[
+                  {
+                    label: 'روز بقا',
+                    value: toPersianDigits(hud.dayCount),
+                    accent: '',
+                  },
+                  {
+                    label: 'سطح',
+                    value: toPersianDigits(hud.playerLevel),
+                    accent: '',
+                  },
+                  {
+                    label: 'سکه',
+                    value: toPersianDigits(hud.coins),
+                    accent: 'text-[#a15c07]',
+                  },
+                  {
+                    label: 'اسرار و مرموز',
+                    value: `${toPersianDigits(hud.secretsFound + hud.mysteriesFound)}/${toPersianDigits(
+                      hud.secretsTotal + hud.mysteriesTotal
+                    )}`,
+                    accent: '',
+                  },
+                  {
+                    label: 'جانوران',
+                    value: `${toPersianDigits(hud.discoveredAnimals.length)}/${toPersianDigits(
+                      ANIMAL_SPECIES.length
+                    )}`,
+                    accent: '',
+                  },
+                  {
+                    label: 'شکار',
+                    value: toPersianDigits(hud.huntedCount),
+                    accent: '',
+                  },
+                ].map((stat, idx) => (
+                  <div
+                    key={stat.label}
+                    className={`rounded-2xl border p-2 transition-shadow ${
+                      outcome === 'victory'
+                        ? 'bg-[#fffdf2] stat-card-glow-victory'
+                        : 'bg-[#fff7f7] stat-card-glow-defeat'
+                    }`}
+                    style={{ animationDelay: `${idx * 0.14}s` }}
+                  >
+                    <div className="text-[10px] font-bold text-[#755326]">{stat.label}</div>
+                    <div className={`text-sm font-black tabular-nums ${stat.accent}`}>{stat.value}</div>
                   </div>
-                </div>
-                <div className="rounded-2xl bg-white/85 border border-[#e6cda1] p-2">
-                  <div className="text-[10px] font-bold text-[#755326]">جانوران</div>
-                  <div className="text-sm font-black tabular-nums">
-                    {toPersianDigits(hud.discoveredAnimals.length)}/{toPersianDigits(ANIMAL_SPECIES.length)}
-                  </div>
-                </div>
-                <div className="rounded-2xl bg-white/85 border border-[#e6cda1] p-2">
-                  <div className="text-[10px] font-bold text-[#755326]">شکار</div>
-                  <div className="text-sm font-black tabular-nums">{toPersianDigits(hud.huntedCount)}</div>
-                </div>
+                ))}
               </div>
 
               <div className="w-full flex flex-col gap-2">
@@ -1958,29 +1999,128 @@ export default function App() {
                   data-start="true"
                   data-testid="restart-game-btn"
                   onClick={() => handleStartMode(activeRun?.mode ?? 'normal', false)}
-                  className="wood-btn-primary w-full py-2.5 rounded-2xl text-white font-extrabold text-sm cursor-pointer"
-                  style={{ textShadow: '0 1px 0 rgba(153, 62, 6, 0.7)' }}
+                  className="btn-game btn-primary-amber anim-btn-sheen w-full min-h-[46px] py-2.5 rounded-2xl text-white font-extrabold text-sm cursor-pointer flex items-center justify-center gap-2"
+                  style={{ textShadow: '0 1px 0 rgba(145, 58, 5, 0.7)' }}
                 >
-                  بازی دوباره
+                  <RefreshMiniIcon className="w-4 h-4 anim-compass-wiggle" />
+                  <span>بازی دوباره</span>
                 </button>
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
                     data-testid="new-island-btn"
                     onClick={() => handleStartMode('normal', true)}
-                    className="wood-btn flex-1 py-2 rounded-xl text-[#fff8eb] font-bold text-xs cursor-pointer"
+                    className="btn-game btn-wood flex-1 min-h-[42px] py-2 rounded-xl text-[#fff8eb] font-bold text-xs cursor-pointer flex items-center justify-center gap-1.5"
                   >
-                    جزیره جدید
+                    <CompassMiniSvg className="w-3.5 h-3.5 anim-compass-wiggle" />
+                    <span>جزیره جدید</span>
                   </button>
                   <button
                     type="button"
                     data-testid="gameover-menu-btn"
                     onClick={handleReturnToMenu}
-                    className="wood-btn flex-1 py-2 rounded-xl text-[#fff8eb] font-bold text-xs cursor-pointer"
+                    className="btn-game btn-wood flex-1 min-h-[42px] py-2 rounded-xl text-[#fff8eb] font-bold text-xs cursor-pointer flex items-center justify-center gap-1.5"
                   >
-                    منوی اصلی
+                    <HomeMiniSvg />
+                    <span>منوی اصلی</span>
                   </button>
                 </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Simple Settings Modal (Title & Playing) */}
+        {activeModal === 'settings' && (
+          <div
+            className="absolute inset-0 z-50 flex items-center justify-center p-3 bg-[#082238]/60"
+            onClick={() => {
+              soundEngine.playModalClose();
+              setActiveModal(null);
+            }}
+            data-testid="settings-modal"
+          >
+            <div
+              className="hud-card anim-modal-in w-full max-w-[380px] rounded-3xl p-4 flex flex-col gap-3.5 text-[#3d2508]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="w-8 h-8 rounded-xl bg-[#f5e7ca] text-[#8e4816] flex items-center justify-center">
+                    <SettingsGearSvg className="w-4 h-4" />
+                  </span>
+                  <h2 className="font-display text-xl leading-tight">تنظیمات بازی</h2>
+                </div>
+                <button
+                  type="button"
+                  data-testid="close-modal-btn"
+                  onClick={() => {
+                    soundEngine.playModalClose();
+                    setActiveModal(null);
+                  }}
+                  className="btn-game btn-wood min-h-[36px] px-3.5 py-1.5 rounded-xl text-[#fff8eb] text-xs font-extrabold cursor-pointer"
+                >
+                  بستن
+                </button>
+              </div>
+
+              <div className="rounded-2xl bg-white/85 border border-[#e6cda1] p-3 flex flex-col gap-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-extrabold text-[#3d2508]">
+                    ضریب آسیب حیوانات وحشی
+                  </span>
+                  <span className="px-2 py-0.5 rounded-md bg-[#fef3c7] text-[#92400e] text-[10px] font-extrabold tabular-nums">
+                    ×{toPersianDigits(CONFIG.WILDLIFE_DIFFICULTY_MULTIPLIERS[wildlifeDifficulty])}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-3 gap-1.5">
+                  {(
+                    [
+                      { id: 'easy', label: 'آسان', sub: '۶۰٪ آسیب' },
+                      { id: 'normal', label: 'نرمال', sub: '۱۰۰٪ آسیب' },
+                      { id: 'hard', label: 'سخت', sub: '۱۵۰٪ آسیب' },
+                    ] as const
+                  ).map((opt) => {
+                    const selected = wildlifeDifficulty === opt.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        data-testid={`difficulty-${opt.id}`}
+                        onClick={() => handleChangeDifficulty(opt.id)}
+                        className={`btn-game rounded-xl py-2 px-2 flex flex-col items-center justify-center gap-0.5 cursor-pointer border ${
+                          selected
+                            ? 'btn-primary-amber text-white border-[#d97706]'
+                            : 'bg-[#f6ead0] text-[#5e4018] border-[#dfc697]'
+                        }`}
+                      >
+                        <span className="text-xs font-black">{opt.label}</span>
+                        <span
+                          className={`text-[9.5px] font-bold tabular-nums ${
+                            selected ? 'text-[#fffbeb]' : 'text-[#8a6534]'
+                          }`}
+                        >
+                          {opt.sub}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="rounded-2xl bg-white/85 border border-[#e6cda1] p-3 flex items-center justify-between gap-2">
+                <span className="text-xs font-extrabold text-[#3d2508]">صدا و موسیقی بازی</span>
+                <button
+                  type="button"
+                  onClick={handleToggleMute}
+                  className={`btn-game min-h-[36px] px-3.5 py-1.5 rounded-xl text-xs font-extrabold cursor-pointer flex items-center gap-1.5 ${
+                    muted ? 'bg-[#e7d6b5] text-[#5e4018]' : 'btn-emerald text-white'
+                  }`}
+                >
+                  <VolumeIcon muted={muted} />
+                  <span>{muted ? 'قطع' : 'فعال'}</span>
+                </button>
               </div>
             </div>
           </div>
@@ -1990,7 +2130,7 @@ export default function App() {
   );
 }
 
-const HudCounterPill = forwardRef<
+const HudResourceItem = forwardRef<
   HTMLDivElement,
   {
     label: string;
@@ -1998,26 +2138,35 @@ const HudCounterPill = forwardRef<
     icon: React.ReactNode;
     accentClass?: string;
   }
->(function HudCounterPill({ label, value, icon, accentClass = 'text-[#3d2508]' }, ref) {
+>(function HudResourceItem({ label, value, icon, accentClass = 'text-[#3d2508]' }, ref) {
   return (
     <div
       ref={ref}
-      className="hud-card rounded-xl px-2 py-1 flex items-center gap-1"
+      className="flex items-center gap-1 shrink-0"
       aria-label={`${label}: ${toPersianDigits(value)}`}
     >
       <span className="w-4 h-4 flex items-center justify-center shrink-0">{icon}</span>
-      <span className={`text-xs font-extrabold tabular-nums min-w-[10px] text-center ${accentClass}`}>
+      <span className={`text-[11.5px] font-extrabold tabular-nums min-w-[10px] text-center ${accentClass}`}>
         {toPersianDigits(value)}
       </span>
     </div>
   );
 });
 
+function SkipChevronsSvg({ className = '' }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <path d="M13 6L7 12L13 18" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M18 6L12 12L18 18" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function PhaseWeatherIcon({ phase, weather }: { phase: DayPhase; weather: WeatherKind }) {
   if (weather === 'storm') {
     return (
       <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
-        <path d="M5 13a4 4 0 0 1 1-7.8A5 5 0 0 1 16.5 6a3.5 3.5 0 0 1 1 6.8H5Z" fill="#4f6d8a" />
+        <path d="M5 13a4 4 0 0 1 1-7.8A5 5 0 0 1 16.5 6a3.5 3.5 0 0 1 1 6.8H5Z" fill="#64748b" />
         <path d="M12.5 13.5 L9.5 18 H12 L10.8 22 L15 16.8 H12.4 Z" fill="#ffd233" />
       </svg>
     );
@@ -2025,29 +2174,29 @@ function PhaseWeatherIcon({ phase, weather }: { phase: DayPhase; weather: Weathe
   if (weather === 'rain') {
     return (
       <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
-        <path d="M6 14a4 4 0 0 1 1-7.8A5 5 0 0 1 17 7a3.5 3.5 0 0 1 1 6.8H6Z" fill="#6aa8d8" />
-        <path d="M8 17l-1 3M12 17l-1 3M16 17l-1 3" stroke="#2d8be0" strokeWidth="2" strokeLinecap="round" />
+        <path d="M6 14a4 4 0 0 1 1-7.8A5 5 0 0 1 17 7a3.5 3.5 0 0 1 1 6.8H6Z" fill="#93c5fd" />
+        <path d="M8 17l-1 3M12 17l-1 3M16 17l-1 3" stroke="#38bdf8" strokeWidth="2" strokeLinecap="round" />
       </svg>
     );
   }
   if (weather === 'fog') {
     return (
       <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
-        <path d="M4 9h16M6 13h12M4 17h14" stroke="#6c8fa8" strokeWidth="2.4" strokeLinecap="round" />
+        <path d="M4 9h16M6 13h12M4 17h14" stroke="#cbd5e1" strokeWidth="2.4" strokeLinecap="round" />
       </svg>
     );
   }
   if (phase === 'night') {
     return (
       <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
-        <path d="M15.5 4.5a7.5 7.5 0 1 0 4 13.8A6.2 6.2 0 0 1 15.5 4.5Z" fill="#5e72eb" />
+        <path d="M15.5 4.5a7.5 7.5 0 1 0 4 13.8A6.2 6.2 0 0 1 15.5 4.5Z" fill="#a5b4fc" />
       </svg>
     );
   }
   return (
     <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
-      <circle cx="12" cy="12" r="5" fill={phase === 'dusk' || phase === 'dawn' ? '#ff8b3d' : '#ffb822'} />
-      <path d="M12 3V5M12 19V21M3 12H5M19 12H21" stroke="#f5941d" strokeWidth="2" strokeLinecap="round" />
+      <circle cx="12" cy="12" r="5" fill={phase === 'dusk' || phase === 'dawn' ? '#fb923c' : '#fde047'} />
+      <path d="M12 3V5M12 19V21M3 12H5M19 12H21" stroke="#fbbf24" strokeWidth="2" strokeLinecap="round" />
     </svg>
   );
 }
@@ -2172,9 +2321,9 @@ function SpearMiniSvg({ fire }: { fire: boolean }) {
   );
 }
 
-function FlameMiniSvg() {
+function FlameMiniSvg({ className = 'w-3.5 h-3.5 shrink-0' }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
       <path
         d="M12 3 C14.5 7, 18 10, 17.5 14.8 C17 18.2, 14.8 20.5, 12 20.5 C9.2 20.5, 6.8 18.2, 6.5 14.8 C6 11, 8.8 8.5, 12 3 Z"
         fill="#ff7b1c"
@@ -2184,28 +2333,17 @@ function FlameMiniSvg() {
   );
 }
 
-function SparkMiniSvg() {
+function SparkMiniSvg({ className = 'w-3.5 h-3.5 shrink-0' }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
       <path d="M12 2 L14.5 9.5 L22 12 L14.5 14.5 L12 22 L9.5 14.5 L2 12 L9.5 9.5 Z" fill="#fff3b0" />
     </svg>
   );
 }
 
-function SkillStarSvg() {
+function PawMiniSvg({ className = 'w-3.5 h-3.5 shrink-0' }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
-      <path
-        d="M12 3 L14.8 8.8 L21 9.7 L16.5 14 L17.6 20.2 L12 17.2 L6.4 20.2 L7.5 14 L3 9.7 L9.2 8.8 Z"
-        fill="#ffe055"
-      />
-    </svg>
-  );
-}
-
-function PawMiniSvg() {
-  return (
-    <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
       <circle cx="7.5" cy="9.5" r="2" fill="#ffe0b5" />
       <circle cx="12" cy="7.2" r="2.1" fill="#ffe0b5" />
       <circle cx="16.5" cy="9.5" r="2" fill="#ffe0b5" />
@@ -2225,7 +2363,7 @@ function EnergyBoltSvg() {
 
 function BackpackSvg() {
   return (
-    <svg viewBox="0 0 24 24" className="w-5.5 h-5.5 shrink-0" aria-hidden="true">
+    <svg viewBox="0 0 24 24" className="w-5 h-5 shrink-0" aria-hidden="true">
       <path d="M9 6 C9 4, 15 4, 15 6" stroke="#8f4f1d" strokeWidth="2.2" fill="none" />
       <rect x="5.5" y="6.5" width="13" height="13.5" rx="4" fill="#c77a3b" />
       <rect x="7.5" y="12.5" width="9" height="5.5" rx="2" fill="#e39d5b" />
@@ -2243,20 +2381,6 @@ function PlayArrowIcon({ className = '' }: { className?: string }) {
   );
 }
 
-function SunMiniIcon({ className = '' }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
-      <circle cx="12" cy="12" r="5" fill="currentColor" />
-      <path
-        d="M12 3V5M12 19V21M3 12H5M19 12H21"
-        stroke="currentColor"
-        strokeWidth="2.2"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
 function RefreshMiniIcon({ className = '' }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
@@ -2268,15 +2392,15 @@ function RefreshMiniIcon({ className = '' }: { className?: string }) {
 
 function HomeMiniSvg() {
   return (
-    <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" aria-hidden="true">
+    <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
       <path d="M4.5 11.5L12 5L19.5 11.5V19H4.5V11.5Z" fill="currentColor" />
     </svg>
   );
 }
 
-function CompassMiniSvg() {
+function CompassMiniSvg({ className = 'w-3.5 h-3.5 shrink-0' }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
       <circle cx="12" cy="12" r="9.5" fill="#d99a3a" />
       <circle cx="12" cy="12" r="7" fill="#fff6e0" />
       <path d="M14.8 9.2L13 13.4L9.2 14.8L11 10.6L14.8 9.2Z" fill="#d94426" />
@@ -2284,18 +2408,9 @@ function CompassMiniSvg() {
   );
 }
 
-function RainDropMiniSvg() {
+function BoatMiniSvg({ className = 'w-3.5 h-3.5 shrink-0' }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
-      <path d="M12 3 C9 8, 6.5 11.5, 6.5 14.8 A5.5 5.5 0 0 0 17.5 14.8 C17.5 11.5, 15 8, 12 3 Z" fill="#2c92df" />
-      <circle cx="10.2" cy="15.5" r="1.4" fill="#a8e1ff" />
-    </svg>
-  );
-}
-
-function BoatMiniSvg() {
-  return (
-    <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
       <path d="M12 4 V14 L18 13 Z" fill="#fff3d1" />
       <path d="M4 15 H20 L17.5 19.5 H6.5 Z" fill="#9c5b2b" />
     </svg>
@@ -2304,12 +2419,12 @@ function BoatMiniSvg() {
 
 function VolumeIcon({ muted }: { muted: boolean }) {
   return muted ? (
-    <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
+    <svg viewBox="0 0 24 24" className="w-4 h-4 shrink-0" aria-hidden="true">
       <path d="M4 9.5 H8 L13 5.5 V18.5 L8 14.5 H4 Z" fill="currentColor" />
       <path d="M16 9 L20 15 M20 9 L16 15" stroke="#ffd466" strokeWidth="2.2" strokeLinecap="round" />
     </svg>
   ) : (
-    <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
+    <svg viewBox="0 0 24 24" className="w-4 h-4 shrink-0" aria-hidden="true">
       <path d="M4 9.5 H8 L13 5.5 V18.5 L8 14.5 H4 Z" fill="currentColor" />
       <path d="M16 9 A4.5 4.5 0 0 1 16 15 M18.5 6.8 A7.5 7.5 0 0 1 18.5 17.2" stroke="#ffe066" strokeWidth="2" strokeLinecap="round" fill="none" />
     </svg>
@@ -2352,7 +2467,7 @@ function SeasonMiniSvg({ season }: { season: 'autumn' | 'winter' }) {
       <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
         <path
           d="M12 3 L14 8 L19 7 L16 12 L20 15 L14 16 L13 21 L11 21 L10 16 L4 15 L8 12 L5 7 L10 8 Z"
-          fill="#e6681c"
+          fill="#fb923c"
         />
       </svg>
     );
@@ -2361,7 +2476,7 @@ function SeasonMiniSvg({ season }: { season: 'autumn' | 'winter' }) {
     <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
       <path
         d="M12 3V21M3 12H21M5.6 5.6L18.4 18.4M18.4 5.6L5.6 18.4"
-        stroke="#2795d9"
+        stroke="#7dd3fc"
         strokeWidth="2.2"
         strokeLinecap="round"
       />
@@ -2394,6 +2509,24 @@ function DefeatSkullSvg() {
   return (
     <svg viewBox="0 0 24 24" className="w-9 h-9" aria-hidden="true">
       <path d="M13 4 L7 13 H12 L11 20 L17 11 H12 Z" fill="#fff5f5" />
+    </svg>
+  );
+}
+
+function SettingsGearSvg({ className = '' }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <path
+        d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z"
+        stroke="currentColor"
+        strokeWidth="2.1"
+      />
+      <path
+        d="M19.4 13.5a7.7 7.7 0 0 0 .06-1.5c0-.51-.02-1.01-.06-1.5l2.03-1.58a.48.48 0 0 0 .12-.62l-1.92-3.32a.49.49 0 0 0-.6-.22l-2.39.96a7.3 7.3 0 0 0-2.6-1.5l-.36-2.54A.49.49 0 0 0 13.2 1h-3.84a.49.49 0 0 0-.48.42l-.36 2.54a7.3 7.3 0 0 0-2.6 1.5l-2.39-.96a.49.49 0 0 0-.6.22L1.01 8.04a.48.48 0 0 0 .12.62l2.03 1.58c-.04.49-.06.99-.06 1.5s.02 1.01.06 1.5L1.13 14.82a.48.48 0 0 0-.12.62l1.92 3.32c.13.22.39.3.6.22l2.39-.96c.78.63 1.66 1.14 2.6 1.5l.36 2.54c.05.24.25.42.48.42h3.84c.23 0 .44-.18.48-.42l.36-2.54c.94-.36 1.82-.87 2.6-1.5l2.39.96c.22.08.47 0 .6-.22l1.92-3.32a.48.48 0 0 0-.12-.62l-2.03-1.58Z"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }

@@ -14,12 +14,14 @@ import {
   getPlayerSpeedScale,
   getSurvivalHudView,
   inspectAncientBones,
+  inspectMysterySpot,
   lightCampfire,
   openBuriedTempleDoor,
   openSecretSpot,
   restoreSavedRunSnapshot,
   salvagePlaneWreck,
   selectWeapon,
+  setWildlifeDifficulty,
   stepSurvivalSystem,
   stokeCampfire,
   triggerSeasonEvent,
@@ -856,5 +858,211 @@ test('post-event breather calms storms, predators can be fought with full backpa
   assert.equal(vReady.boatVoyageVictoryReady, true);
 });
 
+test('hidden secrets and 7 mystery curios can reward OR drain player energy/HP and trigger defeat', () => {
+  const world = generateIslandWorld('risky-secrets-and-mysteries');
+  const state = createSurvivalState(world);
+
+  assert.equal(world.mysterySpots.length, CONFIG.SURVIVAL.MYSTERY_SPOTS_COUNT);
+  assert.equal(state.mysterySpots.length, CONFIG.SURVIVAL.MYSTERY_SPOTS_COUNT);
+
+  // 1. Rewarding mystery curio
+  const bottle = state.mysterySpots.find((m) => m.kind === 'message_bottle')!;
+  const rewardRes = inspectMysterySpot(state, bottle.id, bottle.x, bottle.z, () => 0.9);
+  assert.equal(rewardRes.opened, true);
+  assert.equal(rewardRes.isHarmful, false);
+  assert.ok((rewardRes.coinsDelta ?? 0) > 0);
+  assert.equal(state.discoveredMysteries.includes(bottle.id), true);
+
+  // 2. Harmful mystery curio reduces player energy & applies venom when venomous kind
+  const urn = state.mysterySpots.find((m) => m.kind === 'mystery_urn')!;
+  const eBeforeHarm = state.energy;
+  const harmRes = inspectMysterySpot(state, urn.id, urn.x, urn.z, () => 0.1);
+  assert.equal(harmRes.opened, true);
+  assert.equal(harmRes.isHarmful, true);
+  assert.ok((harmRes.energyDelta ?? 0) < 0);
+  assert.ok(state.energy < eBeforeHarm);
+  assert.ok(state.venomTimer > 0);
+
+  // 3. Shell armor halves mystery curio trap damage
+  const casket = state.mysterySpots.find((m) => m.kind === 'cursed_casket')!;
+  state.energy = 100;
+  state.shellArmorCharges = 1;
+  const armoredRes = inspectMysterySpot(state, casket.id, casket.x, casket.z, () => 0.05);
+  assert.equal(armoredRes.isHarmful, true);
+  assert.equal(armoredRes.energyDelta, -13);
+  assert.equal(state.shellArmorCharges, 0);
+
+  // 4. Non-first secret chest can trigger a cursed trap draining energy & causing defeat at low energy
+  const nonFirstSecret = state.secretSpots.find((s) => s.id !== 'waterfall_grotto')!;
+  state.energy = 10;
+  const trapRes = openSecretSpot(state, nonFirstSecret.id, nonFirstSecret.x, nonFirstSecret.z, () => 0.1);
+  assert.equal(trapRes.opened, true);
+  assert.equal(trapRes.isTrap, true);
+  assert.ok((trapRes.energyDelta ?? 0) < 0);
+  assert.equal(state.energy, 0);
+  assert.equal(state.gameOutcome, 'defeat');
+
+  // 5. Snapshot preserves discoveredMysteries
+  const snap = exportSavedRunSnapshot(state, { x: 0, y: 1, z: 0, yaw: 0 }, 'normal', world.seed);
+  const restored = restoreSavedRunSnapshot(snap, world);
+  assert.ok(restored);
+  assert.equal(restored.state.discoveredMysteries.length, 3);
+});
+
+test('volcano eruption leaves lingering lava pools that burn and high tsunami douses unsheltered campfire', () => {
+  const world = generateIslandWorld('survival-disasters-hardcore-v1');
+  const state = createSurvivalState(world, 0.38);
+
+  // 1. Volcano eruption lava impact leaves lingering molten lava pool that scorches player
+  triggerWorldEvent(state, 'volcano_eruption', true);
+  state.hazardImpacts.push({
+    id: 'test-lava-pool-strike',
+    kind: 'lava',
+    x: 15,
+    z: 15,
+    radius: 3.1,
+    delayTimer: 0.05,
+    maxDelay: 1.0,
+    resolved: false,
+    resolveTimer: 0.4,
+  });
+  // Step once far away so strike resolves into lavaPools without instant hit damage
+  stepSurvivalSystem(state, 50, 50, false, 0.15);
+  assert.ok(state.lavaPools.length >= 1, 'resolved lava impact during eruption must leave a molten lava pool');
+  const pool = state.lavaPools[0];
+  const eBeforeBurn = state.energy;
+  stepSurvivalSystem(state, pool.x, pool.z, false, 0.6);
+  assert.ok(state.energy < eBeforeBurn - 4, 'standing in lingering molten lava pool must burn energy');
+
+  // 2. High tsunami wave extinguishes an unprotected lit campfire, whereas wooden shelter protects it
+  state.lavaPools = [];
+  state.fireLit = true;
+  state.fireLevel = 3;
+  state.buildings.shelter = false;
+  triggerWorldEvent(state, 'tsunami', true);
+  state.seaLevelOffset = 1.95;
+  const douseRes = stepSurvivalSystem(state, 0, 0, false, 0.4);
+  assert.equal(state.fireLit, false, 'high tsunami must extinguish unsheltered campfire');
+  assert.equal(state.fireLevel, 2);
+  assert.ok(douseRes.campfireExtinguishedNotice, 'must notify player when tsunami douses campfire');
+
+  // With wooden shelter built, high tsunami does not douse the campfire
+  state.fireLit = true;
+  state.fireLevel = 3;
+  state.buildings.shelter = true;
+  state.seaLevelOffset = 2.1;
+  const protectedRes = stepSurvivalSystem(state, 0, 0, false, 0.4);
+  assert.equal(state.fireLit, true, 'wooden shelter must protect campfire from tsunami surge');
+  assert.equal(protectedRes.campfireExtinguishedNotice, undefined);
+});
+
+test('full end-to-end playthrough scenario from island landing through boat escape victory works without blockers', () => {
+  const world = generateIslandWorld('full-e2e-scenario-publish');
+  const state = createSurvivalState(world, 0.38);
+  const camp = CONFIG.ISLAND.CAMPFIRE;
+
+  // 1. Spawn near campfire, salvage plane wreck for starter supplies
+  assert.ok(state.wreckSite);
+  const wreckStep = stepSurvivalSystem(state, state.wreckSite!.x, state.wreckSite!.z, false, 0.1, world, true);
+  assert.ok(wreckStep.wreckSalvaged);
+  assert.equal(state.wreckLooted, true);
+
+  // 2. Return to campfire -> deposits wood -> light campfire Lv 1
+  stepSurvivalSystem(state, camp.CX + 1, camp.CZ, false, 0.1, world);
+  assert.equal(state.nearCampfire, true);
+  assert.equal(lightCampfire(state), true);
+  assert.equal(state.fireLevel, 1);
+
+  // 3. Chop trees to gather wood & earn XP -> craft spear -> stoke campfire to Lv 5
+  const trees = state.nodes.filter((n) => n.kind === 'wood');
+  for (let i = 0; i < 12; i += 1) {
+    const t = trees[i % trees.length];
+    t.cooldownRemaining = 0;
+    stepSurvivalSystem(state, t.x + 0.5, t.z, false, 0.1, world, true);
+    stepSurvivalSystem(state, t.x + 0.5, t.z, false, CONFIG.SURVIVAL.HARVEST_DURATION_TREE + 0.1, world);
+    if (getBackpackUsed(state) >= state.backpackCapacity - 1) {
+      stepSurvivalSystem(state, camp.CX + 1, camp.CZ, false, 0.1, world);
+    }
+  }
+  stepSurvivalSystem(state, camp.CX + 1, camp.CZ, false, 0.1, world);
+  assert.equal(craftSpear(state), true);
+  assert.equal(state.hasSpear, true);
+
+  // Supply wood from continued chopping & stoke fire Lv 2..5 (unlocks bow & hammer & boat)
+  state.stashed.wood += 40;
+  for (let lv = 2; lv <= 5; lv += 1) {
+    assert.equal(stokeCampfire(state), true);
+    assert.equal(state.fireLevel, lv);
+  }
+  assert.equal(state.unlockedWeapons.bow, true);
+  assert.equal(state.unlockedWeapons.hammer, true);
+
+  // 4. Build all 4 camp structures (shelter -> rack -> pier -> boat)
+  for (const padId of ['shelter', 'rack', 'pier', 'boat'] as const) {
+    const pad = state.buildPads.find((p) => p.id === padId)!;
+    stepSurvivalSystem(state, pad.x, pad.z, false, 0.1, world, true);
+    const done = stepSurvivalSystem(state, pad.x, pad.z, false, CONFIG.SURVIVAL.BUILD_DURATION_SEC + 0.2, world);
+    assert.equal(done.builtUpgrade?.id, padId, `expected ${padId} to finish building cleanly`);
+    assert.equal(state.buildings[padId], true);
+  }
+
+  // 5. Inspect all 4 ancient bones -> open buried temple door
+  for (const bone of state.ancientBoneSites) {
+    const bRes = stepSurvivalSystem(state, bone.x, bone.z, false, 0.1, world, true);
+    assert.ok(bRes.boneInspected, `expected bone ${bone.id} to be inspectable`);
+  }
+  const templeDoor = stepSurvivalSystem(
+    state,
+    CONFIG.ISLAND.SHIPWRECK.HULL_CX,
+    CONFIG.ISLAND.SHIPWRECK.HULL_CZ,
+    false,
+    0.1,
+    world,
+    true
+  );
+  assert.ok(templeDoor.templeOpened, 'buried temple door must open once all 4 bones are inspected');
+  assert.equal(state.templeRelicClaimed, true);
+
+  // 6. Player is >= VICTORY_MIN_LEVEL (5) with boat built -> launch victory voyage!
+  assert.ok(
+    state.playerLevel >= CONFIG.SURVIVAL.VICTORY_MIN_LEVEL,
+    `expected playerLevel >= ${CONFIG.SURVIVAL.VICTORY_MIN_LEVEL}, got ${state.playerLevel}`
+  );
+  const boatPad = state.buildPads.find((p) => p.id === 'boat')!;
+  const voyageStep = stepSurvivalSystem(state, boatPad.x, boatPad.z, false, 0.1, world, true);
+  assert.equal(voyageStep.boatVoyageVictoryReady, true, 'boat pad interact should trigger victory voyage cutscene');
+  assert.equal(triggerVictoryVoyage(state), true);
+  assert.equal(state.gameOutcome, 'victory');
+});
+
+test('wildlife difficulty multiplier scales predator melee strikes and venom drain across easy, normal, and hard', () => {
+  const world = generateIslandWorld('wildlife-diff-test');
+
+  const runStrikeForDifficulty = (diff: 'easy' | 'normal' | 'hard'): number => {
+    const state = createSurvivalState(world, 0.92);
+    setWildlifeDifficulty(state, diff);
+    assert.equal(getSurvivalHudView(state, 'center').wildlifeDifficulty, diff);
+    const wolf = state.wildlife.actors.find((a) => a.speciesId === 'night_wolf')!;
+    wolf.visible = true;
+    wolf.x = 20;
+    wolf.z = 20;
+    wolf.attackState = 'windup';
+    wolf.attackTimer = 0.05;
+    wolf.attackTargetX = 20.8;
+    wolf.attackTargetZ = 20;
+
+    const beforeEnergy = state.energy;
+    const res = stepSurvivalSystem(state, 20.8, 20, false, 0.1, world);
+    assert.equal(res.predatorStrikes.length, 1);
+    return beforeEnergy - state.energy;
+  };
+
+  const dmgEasy = runStrikeForDifficulty('easy');
+  const dmgNormal = runStrikeForDifficulty('normal');
+  const dmgHard = runStrikeForDifficulty('hard');
+
+  assert.ok(dmgEasy < dmgNormal, `expected easy (${dmgEasy}) < normal (${dmgNormal})`);
+  assert.ok(dmgNormal < dmgHard, `expected normal (${dmgNormal}) < hard (${dmgHard})`);
+});
 
 

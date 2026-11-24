@@ -10,6 +10,7 @@ import {
   type SkillId,
   type StrangeLandmarkId,
   type WeaponId,
+  type WildlifeDifficulty,
   type WorkshopRecipeId,
 } from './config';
 import { soundEngine } from './audio';
@@ -33,6 +34,7 @@ import {
   buildBanyanTrunkGeometry,
   buildBeachStarfishGeometry,
   buildBellflowerSpikeGeometry,
+  buildBirdTorsoGeometry,
   buildBowToolGeometry,
   buildBrazierGeometry,
   buildBuriedStoneTempleGeo,
@@ -46,6 +48,7 @@ import {
   buildCurvedGullWingGeometry,
   buildCurvedPalmTrunkGeometry,
   buildDriftwoodLogGeometry,
+  buildFeatherPlumeGeometry,
   buildFemurBoneGeometry,
   buildFernTuftGeometry,
   buildFishGeometry,
@@ -104,6 +107,7 @@ import {
   requestTargetInteract,
   restoreSavedRunSnapshot,
   selectWeapon,
+  setWildlifeDifficulty,
   stepSurvivalSystem,
   stokeCampfire,
   triggerSeasonEvent,
@@ -192,6 +196,8 @@ export interface ThreeIslandController {
   triggerLandmark: (id: StrangeLandmarkId) => { triggered: boolean; label: string };
   triggerLandmarkSpecial: (id: StrangeLandmarkId) => { triggered: boolean; label: string };
   triggerVictoryVoyage: () => boolean;
+  setWildlifeDifficulty: (difficulty: WildlifeDifficulty) => void;
+  getWildlifeDifficulty: () => WildlifeDifficulty;
   toggleMute: () => boolean;
   isMuted: () => boolean;
   destroy: () => void;
@@ -207,6 +213,7 @@ function buildSkyDome(): { mesh: THREE.Mesh; mat: THREE.ShaderMaterial; dispose:
       horizonColor: { value: new THREE.Color(CONFIG.COLORS.SKY_HORIZON) },
       sunDir: { value: new THREE.Vector3(0.55, 0.55, 0.4).normalize() },
       starMix: { value: 0 },
+      sunsetMix: { value: 0 },
       uTime: { value: 0 },
     },
     vertexShader: `
@@ -222,6 +229,7 @@ function buildSkyDome(): { mesh: THREE.Mesh; mat: THREE.ShaderMaterial; dispose:
       uniform vec3 horizonColor;
       uniform vec3 sunDir;
       uniform float starMix;
+      uniform float sunsetMix;
       uniform float uTime;
       varying vec3 vDir;
 
@@ -236,8 +244,19 @@ function buildSkyDome(): { mesh: THREE.Mesh; mat: THREE.ShaderMaterial; dispose:
         float h = max(dir.y, 0.0);
         float t = smoothstep(0.0, 0.58, h);
         vec3 sky = mix(horizonColor, topColor, t);
-        float sunAmt = max(dot(dir, sunDir), 0.0);
-        sky += vec3(1.0, 0.92, 0.72) * pow(sunAmt, 14.0) * (1.0 - starMix * 0.75) * 0.32;
+
+        // Warm Sunset / Dawn Horizon Band
+        float horizonBand = pow(1.0 - smoothstep(0.0, 0.36, h), 1.8) * sunsetMix;
+        sky = mix(sky, vec3(1.0, 0.46, 0.22), horizonBand * 0.52);
+
+        // Glowing Solar Disc & Mie Sunset Halo
+        float sunAmt = max(dot(dir, normalize(sunDir)), 0.0);
+        float visSun = smoothstep(-0.08, 0.06, sunDir.y);
+        float sunHalo = pow(sunAmt, 7.0) * (0.28 + sunsetMix * 0.62);
+        float sunCore = smoothstep(0.9962, 0.9991, sunAmt);
+        vec3 sunGlowCol = mix(vec3(1.0, 0.93, 0.74), vec3(1.0, 0.55, 0.24), sunsetMix);
+        sky += sunGlowCol * sunHalo * visSun * (1.0 - starMix * 0.75);
+        sky += mix(vec3(1.0, 0.97, 0.88), vec3(1.0, 0.74, 0.36), sunsetMix) * sunCore * visSun * 0.92;
 
         if (starMix > 0.02 && dir.y > 0.04) {
           vec3 grid = floor(dir * 95.0);
@@ -865,6 +884,7 @@ export function createThreeIslandGame(
       uFogColor: { value: new THREE.Color(CONFIG.COLORS.FOG) },
       uFogDensity: { value: CONFIG.RENDER.FOG_DENSITY },
       uSunDir: { value: new THREE.Vector3(0.55, 0.65, 0.35).normalize() },
+      uSunTint: { value: new THREE.Color(1.0, 0.97, 0.88) },
     },
     vertexShader: `
       varying vec3 vWorldPos;
@@ -885,6 +905,7 @@ export function createThreeIslandGame(
       uniform vec3 uFogColor;
       uniform float uFogDensity;
       uniform vec3 uSunDir;
+      uniform vec3 uSunTint;
       varying vec3 vWorldPos;
 
       float wavePattern(vec2 p, float t) {
@@ -912,8 +933,8 @@ export function createThreeIslandGame(
         vec3 viewDir = normalize(cameraPosition - vWorldPos);
         vec3 waveN = normalize(vec3(ripple * 0.09, 1.0, wavePattern(vWorldPos.xz * 1.35 + 4.2, -uTime) * 0.09));
         vec3 halfVec = normalize(uSunDir + viewDir);
-        float spec = pow(max(dot(waveN, halfVec), 0.0), 48.0);
-        col += vec3(1.0, 0.97, 0.88) * spec * 0.56;
+        float spec = pow(max(dot(waveN, halfVec), 0.0), 40.0);
+        col += uSunTint * spec * 0.62;
 
         float foamZone = 1.0 - smoothstep(0.02, 1.08, waterDepth);
         float surfWave = sin(waterDepth * 21.0 - uTime * 2.8 + ripple * 2.0);
@@ -941,7 +962,7 @@ export function createThreeIslandGame(
   scene.add(oceanMesh);
   disposables.push(oceanMat, oceanGeo);
 
-  // Drifting stylized puffy clouds & sculpted curved-wing seagulls
+  // Drifting stylized puffy clouds & sculpted cambered-wing sky seagulls
   const cloudGroup = new THREE.Group();
   const cloudPuffGeo = new THREE.SphereGeometry(2.6, 10, 8);
   const cloudMat = new THREE.MeshStandardMaterial({
@@ -976,24 +997,37 @@ export function createThreeIslandGame(
   scene.add(cloudGroup);
 
   const birdGroup = new THREE.Group();
-  const gullBodyGeo = new THREE.CapsuleGeometry(0.075, 0.22, 4, 6);
-  gullBodyGeo.rotateX(Math.PI / 2);
-  const wingGeo = buildCurvedGullWingGeometry();
-  const birdMat = new THREE.MeshBasicMaterial({ color: 0xfffaf0, side: THREE.DoubleSide });
-  disposables.push(gullBodyGeo, wingGeo, birdMat);
+  const gullBodyGeo = buildBirdTorsoGeometry();
+  const gullTailGeo = buildFeatherPlumeGeometry();
+  const wingGeoR = buildCurvedGullWingGeometry(1);
+  const wingGeoL = buildCurvedGullWingGeometry(-1);
+  const birdMat = new THREE.MeshStandardMaterial({
+    color: 0xfffaf0,
+    roughness: 0.68,
+    vertexColors: true,
+  });
+  const gullBodyMat = new THREE.MeshStandardMaterial({
+    color: 0xfffaf0,
+    roughness: 0.68,
+  });
+  disposables.push(gullBodyGeo, gullTailGeo, wingGeoR, wingGeoL, birdMat, gullBodyMat);
   for (let i = 0; i < 6; i += 1) {
     const bg = new THREE.Group();
     const a = (i / 6) * Math.PI * 2;
     const r = 24 + (i % 3) * 14;
-    bg.position.set(Math.cos(a) * r, 15 + (i % 2) * 2.5, Math.sin(a) * r);
+    bg.position.set(Math.cos(a) * r, 16 + (i % 2) * 2.5, Math.sin(a) * r);
     bg.rotation.y = -a;
-    const wl = new THREE.Mesh(wingGeo, birdMat);
-    wl.scale.x = -1;
-    wl.rotation.z = 0.28;
-    const wr = new THREE.Mesh(wingGeo, birdMat);
-    wr.rotation.z = -0.28;
-    const body = new THREE.Mesh(gullBodyGeo, birdMat);
-    bg.add(wl, wr, body);
+    bg.scale.setScalar(1.22);
+    const wl = new THREE.Mesh(wingGeoL, birdMat);
+    wl.position.set(-0.08, 0.02, 0.03);
+    const wr = new THREE.Mesh(wingGeoR, birdMat);
+    wr.position.set(0.08, 0.02, 0.03);
+    const body = new THREE.Mesh(gullBodyGeo, gullBodyMat);
+    body.scale.setScalar(0.86);
+    const tail = new THREE.Mesh(gullTailGeo, gullBodyMat);
+    tail.position.set(0, 0.02, -0.24);
+    tail.scale.set(1.3, 0.7, 0.9);
+    bg.add(wl, wr, body, tail);
     birdGroup.add(bg);
   }
   scene.add(birdGroup);
@@ -1298,6 +1332,85 @@ export function createThreeIslandGame(
     leafSnowMat
   );
 
+  // Towering Tsunami Crest Ring + Molten Lava Scorch Pools + Dusk Sunset Fireflies
+  const tsunamiWaveGeo = new THREE.TorusGeometry(1.0, 0.085, 10, 56);
+  tsunamiWaveGeo.rotateX(Math.PI / 2);
+  const tsunamiWaveMat = new THREE.MeshStandardMaterial({
+    color: 0x1ea8c7,
+    emissive: 0x4de6ff,
+    emissiveIntensity: 0.45,
+    roughness: 0.22,
+    transparent: true,
+    opacity: 0.82,
+  });
+  const tsunamiFoamGeo = new THREE.TorusGeometry(0.985, 0.042, 8, 56);
+  tsunamiFoamGeo.rotateX(Math.PI / 2);
+  const tsunamiFoamMat = new THREE.MeshBasicMaterial({
+    color: 0xf4fcff,
+    transparent: true,
+    opacity: 0.9,
+  });
+  const tsunamiWaveGroup = new THREE.Group();
+  const tsunamiWaveRing = new THREE.Mesh(tsunamiWaveGeo, tsunamiWaveMat);
+  const tsunamiFoamRing = new THREE.Mesh(tsunamiFoamGeo, tsunamiFoamMat);
+  tsunamiFoamRing.position.y = 1.65;
+  tsunamiWaveRing.scale.set(1, 22, 1);
+  tsunamiWaveGroup.add(tsunamiWaveRing, tsunamiFoamRing);
+  tsunamiWaveGroup.visible = false;
+  scene.add(tsunamiWaveGroup);
+
+  const lavaPoolVisualGeo = new THREE.CircleGeometry(1.0, 20);
+  lavaPoolVisualGeo.rotateX(-Math.PI / 2);
+  const lavaPoolMeshes: Array<{ mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial }> = [];
+  for (let i = 0; i < 8; i += 1) {
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xff5a1f,
+      transparent: true,
+      opacity: 0.82,
+      depthWrite: false,
+    });
+    const mesh = new THREE.Mesh(lavaPoolVisualGeo, mat);
+    mesh.visible = false;
+    mesh.renderOrder = 3;
+    scene.add(mesh);
+    disposables.push(mat);
+    lavaPoolMeshes.push({ mesh, mat });
+  }
+
+  const duskFireflyCount = 42;
+  const duskFireflyGeo = new THREE.SphereGeometry(0.085, 6, 5);
+  const duskFireflyMat = new THREE.MeshBasicMaterial({
+    color: 0xffd166,
+    transparent: true,
+    opacity: 0.85,
+  });
+  const duskFireflyInst = new THREE.InstancedMesh(duskFireflyGeo, duskFireflyMat, duskFireflyCount);
+  duskFireflyInst.frustumCulled = false;
+  duskFireflyInst.visible = false;
+  scene.add(duskFireflyInst);
+  const duskFireflySeeds: Array<{ a: number; r: number; y: number; spd: number; ph: number }> = [];
+  for (let i = 0; i < duskFireflyCount; i += 1) {
+    duskFireflySeeds.push({
+      a: i * 1.73,
+      r: 4 + (i % 11) * 3.8,
+      y: 0.8 + (i % 5) * 0.65,
+      spd: 0.35 + (i % 4) * 0.14,
+      ph: i * 0.91,
+    });
+  }
+  disposables.push(
+    tsunamiWaveGeo,
+    tsunamiWaveMat,
+    tsunamiFoamGeo,
+    tsunamiFoamMat,
+    lavaPoolVisualGeo,
+    duskFireflyGeo,
+    duskFireflyMat
+  );
+  let quakeStumbleCooldown = 0;
+  let quakeDustCooldown = 0;
+  let volcanoAshCooldown = 0;
+
   let obeliskCrystal: THREE.Mesh | null = null;
   let obeliskHalo: THREE.Mesh | null = null;
   let obeliskHaloInner: THREE.Mesh | null = null;
@@ -1320,9 +1433,40 @@ export function createThreeIslandGame(
   let wreckGroup: THREE.Group | null = null;
   let wreckRingMesh: THREE.Mesh | null = null;
   let campFlames: THREE.Mesh[] = [];
+  let campFlameMats: THREE.MeshStandardMaterial[] = [];
   let campAuraRing: THREE.Mesh | null = null;
   let campCoalBed: THREE.Mesh | null = null;
+  let campGlowDisc: THREE.Mesh | null = null;
   let campEmberInst: THREE.InstancedMesh | null = null;
+  let campFlamePoints: THREE.Points | null = null;
+  let campFlamePointGeo: THREE.BufferGeometry | null = null;
+  let campFlamePointMat: THREE.ShaderMaterial | null = null;
+  const CAMP_PARTICLE_COUNT = 150;
+  const campParticlePos = new Float32Array(CAMP_PARTICLE_COUNT * 3);
+  const campParticleCol = new Float32Array(CAMP_PARTICLE_COUNT * 3);
+  const campParticleSize = new Float32Array(CAMP_PARTICLE_COUNT);
+  const campParticleAlpha = new Float32Array(CAMP_PARTICLE_COUNT);
+  const campParticleSeeds: Array<{
+    ang: number;
+    rad: number;
+    spd: number;
+    phase: number;
+    size: number;
+    swirl: number;
+    isSpark: boolean;
+  }> = [];
+  for (let i = 0; i < CAMP_PARTICLE_COUNT; i += 1) {
+    const isSpark = i % 3 === 2;
+    campParticleSeeds.push({
+      ang: (i / CAMP_PARTICLE_COUNT) * Math.PI * 2 * 5 + (i % 7) * 0.41,
+      rad: isSpark ? 0.18 + (i % 6) * 0.08 : 0.06 + (i % 5) * 0.085,
+      spd: isSpark ? 0.85 + (i % 5) * 0.22 : 0.95 + (i % 4) * 0.24,
+      phase: (i / CAMP_PARTICLE_COUNT + (i % 9) * 0.07) % 1,
+      size: isSpark ? 0.24 + (i % 3) * 0.09 : 0.56 + (i % 4) * 0.16,
+      swirl: (i % 2 === 0 ? 1 : -1) * (1.8 + (i % 5) * 0.55),
+      isSpark,
+    });
+  }
   const campEmberSeeds: Array<{ ang: number; rad: number; spd: number; phase: number }> = [];
   for (let i = 0; i < 48; i += 1) {
     campEmberSeeds.push({
@@ -1369,6 +1513,10 @@ export function createThreeIslandGame(
   const secretSpotVisuals = new Map<
     string,
     { group: THREE.Group; lid: THREE.Mesh; glowRing: THREE.Mesh; sparkles: THREE.Mesh[]; openAnim: number }
+  >();
+  const mysterySpotVisuals = new Map<
+    string,
+    { group: THREE.Group; core: THREE.Object3D; ring: THREE.Mesh; wisps: THREE.Mesh[]; kind: string }
   >();
   const boneShrineVisuals = new Map<string, { group: THREE.Group; ring: THREE.Mesh }>();
   const treeNodeVisuals = new Map<string, InstancedTreeBinding>();
@@ -1674,6 +1822,7 @@ export function createThreeIslandGame(
     yaw: 0,
     walkPhase: 0,
   };
+  let lastFootstepHalf = 0;
 
   const joystickInput = { dx: 0, dy: 0 };
   const activeKeys = new Set<string>();
@@ -1699,6 +1848,7 @@ export function createThreeIslandGame(
     buildPadVisuals.clear();
     landmarkRingVisuals.clear();
     secretSpotVisuals.clear();
+    mysterySpotVisuals.clear();
     boneShrineVisuals.clear();
     treeNodeVisuals.clear();
     bananaBunchVisuals.clear();
@@ -1732,9 +1882,14 @@ export function createThreeIslandGame(
     wreckGroup = null;
     wreckRingMesh = null;
     campFlames = [];
+    campFlameMats = [];
     campAuraRing = null;
     campCoalBed = null;
+    campGlowDisc = null;
     campEmberInst = null;
+    campFlamePoints = null;
+    campFlamePointGeo = null;
+    campFlamePointMat = null;
     campRoastGroup = null;
     campRoastFish = null;
     campRoastBanana = null;
@@ -1834,7 +1989,96 @@ export function createThreeIslandGame(
     campEmberInst = new THREE.InstancedMesh(campEmberGeo, campEmberMat, campEmberSeeds.length);
     campEmberInst.frustumCulled = false;
     campGroup.add(campEmberInst);
-    islandDisposables.push(coalBedGeo, coalBedMat, flameWhiteCoreMat, campEmberGeo, campEmberMat);
+
+    const campGlowGeo = new THREE.CircleGeometry(2.6, 28);
+    campGlowGeo.rotateX(-Math.PI / 2);
+    const campGlowMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uColor: { value: new THREE.Color(0xff8424) },
+        uIntensity: { value: 0.55 },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 uColor;
+        uniform float uIntensity;
+        varying vec2 vUv;
+        void main() {
+          float d = length(vUv - vec2(0.5)) * 2.0;
+          float falloff = pow(max(0.0, 1.0 - d), 2.2);
+          gl_FragColor = vec4(uColor * uIntensity, falloff * 0.65 * uIntensity);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    campGlowDisc = new THREE.Mesh(campGlowGeo, campGlowMat);
+    campGlowDisc.position.y = 0.065;
+    campGroup.add(campGlowDisc);
+
+    campFlamePointGeo = new THREE.BufferGeometry();
+    campFlamePointGeo.setAttribute('position', new THREE.BufferAttribute(campParticlePos, 3));
+    campFlamePointGeo.setAttribute('aColor', new THREE.BufferAttribute(campParticleCol, 3));
+    campFlamePointGeo.setAttribute('aSize', new THREE.BufferAttribute(campParticleSize, 1));
+    campFlamePointGeo.setAttribute('aAlpha', new THREE.BufferAttribute(campParticleAlpha, 1));
+    campFlamePointMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uPixelRatio: { value: renderer.getPixelRatio() },
+      },
+      vertexShader: `
+        attribute float aSize;
+        attribute float aAlpha;
+        attribute vec3 aColor;
+        uniform float uPixelRatio;
+        varying float vAlpha;
+        varying vec3 vColor;
+        void main() {
+          vAlpha = aAlpha;
+          vColor = aColor;
+          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+          gl_Position = projectionMatrix * mvPosition;
+          gl_PointSize = clamp(aSize * uPixelRatio * (240.0 / max(1.0, -mvPosition.z)), 2.0, 96.0);
+        }
+      `,
+      fragmentShader: `
+        varying float vAlpha;
+        varying vec3 vColor;
+        void main() {
+          if (vAlpha <= 0.005) discard;
+          vec2 centered = gl_PointCoord - vec2(0.5);
+          float d = length(centered);
+          float glow = smoothstep(0.5, 0.06, d);
+          float hotCore = smoothstep(0.24, 0.0, d);
+          vec3 col = vColor * (0.95 + hotCore * 0.65);
+          gl_FragColor = vec4(col, glow * vAlpha);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    campFlamePoints = new THREE.Points(campFlamePointGeo, campFlamePointMat);
+    campFlamePoints.position.y = 0.06;
+    campFlamePoints.frustumCulled = false;
+    campGroup.add(campFlamePoints);
+
+    islandDisposables.push(
+      coalBedGeo,
+      coalBedMat,
+      flameWhiteCoreMat,
+      campEmberGeo,
+      campEmberMat,
+      campGlowGeo,
+      campGlowMat,
+      campFlamePointGeo,
+      campFlamePointMat
+    );
 
     const flameMain = new THREE.Mesh(campFlameGeo, flameOuterMat);
     flameMain.position.y = 0.2;
@@ -1854,6 +2098,7 @@ export function createThreeIslandGame(
     flameSideL.rotation.z = 0.2;
     flameSideL.scale.set(0.52, 0.66, 0.52);
     campFlames = [flameMain, flameCore, flameSide, flameSideL, flameTip];
+    campFlameMats = [flameOuterMat, flameInnerMat, flameWhiteCoreMat];
     campGroup.add(flameMain, flameCore, flameTip, flameSide, flameSideL);
 
     const campChest = new THREE.Mesh(campChestGeo, woodMat);
@@ -2494,6 +2739,160 @@ export function createThreeIslandGame(
 
         islandGroup.add(sGroup);
         secretSpotVisuals.set(sec.id, { group: sGroup, lid: lidMesh, glowRing, sparkles, openAnim: 0 });
+      }
+    }
+
+    // 0C. 7 MYSTERY CURIOS & RISKY SECRETS across biomes
+    if (world.mysterySpots.length > 0) {
+      const mRingGeo = new THREE.RingGeometry(0.75, 1.08, 24);
+      mRingGeo.rotateX(-Math.PI / 2);
+      const mWispGeo = new THREE.SphereGeometry(0.075, 7, 6);
+      const mUrnGeo = new THREE.CylinderGeometry(0.28, 0.38, 0.72, 10);
+      const mNeckGeo = new THREE.CylinderGeometry(0.18, 0.24, 0.18, 10);
+      const mBottleGeo = new THREE.CylinderGeometry(0.11, 0.16, 0.54, 9);
+      const mTotemGeo = new THREE.BoxGeometry(0.46, 1.25, 0.46);
+      const mCrystalGeo = new THREE.OctahedronGeometry(0.42, 0);
+      const mPoolGeo = new THREE.CircleGeometry(0.72, 18);
+      mPoolGeo.rotateX(-Math.PI / 2);
+      const mShroomCapGeo = new THREE.SphereGeometry(0.48, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.55);
+      const mShroomStemGeo = new THREE.CylinderGeometry(0.14, 0.2, 0.52, 8);
+      const mCasketGeo = new THREE.BoxGeometry(0.78, 0.44, 0.54);
+
+      const mUrnMat = getPbrMat(0xc46b3b, 0.75);
+      const mBottleMat = new THREE.MeshStandardMaterial({
+        color: 0x6ce8d6,
+        emissive: 0x1e8f80,
+        emissiveIntensity: 0.45,
+        roughness: 0.2,
+        transparent: true,
+        opacity: 0.88,
+      });
+      const mTotemMat = getPbrMat(0x6d5a4f, 0.88);
+      const mCrystalMat = new THREE.MeshStandardMaterial({
+        color: 0xff5436,
+        emissive: 0xd9260a,
+        emissiveIntensity: 0.85,
+        roughness: 0.18,
+      });
+      const mPoolMat = new THREE.MeshStandardMaterial({
+        color: 0x3b1d5e,
+        emissive: 0x5c2299,
+        emissiveIntensity: 0.65,
+        roughness: 0.12,
+      });
+      const mShroomMat = new THREE.MeshStandardMaterial({
+        color: 0x9b5de5,
+        emissive: 0x6b2fd9,
+        emissiveIntensity: 0.72,
+        roughness: 0.3,
+      });
+      const mCasketMat = getPbrMat(0x4a3548, 0.72);
+      const mWispMat = new THREE.MeshBasicMaterial({ color: 0x9ef7ff });
+
+      islandDisposables.push(
+        mRingGeo,
+        mWispGeo,
+        mUrnGeo,
+        mNeckGeo,
+        mBottleGeo,
+        mTotemGeo,
+        mCrystalGeo,
+        mPoolGeo,
+        mShroomCapGeo,
+        mShroomStemGeo,
+        mCasketGeo,
+        mBottleMat,
+        mCrystalMat,
+        mPoolMat,
+        mShroomMat,
+        mWispMat
+      );
+
+      for (const mys of world.mysterySpots) {
+        const mGroup = new THREE.Group();
+        mGroup.position.set(mys.x, mys.y - 0.02, mys.z);
+        const core = new THREE.Group();
+        let ringColor = 0x7df5ff;
+
+        if (mys.kind === 'mystery_urn') {
+          const body = new THREE.Mesh(mUrnGeo, mUrnMat);
+          body.position.y = 0.36;
+          body.castShadow = true;
+          const neck = new THREE.Mesh(mNeckGeo, mUrnMat);
+          neck.position.y = 0.76;
+          core.add(body, neck);
+          ringColor = 0xf5b84c;
+        } else if (mys.kind === 'message_bottle') {
+          const bottle = new THREE.Mesh(mBottleGeo, mBottleMat);
+          bottle.position.y = 0.24;
+          bottle.rotation.z = 0.82;
+          bottle.castShadow = true;
+          core.add(bottle);
+          ringColor = 0x5df2d6;
+        } else if (mys.kind === 'glowing_shroom') {
+          const stem = new THREE.Mesh(mShroomStemGeo, boneMat);
+          stem.position.y = 0.26;
+          const cap = new THREE.Mesh(mShroomCapGeo, mShroomMat);
+          cap.position.y = 0.48;
+          cap.castShadow = true;
+          core.add(stem, cap);
+          ringColor = 0xc77dff;
+        } else if (mys.kind === 'ancient_totem') {
+          const totem = new THREE.Mesh(mTotemGeo, mTotemMat);
+          totem.position.y = 0.62;
+          totem.castShadow = true;
+          const eye = new THREE.Mesh(mCrystalGeo, mCrystalMat);
+          eye.scale.setScalar(0.35);
+          eye.position.set(0, 0.92, 0.24);
+          core.add(totem, eye);
+          ringColor = 0xff9f43;
+        } else if (mys.kind === 'unstable_crystal') {
+          const cr = new THREE.Mesh(mCrystalGeo, mCrystalMat);
+          cr.position.y = 0.56;
+          cr.scale.set(0.95, 1.35, 0.95);
+          cr.castShadow = true;
+          core.add(cr);
+          ringColor = 0xff5a36;
+        } else if (mys.kind === 'shadow_pool') {
+          const pool = new THREE.Mesh(mPoolGeo, mPoolMat);
+          pool.position.y = 0.06;
+          core.add(pool);
+          ringColor = 0xa855f7;
+        } else {
+          const casket = new THREE.Mesh(mCasketGeo, mCasketMat);
+          casket.position.y = 0.24;
+          casket.castShadow = true;
+          const clasp = new THREE.Mesh(mCrystalGeo, mCrystalMat);
+          clasp.scale.setScalar(0.26);
+          clasp.position.set(0, 0.44, 0.26);
+          core.add(casket, clasp);
+          ringColor = 0xf43f5e;
+        }
+
+        mGroup.add(core);
+
+        const rMat = new THREE.MeshBasicMaterial({
+          color: ringColor,
+          transparent: true,
+          opacity: 0.66,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        });
+        const ring = new THREE.Mesh(mRingGeo, rMat);
+        ring.position.y = 0.07;
+        mGroup.add(ring);
+        islandDisposables.push(rMat);
+
+        const wisps: THREE.Mesh[] = [];
+        for (let w = 0; w < 2; w += 1) {
+          const wMesh = new THREE.Mesh(mWispGeo, mWispMat);
+          wMesh.position.set(w === 0 ? 0.55 : -0.55, 0.85, 0);
+          mGroup.add(wMesh);
+          wisps.push(wMesh);
+        }
+
+        islandGroup.add(mGroup);
+        mysterySpotVisuals.set(mys.id, { group: mGroup, core, ring, wisps, kind: mys.kind });
       }
     }
 
@@ -4901,6 +5300,39 @@ export function createThreeIslandGame(
     endingBoatGroup.visible = false;
     actorHitFlash.clear();
     combatLungeTimer = 0;
+    templeDoorAnim = 0;
+    hammerWaveAge = -1;
+    hammerRingMesh.visible = false;
+    lightningFlash = 0;
+    tsunamiWaveGroup.visible = false;
+    dotDamageAccum = 0;
+    dotDamageFxTimer = 0;
+    for (const lpm of lavaPoolMeshes) lpm.mesh.visible = false;
+    for (const hv of hazardVisPool) {
+      hv.ring.visible = false;
+      hv.disc.visible = false;
+      hv.proj.visible = false;
+    }
+    for (const p of arrowPool) {
+      p.active = false;
+      p.mesh.visible = false;
+    }
+    for (const bp of boltPool) {
+      bp.active = false;
+      bp.mesh.visible = false;
+    }
+    for (const ep of eventProjPool) {
+      ep.active = false;
+      ep.mesh.visible = false;
+    }
+    for (const cs of clawSlashPool) {
+      cs.active = false;
+      cs.mesh.visible = false;
+    }
+    for (const treeBind of treeNodeVisuals.values()) {
+      treeBind.wobble = 0;
+      treeBind.dirty = true;
+    }
     for (const pVis of buildPadVisuals.values()) {
       pVis.padGroup.visible = true;
       pVis.builtGroup.visible = false;
@@ -4924,6 +5356,7 @@ export function createThreeIslandGame(
     const initialTime =
       timeParam === 'night' ? 0.88 : timeParam === 'dusk' ? 0.72 : timeParam === 'dawn' ? 0.22 : 0.38;
     survivalState = createSurvivalState(worldData, initialTime);
+    setWildlifeDifficulty(survivalState, currentWildlifeDifficulty);
     const weatherParam = params?.get('weather');
     if (
       weatherParam === 'rain' ||
@@ -4966,6 +5399,10 @@ export function createThreeIslandGame(
     resetPlayerToSpawn();
   };
 
+  const savedDiff = safeStorageGet<string>(CONFIG.STORAGE_KEYS.WILDLIFE_DIFFICULTY, 'normal');
+  let currentWildlifeDifficulty: WildlifeDifficulty =
+    savedDiff === 'easy' || savedDiff === 'hard' || savedDiff === 'normal' ? savedDiff : 'normal';
+
   let cutsceneTimer = 0;
   let cutsceneCrashFxDone = false;
   let endingCutsceneTimer = 0;
@@ -4981,6 +5418,12 @@ export function createThreeIslandGame(
   let combatLungeTimer = 0;
   let hitShakeTimer = 0;
   let recoilTimer = 0;
+  let dotDamageAccum = 0;
+  let dotDamageFxTimer = 0;
+  let lightningFlash = 0;
+  let nextLightningTimer = 4.5;
+  let eventProjSpawnTimer = 0;
+  let castRodSoundQueued = false;
 
   loadSeedWorld(currentSeed);
   emitHud(currentBiome);
@@ -5005,7 +5448,7 @@ export function createThreeIslandGame(
   const onKeyDown = (e: KeyboardEvent) => {
     activeKeys.add(e.code);
     soundEngine.unlockAndStartAmbience();
-    if (screenState === 'playing') {
+    if (screenState === 'playing' && survivalState.gameOutcome === 'playing') {
       if (e.code === 'KeyF' || e.code === 'Space') {
         if (e.code === 'Space') e.preventDefault();
         requestPlayerInteract(survivalState);
@@ -5109,6 +5552,10 @@ export function createThreeIslandGame(
     for (const sec of survivalState.secretSpots) {
       if (survivalState.discoveredSecrets.includes(sec.id)) continue;
       consider('secret', sec.id, sec.x, sec.y + 0.65, sec.z, CONFIG.SURVIVAL.HARVEST_RANGE_SECRET, 2.6, 44, 0.22);
+    }
+    for (const mys of survivalState.mysterySpots) {
+      if (survivalState.discoveredMysteries.includes(mys.id)) continue;
+      consider('mystery', mys.id, mys.x, mys.y + 0.6, mys.z, CONFIG.SURVIVAL.HARVEST_RANGE_MYSTERY, 2.6, 44, 0.21);
     }
     if (worldData.wreckSite && !survivalState.wreckLooted) {
       const ws = worldData.wreckSite;
@@ -5267,11 +5714,6 @@ export function createThreeIslandGame(
     event.preventDefault();
   };
   renderer.domElement.addEventListener('webglcontextlost', onContextLost, false);
-
-  let lightningFlash = 0;
-  let nextLightningTimer = 4.5;
-  let eventProjSpawnTimer = 0;
-  let castRodSoundQueued = false;
 
   let disposed = false;
   let elapsedTime = 0;
@@ -5437,12 +5879,19 @@ export function createThreeIslandGame(
     if (windUniformTime) {
       windUniformTime.value = elapsedTime;
     }
-    cloudGroup.rotation.y += dt * 0.009;
-    birdGroup.rotation.y += dt * 0.14;
+    cloudGroup.rotation.y += dt * (survivalState.weather === 'storm' ? 0.032 : 0.009);
+    birdGroup.rotation.y += dt * 0.16;
     birdGroup.children.forEach((bg, idx) => {
-      const flap = Math.sin(elapsedTime * 5.8 + idx * 1.4) * 0.32;
-      if (bg.children[0]) bg.children[0].rotation.z = 0.2 + flap;
-      if (bg.children[1]) bg.children[1].rotation.z = -0.2 - flap;
+      const cycle = (elapsedTime * 1.15 + idx * 1.37) % (Math.PI * 2);
+      const isGliding = cycle > Math.PI * 1.2;
+      const flap = isGliding
+        ? 0.14 + Math.sin(elapsedTime * 1.8 + idx) * 0.03
+        : Math.sin(elapsedTime * 8.4 + idx * 1.7) * 0.48;
+      bg.position.y = 16.8 + (idx % 2) * 2.8 + Math.sin(elapsedTime * 0.85 + idx * 1.1) * 0.95;
+      bg.rotation.z = 0.24 + Math.sin(elapsedTime * 0.6 + idx) * 0.08; // smooth banking into circle
+      bg.rotation.x = Math.cos(elapsedTime * 0.85 + idx * 1.1) * 0.14;
+      if (bg.children[0]) bg.children[0].rotation.z = -flap;
+      if (bg.children[1]) bg.children[1].rotation.z = flap;
     });
 
     if (obeliskCrystal) {
@@ -5582,12 +6031,20 @@ export function createThreeIslandGame(
       rMat.color.setHex(inspected ? 0x64748b : 0x2dd4bf);
     }
 
-    // Animate cozy survival campfire flames ONLY when lit (starts unlit at fireLit === false!)
-    const fireScaleCap = Math.min(2.6, 1 + Math.max(0, survivalState.fireLevel - 1) * 0.22);
+    // Animate cozy survival campfire flames & Three.js additive particle system scaled by fireLevel
+    const fireLv = Math.max(1, survivalState.fireLevel);
+    const fireLevelBoost = Math.max(0, fireLv - 1);
+    const fireScaleCap = Math.min(3.15, 1 + fireLevelBoost * 0.34);
     if (!survivalState.fireLit) {
       campFlames.forEach((flame) => {
         flame.visible = false;
       });
+      if (campFlamePoints) {
+        campFlamePoints.visible = false;
+      }
+      if (campGlowDisc) {
+        campGlowDisc.visible = false;
+      }
       if (campEmberInst) {
         campEmberInst.visible = false;
       }
@@ -5608,20 +6065,94 @@ export function createThreeIslandGame(
     } else {
       campFlames.forEach((flame, idx) => {
         flame.visible = true;
-        const flicker = 1 + Math.sin(elapsedTime * (7.5 + idx * 2.1) + idx) * 0.14;
-        const baseXZ = idx === 0 ? 1.05 : idx === 4 ? 0.38 : 0.58;
-        const baseY = idx === 4 ? 0.56 : idx === 1 ? 0.88 : 1.08;
-        flame.scale.set(baseXZ * fireScaleCap, baseY * flicker * fireScaleCap, baseXZ * fireScaleCap);
+        const flicker = 1 + Math.sin(elapsedTime * (7.5 + idx * 2.1) + idx) * 0.15;
+        const baseXZ = idx === 0 ? 1.08 : idx === 4 ? 0.42 : 0.62;
+        const baseY = idx === 4 ? 0.62 : idx === 1 ? 0.94 : 1.14;
+        flame.scale.set(
+          baseXZ * fireScaleCap,
+          baseY * flicker * fireScaleCap * (1 + fireLevelBoost * 0.06),
+          baseXZ * fireScaleCap
+        );
         flame.rotation.y = elapsedTime * (idx % 2 === 0 ? 1.4 : -1.8);
       });
+      if (campFlameMats.length >= 3) {
+        const pulse = Math.sin(elapsedTime * 8.2) * 0.16;
+        campFlameMats[0].emissiveIntensity = 1.25 + fireLevelBoost * 0.38 + pulse;
+        campFlameMats[1].emissiveIntensity = 1.5 + fireLevelBoost * 0.44 + pulse * 1.1;
+        campFlameMats[2].emissiveIntensity = 1.85 + fireLevelBoost * 0.55 + pulse * 1.2;
+      }
+      if (campFlamePoints && campFlamePointGeo && campFlamePointMat) {
+        campFlamePoints.visible = true;
+        campFlamePointMat.uniforms.uPixelRatio.value = renderer.getPixelRatio();
+        const activeParticles = Math.min(CAMP_PARTICLE_COUNT, 48 + fireLevelBoost * 24);
+        const plumeHeight = 1.45 + fireLevelBoost * 0.55;
+        const plumeSpread = 0.9 + fireLevelBoost * 0.24;
+        const sizeBoost = 1 + fireLevelBoost * 0.22;
+        const lumBoost = Math.min(1.6, 0.95 + fireLevelBoost * 0.15);
+
+        for (let i = 0; i < CAMP_PARTICLE_COUNT; i += 1) {
+          const i3 = i * 3;
+          if (i >= activeParticles) {
+            campParticleAlpha[i] = 0;
+            campParticleSize[i] = 0;
+            continue;
+          }
+          const ps = campParticleSeeds[i];
+          const speedScale = ps.spd * (1 + fireLevelBoost * 0.12);
+          const life = (elapsedTime * speedScale + ps.phase) % 1;
+          const riseY = life * plumeHeight * (ps.isSpark ? 1.48 : 1.0);
+          const coneTaper = ps.isSpark ? 0.8 + life * 1.35 : Math.max(0.18, 1.0 - life * 0.72);
+          const angle = ps.ang + elapsedTime * ps.swirl + life * 2.4;
+          const r = ps.rad * plumeSpread * coneTaper;
+
+          campParticlePos[i3] = Math.cos(angle) * r + Math.sin(elapsedTime * 3.1 + i) * 0.05 * life;
+          campParticlePos[i3 + 1] = 0.08 + riseY;
+          campParticlePos[i3 + 2] = Math.sin(angle) * r + Math.cos(elapsedTime * 2.7 + i) * 0.05 * life;
+
+          if (ps.isSpark) {
+            // Luminous embers (hot gold-white rising sparks; subtle cyan-gold shimmer at Lv5+)
+            if (fireLv >= 5 && i % 6 === 5) {
+              campParticleCol[i3] = 0.55 * lumBoost;
+              campParticleCol[i3 + 1] = 0.94 * lumBoost;
+              campParticleCol[i3 + 2] = 1.0 * lumBoost;
+            } else {
+              campParticleCol[i3] = 1.0 * lumBoost;
+              campParticleCol[i3 + 1] = (0.85 - life * 0.45) * lumBoost;
+              campParticleCol[i3 + 2] = (0.35 - life * 0.25) * lumBoost;
+            }
+            campParticleSize[i] = ps.size * sizeBoost * (1.05 - life * 0.55);
+            campParticleAlpha[i] = Math.sin(life * Math.PI) * Math.min(1, 0.75 + fireLevelBoost * 0.08);
+          } else {
+            // Flame wisps: white-gold core at base -> rich amber-orange mid -> deep fiery orange tip
+            campParticleCol[i3] = 1.0 * lumBoost;
+            campParticleCol[i3 + 1] = Math.max(0.22, 0.92 - life * 0.68) * lumBoost;
+            campParticleCol[i3 + 2] = Math.max(0.04, (0.58 - life * 0.56) * (1 + fireLevelBoost * 0.12)) * lumBoost;
+            const swell = Math.sin(life * Math.PI);
+            campParticleSize[i] = ps.size * sizeBoost * (0.65 + swell * 0.75);
+            campParticleAlpha[i] = swell * Math.min(0.95, 0.48 + fireLevelBoost * 0.1);
+          }
+        }
+        (campFlamePointGeo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
+        (campFlamePointGeo.attributes.aColor as THREE.BufferAttribute).needsUpdate = true;
+        (campFlamePointGeo.attributes.aSize as THREE.BufferAttribute).needsUpdate = true;
+        (campFlamePointGeo.attributes.aAlpha as THREE.BufferAttribute).needsUpdate = true;
+      }
+      if (campGlowDisc) {
+        campGlowDisc.visible = true;
+        const glowMat = campGlowDisc.material as THREE.ShaderMaterial;
+        const glowFlicker = 1 + Math.sin(elapsedTime * 7.8) * 0.1;
+        campGlowDisc.scale.setScalar((0.88 + fireLevelBoost * 0.34) * glowFlicker);
+        glowMat.uniforms.uIntensity.value = Math.min(1.8, (0.52 + fireLevelBoost * 0.26) * glowFlicker);
+        glowMat.uniforms.uColor.value.setHex(fireLv >= 5 ? 0xffc66e : 0xff8424);
+      }
       if (campCoalBed) {
         const coalMat = campCoalBed.material as THREE.MeshStandardMaterial;
         coalMat.color.setHex(0xff5a12);
-        coalMat.emissiveIntensity = 1.2 + Math.sin(elapsedTime * 6.5) * 0.35 + (survivalState.fireLevel - 1) * 0.15;
+        coalMat.emissiveIntensity = 1.25 + Math.sin(elapsedTime * 6.5) * 0.35 + fireLevelBoost * 0.28;
       }
       if (campEmberInst) {
         campEmberInst.visible = true;
-        const activeEmbers = Math.min(campEmberSeeds.length, 16 + survivalState.fireLevel * 3);
+        const activeEmbers = Math.min(campEmberSeeds.length, 16 + fireLv * 5);
         for (let i = 0; i < campEmberSeeds.length; i += 1) {
           if (i >= activeEmbers) {
             seasonDummy.scale.setScalar(0);
@@ -5629,13 +6160,13 @@ export function createThreeIslandGame(
             const es = campEmberSeeds[i];
             const prog = (elapsedTime * es.spd + es.phase) % 1;
             const swirl = es.ang + prog * 4.2;
-            const rad = es.rad * (1 + prog * 0.9) * Math.min(1.6, 0.9 + survivalState.fireLevel * 0.08);
+            const rad = es.rad * (1 + prog * 0.9) * Math.min(1.85, 0.9 + fireLv * 0.12);
             seasonDummy.position.set(
               Math.cos(swirl) * rad,
-              0.2 + prog * (1.8 + survivalState.fireLevel * 0.24),
+              0.2 + prog * (1.85 + fireLv * 0.34),
               Math.sin(swirl) * rad
             );
-            seasonDummy.scale.setScalar(Math.max(0.05, (1 - prog) * 1.15));
+            seasonDummy.scale.setScalar(Math.max(0.05, (1 - prog) * (1.1 + fireLevelBoost * 0.14)));
           }
           seasonDummy.rotation.set(0, 0, 0);
           seasonDummy.updateMatrix();
@@ -5701,40 +6232,50 @@ export function createThreeIslandGame(
     oceanMat.uniforms.uSeaLevel.value = survivalState.seaLevelOffset;
     oceanMesh.position.y = survivalState.seaLevelOffset;
 
-    // Sync Day/Night Sky, Sun/Moon Lighting, Wet Ground, Storm Lightning, Rain & Fog!
+    // Sync Day/Night/Sunset Sky, Sun/Moon Lighting, Wet Ground, Storm Lightning, Rain & Fog!
     const tDay = survivalState.timeOfDay;
     const sunAngle = (tDay - 0.25) * Math.PI * 2;
     const sunElev = Math.sin(sunAngle); // +1 noon, 0 horizon, -1 midnight
     const sunHoriz = Math.cos(sunAngle);
     const dayAmount = THREE.MathUtils.smoothstep(sunElev, -0.18, 0.28);
-    const twilightAmount =
-      Math.max(0, 1 - Math.abs(sunElev) / 0.28) * (1 - dayAmount * 0.5);
+    // Distinct warm Sunset/Dawn bell curve peaking as sun approaches horizon
+    const sunsetPeak = Math.exp(-Math.pow((sunElev - 0.04) / 0.2, 2));
+    const twilightAmount = THREE.MathUtils.clamp(
+      sunsetPeak * (survivalState.phase === 'dusk' ? 1.05 : 0.82),
+      0,
+      1
+    );
     const nightAmount = 1 - dayAmount;
 
     const skyTopDay = new THREE.Color(CONFIG.COLORS.SKY_ZENITH);
-    const skyTopDusk = new THREE.Color(0x52468c);
+    const skyTopDusk = new THREE.Color(0x3f2e6e);
     const skyTopNight = new THREE.Color(0x0b1633);
     const skyHorDay = new THREE.Color(CONFIG.COLORS.SKY_HORIZON);
-    const skyHorDusk = new THREE.Color(0xff8c5a);
+    const skyHorDusk = new THREE.Color(0xff773d);
     const skyHorNight = new THREE.Color(0x16294a);
 
-    const skyTop = skyTopNight.clone().lerp(skyTopDay, dayAmount).lerp(skyTopDusk, twilightAmount * 0.65);
-    const skyHor = skyHorNight.clone().lerp(skyHorDay, dayAmount).lerp(skyHorDusk, twilightAmount * 0.78);
+    const skyTop = skyTopNight.clone().lerp(skyTopDay, dayAmount).lerp(skyTopDusk, twilightAmount * 0.78);
+    const skyHor = skyHorNight.clone().lerp(skyHorDay, dayAmount).lerp(skyHorDusk, twilightAmount * 0.92);
 
     const isRain = survivalState.weather === 'rain';
-    const isStorm = survivalState.weather === 'storm';
+    const isStorm = survivalState.weather === 'storm' || survivalState.activeEvent === 'lightning_storm';
     const isPrecipitation = isRain || isStorm;
     const isFog = survivalState.weather === 'fog';
+    const isVolcanoActive =
+      survivalState.activeEvent === 'volcano_eruption' && survivalState.eventPhase === 'active';
 
     if (isStorm) {
-      skyTop.lerp(new THREE.Color(0x212f42), 0.76);
-      skyHor.lerp(new THREE.Color(0x46586e), 0.76);
+      skyTop.lerp(new THREE.Color(0x192336), 0.82);
+      skyHor.lerp(new THREE.Color(0x3a4b61), 0.82);
       nextLightningTimer -= dt;
       if (nextLightningTimer <= 0) {
-        nextLightningTimer = 4.5 + Math.random() * 6.5;
+        nextLightningTimer = survivalState.activeEvent === 'lightning_storm' ? 1.8 + Math.random() * 2.5 : 4.5 + Math.random() * 6.5;
         lightningFlash = 1.0;
         if (screenState === 'playing') soundEngine.playThunder();
       }
+    } else if (isVolcanoActive) {
+      skyTop.lerp(new THREE.Color(0x3d231c), 0.56);
+      skyHor.lerp(new THREE.Color(0x9c4522), 0.54);
     } else if (isRain) {
       skyTop.lerp(new THREE.Color(0x3a4f66), 0.55);
       skyHor.lerp(new THREE.Color(0x6b8299), 0.62);
@@ -5753,7 +6294,17 @@ export function createThreeIslandGame(
     skyDome.mat.uniforms.horizonColor.value.copy(skyHor);
     skyDome.mat.uniforms.sunDir.value.set(sunHoriz, Math.max(-0.2, sunElev), 0.35).normalize();
     skyDome.mat.uniforms.starMix.value = nightAmount * (isPrecipitation || isFog ? 0.15 : 1.0);
+    skyDome.mat.uniforms.sunsetMix.value = twilightAmount * (isStorm ? 0.2 : 1.0);
     skyDome.mat.uniforms.uTime.value = elapsedTime;
+
+    cloudMat.color
+      .setHex(0xffffff)
+      .lerp(new THREE.Color(0xffb47a), twilightAmount * 0.85)
+      .lerp(new THREE.Color(0x283a59), nightAmount * 0.72)
+      .lerp(new THREE.Color(0x4f5b6b), isStorm ? 0.75 : 0);
+    gullBodyMat.color
+      .setHex(0xfffaf0)
+      .lerp(new THREE.Color(0xffcaa0), twilightAmount * 0.65);
 
     const moonAngle = sunAngle + Math.PI;
     moonOrb.position.set(
@@ -5766,8 +6317,8 @@ export function createThreeIslandGame(
     scene.background = skyHor;
     const targetFogDensity = isFog
       ? 0.0115
-      : isStorm
-        ? 0.0072
+      : isStorm || isVolcanoActive
+        ? 0.0074
         : isRain
           ? 0.0054
           : nightAmount > 0.5
@@ -5778,30 +6329,89 @@ export function createThreeIslandGame(
     expFog.density = THREE.MathUtils.lerp(expFog.density, targetFogDensity, Math.min(1, dt * 1.8));
     oceanMat.uniforms.uFogColor.value.copy(skyHor);
     oceanMat.uniforms.uFogDensity.value = expFog.density;
+    oceanMat.uniforms.uSunDir.value.copy(skyDome.mat.uniforms.sunDir.value);
+    oceanMat.uniforms.uSunTint.value
+      .setRGB(1.0, 0.97, 0.88)
+      .lerp(new THREE.Color(0xff8e42), twilightAmount * 0.9);
     oceanMat.uniforms.uDeepColor.value
       .setHex(0x05203b)
-      .lerp(new THREE.Color(CONFIG.COLORS.SEA_DEEP), dayAmount);
+      .lerp(new THREE.Color(CONFIG.COLORS.SEA_DEEP), dayAmount)
+      .lerp(new THREE.Color(0x28294a), twilightAmount * 0.35);
     oceanMat.uniforms.uShallowColor.value
       .setHex(0x135975)
-      .lerp(new THREE.Color(CONFIG.COLORS.SEA_SHALLOW), dayAmount);
+      .lerp(new THREE.Color(CONFIG.COLORS.SEA_SHALLOW), dayAmount)
+      .lerp(new THREE.Color(0x6e596e), twilightAmount * 0.28);
 
-    const weatherDim = isStorm ? 0.56 : isRain ? 0.72 : isFog ? 0.82 : 1.0;
-    scene.environmentIntensity = (0.07 + dayAmount * 0.29) * weatherDim + lightningFlash * 0.35;
+    const weatherDim = isStorm ? 0.52 : isRain ? 0.72 : isFog ? 0.82 : 1.0;
+    scene.environmentIntensity = (0.08 + dayAmount * 0.28) * weatherDim + lightningFlash * 0.35;
     sunLight.color
       .setHex(0x7c9eff)
       .lerp(new THREE.Color(0xfff1d4), dayAmount)
-      .lerp(new THREE.Color(0xffa45b), twilightAmount * 0.65);
-    sunLight.intensity = (0.24 + dayAmount * 1.66) * weatherDim + lightningFlash * 2.4;
-    hemiLight.color.setHex(0x284378).lerp(new THREE.Color(0xdef5ff), dayAmount);
-    hemiLight.groundColor.setHex(0x192830).lerp(new THREE.Color(0x769a5c), dayAmount);
-    hemiLight.intensity = (0.24 + dayAmount * 0.66) * weatherDim;
-    fillLight.intensity = 0.09 + dayAmount * 0.31;
+      .lerp(new THREE.Color(0xff8c42), twilightAmount * 0.85);
+    sunLight.intensity = (0.26 + dayAmount * 1.66) * weatherDim + lightningFlash * 2.4;
+    hemiLight.color
+      .setHex(0x284378)
+      .lerp(new THREE.Color(0xdef5ff), dayAmount)
+      .lerp(new THREE.Color(0xd17fb8), twilightAmount * 0.55);
+    hemiLight.groundColor
+      .setHex(0x192830)
+      .lerp(new THREE.Color(0x769a5c), dayAmount)
+      .lerp(new THREE.Color(0x8c6342), twilightAmount * 0.45);
+    hemiLight.intensity = (0.26 + dayAmount * 0.64) * weatherDim;
+    fillLight.color.setHex(0xa3e2ff).lerp(new THREE.Color(0xb874e8), twilightAmount * 0.65);
+    fillLight.intensity = 0.09 + dayAmount * 0.31 + twilightAmount * 0.14;
+
+    // Dusk / Early-Night Golden Fireflies drifting over the jungle
+    const fireflyWeight = THREE.MathUtils.clamp(twilightAmount * 0.9 + nightAmount * 0.5, 0, 1);
+    duskFireflyInst.visible = fireflyWeight > 0.15 && !isStorm;
+    if (duskFireflyInst.visible) {
+      duskFireflyMat.opacity = fireflyWeight * 0.88;
+      for (let i = 0; i < duskFireflyCount; i += 1) {
+        const fs = duskFireflySeeds[i];
+        const a = fs.a + elapsedTime * fs.spd * 0.25;
+        const fx = Math.cos(a) * fs.r + Math.sin(elapsedTime * 0.9 + fs.ph) * 1.4;
+        const fz = Math.sin(a) * fs.r + Math.cos(elapsedTime * 0.8 + fs.ph) * 1.4;
+        const gy = groundHeightAt(fx, fz, worldData);
+        const fy = Math.max(0.6, gy) + fs.y + Math.sin(elapsedTime * 2.2 + fs.ph) * 0.35;
+        const pulse = 0.6 + 0.5 * Math.sin(elapsedTime * 4.5 + fs.ph * 2.0);
+        seasonDummy.position.set(fx, fy, fz);
+        seasonDummy.rotation.set(0, 0, 0);
+        seasonDummy.scale.setScalar(pulse * fireflyWeight);
+        seasonDummy.updateMatrix();
+        duskFireflyInst.setMatrixAt(i, seasonDummy.matrix);
+      }
+      duskFireflyInst.instanceMatrix.needsUpdate = true;
+    }
+
+    // Tsunami Advancing 3D Wave Wall + Volcano Eruption Ash Plume
+    if (survivalState.activeEvent === 'tsunami') {
+      tsunamiWaveGroup.visible = true;
+      const evDur = CONFIG.SURVIVAL.WORLD_EVENTS.TSUNAMI_DURATION_SEC;
+      const waveRadius =
+        survivalState.eventPhase === 'warning'
+          ? 122 - (1 - survivalState.eventTimer / CONFIG.SURVIVAL.WORLD_EVENTS.WARNING_SEC) * 18
+          : 104 - Math.sin((1 - survivalState.eventTimer / evDur) * Math.PI) * 34;
+      tsunamiWaveGroup.scale.set(waveRadius, 1, waveRadius * 0.86);
+      tsunamiWaveGroup.position.y = Math.max(0.15, survivalState.seaLevelOffset * 0.72);
+    } else {
+      tsunamiWaveGroup.visible = false;
+    }
+    if (survivalState.activeEvent === 'volcano_eruption') {
+      volcanoAshCooldown -= dt;
+      if (volcanoAshCooldown <= 0) {
+        volcanoAshCooldown = survivalState.eventPhase === 'active' ? 0.14 : 0.35;
+        spawnVolcanoSteam();
+      }
+    }
 
     campPointLight.intensity = !survivalState.fireLit
       ? 0
-      : (1.6 + nightAmount * 7.5) * (1 + (survivalState.fireLevel - 1) * 0.45) +
-        Math.sin(elapsedTime * 9) * 0.35;
-    campPointLight.distance = 24 + survivalState.fireLevel * 6;
+      : (1.9 + (nightAmount + twilightAmount * 0.5) * 8.2) * (1 + fireLevelBoost * 0.54) +
+        Math.sin(elapsedTime * 9) * (0.35 + fireLevelBoost * 0.12);
+    campPointLight.distance = 24 + fireLv * 7.5;
+    campPointLight.color
+      .setHex(0xff7e26)
+      .lerp(new THREE.Color(0xffcc68), Math.min(1, fireLevelBoost * 0.22));
 
     // Wet Ground Shader / PBR Roughness Sheen during Rain & Storm!
     const wet = survivalState.groundWetness;
@@ -5827,15 +6437,15 @@ export function createThreeIslandGame(
     rainInst.visible = isPrecipitation;
     rainRippleInst.visible = isPrecipitation || wet > 0.35;
     if (isPrecipitation) {
-      const spdMult = isStorm ? 1.45 : 1.0;
-      const slant = isStorm ? 0.26 : 0.1;
+      const spdMult = isStorm ? 1.55 : 1.0;
+      const slant = survivalState.activeEvent === 'lightning_storm' ? 0.44 : isStorm ? 0.28 : 0.1;
       for (let i = 0; i < rainCount; i += 1) {
         const ro = rainOffsets[i];
         ro.y -= ro.spd * spdMult * dt;
         if (ro.y < 0) ro.y = 18;
         rainDummy.position.set(playerState.x + ro.x, playerState.y + ro.y, playerState.z + ro.z);
-        rainDummy.rotation.set(slant, 0, slant * 1.1);
-        rainDummy.scale.set(1, isStorm ? 1.35 : 1.0, 1);
+        rainDummy.rotation.set(slant, 0, slant * 1.15);
+        rainDummy.scale.set(1, isStorm ? 1.4 : 1.0, 1);
         rainDummy.updateMatrix();
         rainInst.setMatrixAt(i, rainDummy.matrix);
       }
@@ -5927,6 +6537,8 @@ export function createThreeIslandGame(
         dangerLevel,
         mysticLevel,
         activeEvent: survivalState.activeEvent,
+        fireLevel: survivalState.fireLevel,
+        screen: screenState,
       }
     );
 
@@ -6036,6 +6648,30 @@ export function createThreeIslandGame(
             Math.cos(ang) * 0.78,
             1.0 + Math.sin(elapsedTime * 3 + kIdx) * 0.18,
             Math.sin(ang) * 0.78
+          );
+        }
+      });
+    }
+
+    // Animate Mystery Curios (hover/bob + wisps; fade once inspected)
+    for (const [mysId, mVis] of mysterySpotVisuals.entries()) {
+      const done = survivalState.discoveredMysteries.includes(mysId);
+      const rMat = mVis.ring.material as THREE.MeshBasicMaterial;
+      rMat.opacity = done ? 0.08 : 0.45 + Math.sin(elapsedTime * 3.2) * 0.22;
+      if (mVis.kind === 'unstable_crystal' || mVis.kind === 'message_bottle') {
+        mVis.core.position.y = done ? -0.15 : Math.sin(elapsedTime * 2.4) * 0.1;
+        mVis.core.rotation.y = done ? 0 : elapsedTime * 0.9;
+      } else {
+        mVis.core.scale.setScalar(done ? 0.72 : 1 + Math.sin(elapsedTime * 2.1) * 0.04);
+      }
+      mVis.wisps.forEach((wMesh, wIdx) => {
+        wMesh.visible = !done;
+        if (!done) {
+          const ang = elapsedTime * 2.6 + wIdx * Math.PI;
+          wMesh.position.set(
+            Math.cos(ang) * 0.62,
+            0.78 + Math.sin(elapsedTime * 3.5 + wIdx) * 0.2,
+            Math.sin(ang) * 0.62
           );
         }
       });
@@ -6169,27 +6805,65 @@ export function createThreeIslandGame(
         soundEngine.playSwimSplash();
       }
 
-      // Gentle inward tsunami surf push if standing on low beach during tsunami active phase
+      // Strong inward tsunami surf current if caught in floodwater!
       if (
         survivalState.activeEvent === 'tsunami' &&
         survivalState.eventPhase === 'active' &&
-        playerState.y < 0.95
+        playerState.y < survivalState.seaLevelOffset + 0.38
       ) {
         const distCenter = Math.hypot(playerState.x, playerState.z);
         if (distCenter > 5) {
           const pushPos = stepPlayerPhysics(
             { x: playerState.x, z: playerState.z },
-            (-playerState.x / distCenter) * 0.38,
-            (-playerState.z / distCenter) * 0.38,
+            (-playerState.x / distCenter) * 0.72,
+            (-playerState.z / distCenter) * 0.72,
             dt,
             worldData,
-            0.55,
+            0.85,
             survivalState.seaLevelOffset
           );
           playerState.x = pushPos.x;
           playerState.y = pushPos.y;
           playerState.z = pushPos.z;
         }
+      }
+
+      // Seismic earthquake stumble impulses & ground dust plumes
+      if (survivalState.activeEvent === 'earthquake' && survivalState.eventPhase === 'active') {
+        quakeStumbleCooldown -= dt;
+        quakeDustCooldown -= dt;
+        if (quakeStumbleCooldown <= 0) {
+          quakeStumbleCooldown = 2.1;
+          const qAng = elapsedTime * 5.7;
+          knockbackVel.x += Math.cos(qAng) * 4.4;
+          knockbackVel.z += Math.sin(qAng) * 4.4;
+          hitShakeTimer = Math.max(hitShakeTimer, 0.22);
+          soundEngine.playEarthquake();
+        }
+        if (quakeDustCooldown <= 0) {
+          quakeDustCooldown = 0.24;
+          const da = Math.random() * Math.PI * 2;
+          const dr = 1.6 + Math.random() * 6.5;
+          const dx = playerState.x + Math.cos(da) * dr;
+          const dz = playerState.z + Math.sin(da) * dr;
+          spawnDustPuff(dx, groundHeightAt(dx, dz, worldData), dz);
+        }
+      }
+
+      // Crosswind gusts pushing explorer during active Lightning Storm
+      if (survivalState.activeEvent === 'lightning_storm' && survivalState.eventPhase === 'active') {
+        const windPos = stepPlayerPhysics(
+          { x: playerState.x, z: playerState.z },
+          0.32 + Math.sin(elapsedTime * 1.9) * 0.14,
+          0.18 + Math.cos(elapsedTime * 1.5) * 0.1,
+          dt,
+          worldData,
+          0.42,
+          survivalState.seaLevelOffset
+        );
+        playerState.x = windPos.x;
+        playerState.y = windPos.y;
+        playerState.z = windPos.z;
       }
 
       const survivalRes = stepSurvivalSystem(
@@ -6238,12 +6912,27 @@ export function createThreeIslandGame(
 
         if (!hz.resolved && hz.kind !== 'lightning') {
           hv.proj.visible = true;
-          hv.proj.position.set(hz.x, hy + (1 - prog) * 18, hz.z);
-          hv.proj.rotation.set(elapsedTime * 4, elapsedTime * 3, 0);
-          hv.proj.scale.setScalar(hz.kind === 'boulder' ? 1.15 + prog * 0.55 : 0.85 + prog * 0.45);
+          hv.proj.position.set(hz.x, hy + (1 - prog) * 22, hz.z);
+          hv.proj.rotation.set(elapsedTime * 5.2, elapsedTime * 4.1, 0);
+          hv.proj.scale.setScalar(hz.kind === 'boulder' ? 1.45 + prog * 0.65 : 1.05 + prog * 0.55);
         } else {
           hv.proj.visible = false;
         }
+      }
+
+      // Render Lingering Molten Magma Scorch Pools from Volcano Eruption
+      for (let i = 0; i < lavaPoolMeshes.length; i += 1) {
+        const lpm = lavaPoolMeshes[i];
+        const lp = survivalState.lavaPools[i];
+        if (!lp) {
+          lpm.mesh.visible = false;
+          continue;
+        }
+        lpm.mesh.visible = true;
+        const lpy = groundHeightAt(lp.x, lp.z, worldData) + 0.06;
+        lpm.mesh.position.set(lp.x, lpy, lp.z);
+        lpm.mesh.scale.setScalar(lp.radius * (0.94 + Math.sin(elapsedTime * 8 + i) * 0.06));
+        lpm.mat.opacity = Math.min(0.85, (lp.timer / 4.5) * 0.9);
       }
 
       // Trigger Lightning Bolt Flash & Impact Chips on Hazard Strikes
@@ -6276,6 +6965,11 @@ export function createThreeIslandGame(
         const ps = survivalRes.predatorStrikes[0];
         knockbackVel.x += ps.knockbackX * ps.knockbackForce;
         knockbackVel.z += ps.knockbackZ * ps.knockbackForce;
+        const kbMag = Math.hypot(knockbackVel.x, knockbackVel.z);
+        if (kbMag > 11) {
+          knockbackVel.x = (knockbackVel.x / kbMag) * 11;
+          knockbackVel.z = (knockbackVel.z / kbMag) * 11;
+        }
         hitShakeTimer = 0.28;
         recoilTimer = 0.25;
         const clawY = Math.max(playerState.y, survivalState.seaLevelOffset) + 0.88;
@@ -6304,10 +6998,25 @@ export function createThreeIslandGame(
           spawnBurstChips(playerState.x, playerState.y + 0.65, playerState.z, 'wood');
         }
       }
-      if (survivalRes.damageTaken > 0) {
+      if (dotDamageFxTimer > 0) {
+        dotDamageFxTimer = Math.max(0, dotDamageFxTimer - dt);
+      }
+      if (survivalRes.damageTaken >= 3) {
         soundEngine.playHitDamage();
         const pt = projectWorldToViewport(playerState.x, playerState.y + 1.45, playerState.z);
         callbacks.onDamageTaken?.(Math.round(survivalRes.damageTaken), pt.x, pt.y);
+      } else if (survivalRes.damageTaken > 0) {
+        dotDamageAccum += survivalRes.damageTaken;
+        if (dotDamageFxTimer <= 0 && dotDamageAccum >= 1) {
+          dotDamageFxTimer = 0.7;
+          const shownDmg = Math.max(1, Math.round(dotDamageAccum));
+          dotDamageAccum = 0;
+          soundEngine.playHitDamage();
+          const pt = projectWorldToViewport(playerState.x, playerState.y + 1.45, playerState.z);
+          callbacks.onDamageTaken?.(shownDmg, pt.x, pt.y);
+        }
+      } else {
+        dotDamageAccum = 0;
       }
 
       if (combatLungeTimer > 0) combatLungeTimer = Math.max(0, combatLungeTimer - dt);
@@ -6317,7 +7026,7 @@ export function createThreeIslandGame(
       }
       if (survivalRes.meleeStrike) {
         const ms = survivalRes.meleeStrike;
-        soundEngine.playWeaponStrike();
+        soundEngine.playWeaponStrike(survivalState.equippedWeapon);
         actorHitFlash.set(ms.actorId, 0.28);
         combatLungeTimer = 0.28;
         spawnBurstChips(ms.x, ms.y + 0.45, ms.z, 'meat');
@@ -6384,6 +7093,8 @@ export function createThreeIslandGame(
       if (survivalRes.harvested) {
         const h = survivalRes.harvested;
         if (h.kind === 'fish') soundEngine.playSplash();
+        else if (h.kind === 'shell') soundEngine.playShellPickup();
+        else if (h.kind === 'banana' || h.kind === 'berries') soundEngine.playForage();
         else soundEngine.playPickup();
         spawnBurstChips(h.x, h.y, h.z, h.kind);
         spawnFlyingPropToBack(h.kind, h.x, h.y, h.z);
@@ -6452,17 +7163,51 @@ export function createThreeIslandGame(
 
       if (survivalRes.openedSecret) {
         const sec = survivalRes.openedSecret;
-        soundEngine.playSecretOpen();
-        spawnBurstChips(sec.x, sec.y + 0.6, sec.z, 'ember');
-        callbacks.onNotice?.(`گنج مخفی کشف شد: ${sec.nameFa} (+۱۵ سکه و ۱ امتیاز مهارت)`);
-        if (callbacks.onResourceFly) {
-          const pt = projectWorldToViewport(sec.x, sec.y + 1.2, sec.z);
-          callbacks.onResourceFly({
-            id: flyEventSeq++,
-            kind: 'coin',
-            startX: pt.x,
-            startY: pt.y,
-          });
+        if (sec.isTrap) {
+          soundEngine.playSecretTrap();
+          hitShakeTimer = Math.max(hitShakeTimer, 0.28);
+          spawnBurstChips(sec.x, sec.y + 0.6, sec.z, 'wood');
+          const pt = projectWorldToViewport(playerState.x, playerState.y + 1.45, playerState.z);
+          callbacks.onDamageTaken?.(Math.max(1, Math.abs(Math.round(sec.energyDelta))), pt.x, pt.y);
+          callbacks.onNotice?.(sec.notice);
+        } else {
+          soundEngine.playSecretReward();
+          spawnBurstChips(sec.x, sec.y + 0.6, sec.z, 'ember');
+          callbacks.onNotice?.(sec.notice);
+          if (callbacks.onResourceFly && sec.coinsDelta > 0) {
+            const pt = projectWorldToViewport(sec.x, sec.y + 1.2, sec.z);
+            callbacks.onResourceFly({
+              id: flyEventSeq++,
+              kind: 'coin',
+              startX: pt.x,
+              startY: pt.y,
+            });
+          }
+        }
+      }
+
+      if (survivalRes.openedMystery) {
+        const mys = survivalRes.openedMystery;
+        if (mys.isHarmful) {
+          soundEngine.playSecretTrap();
+          hitShakeTimer = Math.max(hitShakeTimer, 0.3);
+          spawnBurstChips(mys.x, mys.y + 0.65, mys.z, 'wood');
+          const pt = projectWorldToViewport(playerState.x, playerState.y + 1.45, playerState.z);
+          callbacks.onDamageTaken?.(Math.max(1, Math.abs(Math.round(mys.energyDelta))), pt.x, pt.y);
+          callbacks.onNotice?.(mys.notice);
+        } else {
+          soundEngine.playSecretReward();
+          spawnBurstChips(mys.x, mys.y + 0.65, mys.z, 'ember');
+          callbacks.onNotice?.(mys.notice);
+          if (callbacks.onResourceFly && mys.coinsDelta > 0) {
+            const pt = projectWorldToViewport(mys.x, mys.y + 1.2, mys.z);
+            callbacks.onResourceFly({
+              id: flyEventSeq++,
+              kind: 'coin',
+              startX: pt.x,
+              startY: pt.y,
+            });
+          }
         }
       }
 
@@ -6565,6 +7310,10 @@ export function createThreeIslandGame(
       }
       if (survivalRes.eventEndedNotice) {
         callbacks.onNotice?.(survivalRes.eventEndedNotice);
+      }
+      if (survivalRes.campfireExtinguishedNotice) {
+        soundEngine.playHitDamage();
+        callbacks.onNotice?.(survivalRes.campfireExtinguishedNotice);
       }
       if (survivalRes.boatVoyageNotice) {
         soundEngine.playSplash();
@@ -6773,7 +7522,7 @@ export function createThreeIslandGame(
             pc.locked = true;
             if (pVis.pieceSoundCooldown <= 0 && prog < 0.99) {
               pVis.pieceSoundCooldown = 0.14;
-              soundEngine.playChop();
+              soundEngine.playBuildTick();
               if (padSite) {
                 spawnBurstChips(padSite.x, padSite.y + 0.55, padSite.z, 'chipWood');
               }
@@ -6782,7 +7531,7 @@ export function createThreeIslandGame(
         }
       }
 
-      // Sync Island Wildlife Visual Rigs (banking turns, grazing pauses, articulated snake slither & forked tongue, swim, hop, windup/lunge, KO)
+      // Sync Island Wildlife Visual Rigs (gradual dusk emergence, natural flap-and-glide bird flight, banking turns, grazing pauses, articulated slither, swim, hop, windup/lunge, KO)
       let predRingIdx = 0;
       const nextWindupIds = new Set<string>();
       for (const actor of survivalState.wildlife.actors) {
@@ -6792,8 +7541,24 @@ export function createThreeIslandGame(
         rig.group.visible = actor.visible;
         if (!actor.visible) continue;
 
-        rig.group.position.set(actor.x, actor.y, actor.z);
+        const emergeAlpha = THREE.MathUtils.clamp(actor.emergeAlpha ?? 1, 0, 1);
+        const emergeScale = 0.25 + 0.75 * emergeAlpha;
+        rig.group.scale.setScalar(spec.scale * emergeScale);
+        const emergeSinkY = spec.flying ? 0 : -(1 - emergeAlpha) * 0.38;
+        rig.group.position.set(actor.x, actor.y + emergeSinkY, actor.z);
         rig.group.rotation.y = actor.yaw;
+
+        if (rig.shadowMesh) {
+          if (spec.flying) {
+            const gY = groundHeightAt(actor.x, actor.z, worldData);
+            const altitude = Math.max(0, actor.y - gY);
+            rig.shadowMesh.position.y = (gY - actor.y + 0.04) / Math.max(0.2, spec.scale * emergeScale);
+            rig.shadowMesh.scale.setScalar(THREE.MathUtils.clamp(1.12 - altitude * 0.08, 0.42, 1.0));
+          } else {
+            rig.shadowMesh.position.y = 0.03 - emergeSinkY / Math.max(0.2, spec.scale * emergeScale);
+            rig.shadowMesh.scale.setScalar(emergeScale);
+          }
+        }
 
         if (actor.koTimer > 0) {
           const koT = 1 - actor.koTimer / 0.55;
@@ -6803,7 +7568,9 @@ export function createThreeIslandGame(
           if (rig.sleepTag) rig.sleepTag.visible = false;
           continue;
         }
-        const turnLean = THREE.MathUtils.clamp((actor.turnBank ?? 0) * 0.42, -0.32, 0.32);
+        const turnLean = spec.flying
+          ? THREE.MathUtils.clamp((actor.turnBank ?? 0) * 0.85, -0.56, 0.56)
+          : THREE.MathUtils.clamp((actor.turnBank ?? 0) * 0.42, -0.32, 0.32);
         const isMoving = Math.hypot(actor.vx, actor.vz) > 0.12 && (actor.pauseTimer ?? 0) <= 0 && !actor.sleeping;
         rig.bodyGroup.rotation.z = turnLean;
         rig.bodyGroup.rotation.y = 0;
@@ -6817,7 +7584,8 @@ export function createThreeIslandGame(
             const wr = predWarnPool[predRingIdx];
             predRingIdx += 1;
             wr.visible = true;
-            wr.position.set(actor.x, actor.y + 0.08, actor.z);
+            const groundY = groundHeightAt(actor.x, actor.z, worldData);
+            wr.position.set(actor.x, groundY + 0.08, actor.z);
             wr.scale.setScalar(0.95 + Math.sin(elapsedTime * 22) * 0.16);
           }
         }
@@ -6843,7 +7611,7 @@ export function createThreeIslandGame(
           } else {
             const breathe = 1 + Math.sin(elapsedTime * 3.1 + actor.phase) * 0.025;
             rig.bodyGroup.scale.set(1, breathe, 1);
-            rig.bodyGroup.rotation.x = 0;
+            rig.bodyGroup.rotation.x = spec.flying ? (actor.flyPitch ?? 0) : 0;
             rig.bodyGroup.position.x = 0;
           }
           const hitFlashLeft = actorHitFlash.get(actor.id) ?? 0;
@@ -6876,11 +7644,13 @@ export function createThreeIslandGame(
               rig.headGroup.rotation.x = 0.24 + Math.sin(elapsedTime * 4.8 + actor.phase) * 0.14;
               rig.headGroup.rotation.y = Math.sin(elapsedTime * 2.1 + actor.phase) * 0.22;
             } else {
-              rig.headGroup.rotation.x = Math.sin(actor.phase * 1.5) * 0.11;
+              rig.headGroup.rotation.x = spec.flying
+                ? -(actor.flyPitch ?? 0) * 0.55 + Math.sin(actor.phase * 1.2) * 0.06
+                : Math.sin(actor.phase * 1.5) * 0.11;
               rig.headGroup.rotation.y = Math.cos(actor.phase * 0.9) * 0.14 + turnLean * 0.55;
             }
           }
-          if (rig.tailGroup) {
+          if (rig.tailGroup && !spec.flying) {
             rig.tailGroup.rotation.y = Math.sin(actor.phase * (spec.aquatic ? 5.2 : 3.4)) * (spec.aquatic ? 0.46 : 0.32);
           }
           if (rig.haloGroup) {
@@ -6920,10 +7690,30 @@ export function createThreeIslandGame(
             if (rig.clawL) rig.clawL.rotation.x = Math.sin(actor.phase * 3.2) * 0.38;
             if (rig.clawR) rig.clawR.rotation.x = -Math.sin(actor.phase * 3.2) * 0.38;
           } else if (spec.flying) {
-            const flap = Math.sin(actor.phase * 3.8) * 0.56;
-            if (rig.leftWing) rig.leftWing.rotation.z = 0.18 + flap;
-            if (rig.rightWing) rig.rightWing.rotation.z = -0.18 - flap;
-            rig.bodyGroup.position.y = Math.sin(elapsedTime * 2.6 + actor.phase) * 0.08;
+            if (spec.archetype === 'butterfly') {
+              const flutter = Math.sin(actor.phase * 8.5) * 0.78;
+              if (rig.leftWing) rig.leftWing.rotation.z = -0.1 - flutter;
+              if (rig.rightWing) rig.rightWing.rotation.z = 0.1 + flutter;
+              rig.bodyGroup.position.y = Math.sin(actor.phase * 4.2) * 0.05;
+            } else {
+              // Realistic Bird / Bat Wingbeat Bursts + Soaring Glide Phases
+              const glideCycle = (actor.phase * 0.48) % (Math.PI * 2);
+              const isGliding = actor.attackState === 'idle' && glideCycle > Math.PI * 1.25;
+              const strokeRaw = Math.sin(actor.phase * 4.4);
+              const flapAngle = isGliding
+                ? 0.12 + Math.sin(elapsedTime * 2.0 + actor.phase) * 0.03
+                : strokeRaw * 0.64 + 0.06;
+              if (rig.leftWing) rig.leftWing.rotation.z = -flapAngle;
+              if (rig.rightWing) rig.rightWing.rotation.z = flapAngle;
+              const tipFlex = isGliding ? 0.16 : -Math.cos(actor.phase * 4.4) * 0.3;
+              if (rig.leftWingTip) rig.leftWingTip.rotation.z = tipFlex;
+              if (rig.rightWingTip) rig.rightWingTip.rotation.z = -tipFlex;
+              if (rig.tailGroup) {
+                rig.tailGroup.scale.x = isGliding ? 1.26 : 0.96;
+                rig.tailGroup.rotation.x = isGliding ? -0.12 : 0.06;
+              }
+              rig.bodyGroup.position.y = isGliding ? 0.02 : -strokeRaw * 0.055;
+            }
           } else {
             rig.bodyGroup.position.y = isMoving ? Math.abs(Math.sin(actor.phase * 2.4)) * 0.065 : Math.sin(elapsedTime * 2.8 + actor.phase) * 0.012;
           }
@@ -7120,10 +7910,10 @@ export function createThreeIslandGame(
         joystickInput.dy = 0;
         clickWalkTarget = null;
         if (currentOutcome === 'victory') {
-          soundEngine.playLevelUp();
+          soundEngine.playVictoryFanfare();
           clearSavedRun();
         } else if (currentOutcome === 'defeat') {
-          soundEngine.playHitDamage();
+          soundEngine.playDefeatSting();
           clearSavedRun();
         }
         callbacks.onOutcomeChange?.(currentOutcome);
@@ -7182,6 +7972,19 @@ export function createThreeIslandGame(
         survivor.root.rotation.y = playerState.yaw;
 
         playerState.walkPhase += dt * CONFIG.PLAYER.WALK_CYCLE_SPEED * Math.min(1, mag) * speedScale;
+        const stepHalf = Math.floor(playerState.walkPhase / Math.PI);
+        if (stepHalf !== lastFootstepHalf) {
+          lastFootstepHalf = stepHalf;
+          const surface =
+            playerState.y < survivalState.seaLevelOffset + 0.05
+              ? 'water'
+              : playerState.y < 0.72
+                ? 'sand'
+                : currentBiome === 'volcano' || currentBiome === 'ruins'
+                  ? 'rock'
+                  : 'grass';
+          soundEngine.playFootstep(surface);
+        }
         const swing = Math.sin(playerState.walkPhase);
         const bounce = Math.abs(Math.sin(playerState.walkPhase)) * 0.095;
 
@@ -7270,7 +8073,8 @@ export function createThreeIslandGame(
           chopSwingChipCooldown -= dt;
           if (strike > 0.85 && chopSwingChipCooldown <= 0) {
             chopSwingChipCooldown = 0.28;
-            if (useHammer) soundEngine.playWeaponStrike();
+            if (useHammer) soundEngine.playWeaponStrike('hammer');
+            else if (action === 'build') soundEngine.playBuildTick();
             else soundEngine.playChop();
             if (activeNode) {
               spawnBurstChips(activeNode.x, activeNode.y + 0.4, activeNode.z, 'chipWood');
@@ -7354,7 +8158,7 @@ export function createThreeIslandGame(
           chopSwingChipCooldown -= dt;
           if (thrust > 0.86 && chopSwingChipCooldown <= 0) {
             chopSwingChipCooldown = 0.35;
-            soundEngine.playWeaponStrike();
+            soundEngine.playWeaponStrike('spear');
             spawnBurstChips(
               survivalState.actionTargetX,
               survivalState.seaLevelOffset + 0.05,
@@ -7456,10 +8260,10 @@ export function createThreeIslandGame(
       camLookAt.lerp(targetLookAt, followAlpha);
       desiredCamPos.set(camLookAt.x, camLookAt.y + camHeightOffset, camLookAt.z + camDepthOffset);
       if (survivalState.activeEvent === 'earthquake') {
-        const quakeAmp = survivalState.eventPhase === 'active' ? 0.16 : 0.055;
-        desiredCamPos.x += Math.sin(elapsedTime * 39) * quakeAmp;
-        desiredCamPos.y += Math.cos(elapsedTime * 47) * quakeAmp * 0.7;
-        desiredCamPos.z += Math.sin(elapsedTime * 33) * quakeAmp;
+        const quakeAmp = survivalState.eventPhase === 'active' ? 0.28 : 0.075;
+        desiredCamPos.x += Math.sin(elapsedTime * 42) * quakeAmp;
+        desiredCamPos.y += Math.cos(elapsedTime * 51) * quakeAmp * 0.72;
+        desiredCamPos.z += Math.sin(elapsedTime * 35) * quakeAmp;
       }
       if (hitShakeTimer > 0) {
         hitShakeTimer = Math.max(0, hitShakeTimer - dt);
@@ -7717,7 +8521,7 @@ export function createThreeIslandGame(
         endingRowSplashCooldown -= cineDt;
         if (dip > 0.65 && endingRowSplashCooldown <= 0) {
           endingRowSplashCooldown = 0.62;
-          soundEngine.playSplash();
+          soundEngine.playOarStroke();
           spawnBurstChips(boatX - 1.5, boatY + 0.04, boatZ - 0.1, 'fish');
           spawnBurstChips(boatX + 1.5, boatY + 0.04, boatZ - 0.1, 'fish');
           spawnBurstChips(boatX, boatY + 0.02, boatZ - 1.55, 'fish');
@@ -7774,7 +8578,14 @@ export function createThreeIslandGame(
     }
 
     if (!isSoftwareGl) {
-      sunLight.position.set(playerState.x + 22, 32, playerState.z + 14);
+      const sAngle = (survivalState.timeOfDay - 0.25) * Math.PI * 2;
+      const sElev = Math.sin(sAngle);
+      const sHoriz = Math.cos(sAngle);
+      sunLight.position.set(
+        playerState.x + sHoriz * 28,
+        Math.max(9.5, sElev * 30 + 6),
+        playerState.z + 14
+      );
       sunLight.target.position.set(playerState.x, playerState.y, playerState.z);
       sunLight.target.updateMatrixWorld();
     }
@@ -7916,7 +8727,7 @@ export function createThreeIslandGame(
     triggerVictoryVoyage(survivalState);
     lastNotifiedOutcome = 'victory';
     clearSavedRun();
-    soundEngine.playLevelUp();
+    soundEngine.playVictoryFanfare();
     screenState = 'playing';
     callbacks.onScreenChange('playing', { mode: currentMode, seed: currentSeed });
     emitHud(currentBiome);
@@ -7984,6 +8795,7 @@ export function createThreeIslandGame(
         loadSeedWorld(nextSeed);
       } else {
         survivalState = createSurvivalState(worldData);
+        setWildlifeDifficulty(survivalState, currentWildlifeDifficulty);
         resetPlayerToSpawn();
       }
       lastNotifiedOutcome = 'playing';
@@ -7993,6 +8805,7 @@ export function createThreeIslandGame(
       knockbackVel.z = 0;
       hitShakeTimer = 0;
       recoilTimer = 0;
+      lastFootstepHalf = 0;
       lastStackSignature = '';
       syncSurvivorBackStack();
       callbacks.onOutcomeChange?.('playing');
@@ -8036,11 +8849,13 @@ export function createThreeIslandGame(
       const restored = restoreSavedRunSnapshot(snap, worldData);
       if (!restored) return false;
       survivalState = restored.state;
+      setWildlifeDifficulty(survivalState, currentWildlifeDifficulty);
       playerState.x = restored.player.x;
       playerState.y = restored.player.y;
       playerState.z = restored.player.z;
       playerState.yaw = restored.player.yaw;
       playerState.walkPhase = 0;
+      lastFootstepHalf = 0;
       currentBiome = detectBiomeAt(playerState.x, playerState.z, worldData);
       survivor.root.position.set(playerState.x, playerState.y, playerState.z);
       survivor.root.rotation.y = playerState.yaw;
@@ -8148,7 +8963,7 @@ export function createThreeIslandGame(
     eatFood: () => {
       const res = eatBestFoodFromInventory(survivalState);
       if (res.ate) {
-        soundEngine.playPickup();
+        soundEngine.playEat();
         lastStackSignature = '';
         syncSurvivorBackStack();
         emitHud(currentBiome);
@@ -8200,7 +9015,7 @@ export function createThreeIslandGame(
     stokeFire: () => {
       const ok = stokeCampfire(survivalState);
       if (ok) {
-        soundEngine.playLevelUp();
+        soundEngine.playStokeFire();
         lastStackSignature = '';
         syncSurvivorBackStack();
         const campY = groundHeightAt(CONFIG.ISLAND.CAMPFIRE.CX, CONFIG.ISLAND.CAMPFIRE.CZ, worldData);
@@ -8290,6 +9105,13 @@ export function createThreeIslandGame(
       }
       return ready;
     },
+    setWildlifeDifficulty: (difficulty: WildlifeDifficulty) => {
+      currentWildlifeDifficulty = difficulty;
+      safeStorageSet(CONFIG.STORAGE_KEYS.WILDLIFE_DIFFICULTY, difficulty);
+      setWildlifeDifficulty(survivalState, difficulty);
+      emitHud(currentBiome);
+    },
+    getWildlifeDifficulty: () => currentWildlifeDifficulty,
     toggleMute: () => {
       return soundEngine.toggleMute();
     },

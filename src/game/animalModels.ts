@@ -1,7 +1,12 @@
 import * as THREE from 'three';
 import {
+  buildBatWingGeometry,
+  buildBirdTorsoGeometry,
   buildCurvedGullWingGeometry,
+  buildFeatherPlumeGeometry,
+  buildFishFinGeometry,
   buildFishGeometry,
+  buildQuadrupedTorsoGeometry,
   buildSculptedSunCrystalGeometry,
   buildSeashellGeometry,
 } from './sculptGeometry';
@@ -14,6 +19,8 @@ export interface AnimalVisualRig {
   legs: THREE.Object3D[];
   leftWing?: THREE.Object3D;
   rightWing?: THREE.Object3D;
+  leftWingTip?: THREE.Object3D;
+  rightWingTip?: THREE.Object3D;
   tailGroup?: THREE.Object3D;
   clawL?: THREE.Object3D;
   clawR?: THREE.Object3D;
@@ -21,26 +28,12 @@ export interface AnimalVisualRig {
   segments?: THREE.Object3D[];
   tongueGroup?: THREE.Object3D;
   sleepTag?: THREE.Mesh;
+  shadowMesh?: THREE.Mesh;
   dispose: () => void;
 }
 
 function buildOrganicTorsoLathe(): THREE.BufferGeometry {
-  // Smooth organic quadruped torso along Y (rotated to Z on placement)
-  const pts = [
-    new THREE.Vector2(0.0, -0.34),
-    new THREE.Vector2(0.11, -0.31),
-    new THREE.Vector2(0.19, -0.22),
-    new THREE.Vector2(0.21, -0.05),
-    new THREE.Vector2(0.195, 0.12),
-    new THREE.Vector2(0.215, 0.24),
-    new THREE.Vector2(0.16, 0.33),
-    new THREE.Vector2(0.0, 0.36),
-  ];
-  const geo = new THREE.LatheGeometry(pts, 14);
-  geo.rotateX(Math.PI / 2);
-  geo.scale(0.96, 0.92, 1.0);
-  geo.computeVertexNormals();
-  return geo;
+  return buildQuadrupedTorsoGeometry();
 }
 
 function buildTaperedLegLathe(): THREE.BufferGeometry {
@@ -194,8 +187,14 @@ export function createAnimalGeometryLibrary() {
   const beakGeo = buildCurvedBeakGeo();
   const turtleShellGeo = buildTurtleDomeGeo();
   const butterflyWingGeo = buildButterflyWingGeo();
+  const birdTorsoGeo = buildBirdTorsoGeometry();
+  const featherPlumeGeo = buildFeatherPlumeGeometry();
+  const fishFinGeo = buildFishFinGeometry();
   const earCap = new THREE.CapsuleGeometry(0.042, 0.18, 4, 8);
-  const wingGeo = buildCurvedGullWingGeometry();
+  const wingRightGeo = buildCurvedGullWingGeometry(1);
+  const wingLeftGeo = buildCurvedGullWingGeometry(-1);
+  const batWingRightGeo = buildBatWingGeometry(1);
+  const batWingLeftGeo = buildBatWingGeometry(-1);
   const fishGeo = buildFishGeometry();
   const shellGeo = buildSeashellGeometry();
   const crystalShardGeo = buildSculptedSunCrystalGeometry();
@@ -210,6 +209,9 @@ export function createAnimalGeometryLibrary() {
     capsule,
     legGeo,
     torsoGeo,
+    birdTorsoGeo,
+    featherPlumeGeo,
+    fishFinGeo,
     snoutGeo,
     curvedTailGeo,
     antlerGeo,
@@ -217,7 +219,10 @@ export function createAnimalGeometryLibrary() {
     turtleShellGeo,
     butterflyWingGeo,
     earCap,
-    wingGeo,
+    wingRightGeo,
+    wingLeftGeo,
+    batWingRightGeo,
+    batWingLeftGeo,
     fishGeo,
     shellGeo,
     crystalShardGeo,
@@ -231,6 +236,9 @@ export function createAnimalGeometryLibrary() {
       capsule.dispose();
       legGeo.dispose();
       torsoGeo.dispose();
+      birdTorsoGeo.dispose();
+      featherPlumeGeo.dispose();
+      fishFinGeo.dispose();
       snoutGeo.dispose();
       curvedTailGeo.dispose();
       antlerGeo.dispose();
@@ -238,7 +246,10 @@ export function createAnimalGeometryLibrary() {
       turtleShellGeo.dispose();
       butterflyWingGeo.dispose();
       earCap.dispose();
-      wingGeo.dispose();
+      wingRightGeo.dispose();
+      wingLeftGeo.dispose();
+      batWingRightGeo.dispose();
+      batWingLeftGeo.dispose();
       fishGeo.dispose();
       shellGeo.dispose();
       crystalShardGeo.dispose();
@@ -355,12 +366,24 @@ export function buildSculptedAnimalRig(
   const legs: THREE.Object3D[] = [];
   let leftWing: THREE.Object3D | undefined;
   let rightWing: THREE.Object3D | undefined;
+  let leftWingTip: THREE.Object3D | undefined;
+  let rightWingTip: THREE.Object3D | undefined;
   let tailGroup: THREE.Object3D | undefined;
   let clawL: THREE.Object3D | undefined;
   let clawR: THREE.Object3D | undefined;
   let haloGroup: THREE.Object3D | undefined;
   const segments: THREE.Object3D[] = [];
   let tongueGroup: THREE.Object3D | undefined;
+
+  const wingFeatheredMat = new THREE.MeshStandardMaterial({
+    color: spec.id === 'vampire_bat' ? spec.secondaryColor : spec.primaryColor,
+    roughness: spec.id === 'vampire_bat' ? 0.56 : 0.62,
+    metalness: 0.04,
+    vertexColors: true,
+    emissive: spec.category === 'strange' ? spec.secondaryColor : 0x000000,
+    emissiveIntensity: spec.category === 'strange' ? 0.28 : 0,
+  });
+  disposables.push(wingFeatheredMat);
 
   const arch = spec.archetype;
 
@@ -470,20 +493,38 @@ export function buildSculptedAnimalRig(
     bodyGroup.add(hub);
   } else if (arch === 'fish') {
     const fishMesh = new THREE.Mesh(geoLib.fishGeo, primaryMat);
-    fishMesh.scale.setScalar(1.38);
+    fishMesh.scale.setScalar(1.42);
     fishMesh.castShadow = true;
     bodyGroup.add(fishMesh);
 
-    const dorsal = new THREE.Mesh(geoLib.curvedTailGeo, secondaryMat);
-    dorsal.scale.set(0.5, 0.68, 0.7);
-    dorsal.position.set(0, 0.1, -0.02);
+    const dorsal = new THREE.Mesh(geoLib.fishFinGeo, secondaryMat);
+    dorsal.rotation.y = Math.PI * 0.5;
+    dorsal.rotation.z = 0.22;
+    dorsal.scale.set(1.25, 1.35, 1.2);
+    dorsal.position.set(0, 0.14, 0.08);
     bodyGroup.add(dorsal);
 
-    const tail = new THREE.Mesh(geoLib.smallSphere, secondaryMat);
-    tail.scale.set(0.28, 0.72, 1.0);
-    tail.position.set(0, 0.02, -0.32);
-    bodyGroup.add(tail);
-    tailGroup = tail;
+    // Paired pectoral fins + gill accent bands
+    for (const sx of [-1, 1]) {
+      const pec = new THREE.Mesh(geoLib.fishFinGeo, secondaryMat);
+      pec.rotation.x = Math.PI * 0.42;
+      pec.rotation.y = sx * 0.55;
+      pec.scale.set(sx * 0.85, 0.85, 0.9);
+      pec.position.set(sx * 0.12, -0.02, 0.08);
+      bodyGroup.add(pec);
+    }
+
+    const tailPivot = new THREE.Group();
+    tailPivot.position.set(0, 0.01, -0.34);
+    for (const ang of [0.36, -0.36]) {
+      const fork = new THREE.Mesh(geoLib.fishFinGeo, secondaryMat);
+      fork.rotation.y = Math.PI * 0.5;
+      fork.rotation.x = ang;
+      fork.scale.set(0.95, 0.85, 1.0);
+      tailPivot.add(fork);
+    }
+    bodyGroup.add(tailPivot);
+    tailGroup = tailPivot;
 
     for (const sx of [-1, 1]) {
       addLayeredEye(bodyGroup, sx * 0.1, 0.04, 0.22, 0.85);
@@ -548,29 +589,61 @@ export function buildSculptedAnimalRig(
     const isFlamingo = spec.id === 'flamingo';
     const isOwl = spec.id === 'giant_owl';
     const isPhoenix = spec.id === 'ember_phoenix';
+    const isToucan = spec.id === 'toucan';
+    const isParrot = spec.id === 'parrot';
     const isButterfly = arch === 'butterfly';
     const isBat = spec.id === 'vampire_bat';
 
-    const torso = new THREE.Mesh(geoLib.torsoGeo, primaryMat);
-    torso.rotation.x = isFlamingo ? -0.25 : -0.18;
-    torso.scale.set(
-      isButterfly ? 0.36 : isOwl ? 1.1 : 0.78,
-      isButterfly ? 0.36 : isOwl ? 1.05 : 0.78,
-      isButterfly ? 0.85 : 0.85
+    // Streamlined aerodynamic bird torso + feathered keel + shoulder mantle
+    const torso = new THREE.Mesh(
+      isButterfly ? geoLib.torsoGeo : geoLib.birdTorsoGeo,
+      primaryMat
     );
-    torso.position.y = isFlamingo ? 0.62 : 0.34;
+    torso.rotation.x = isFlamingo ? -0.18 : isOwl ? -0.14 : -0.1;
+    torso.scale.set(
+      isButterfly ? 0.34 : isOwl ? 1.18 : isPhoenix ? 0.92 : 0.84,
+      isButterfly ? 0.34 : isOwl ? 1.14 : 0.86,
+      isButterfly ? 0.85 : isPhoenix ? 1.08 : 0.94
+    );
+    torso.position.y = isFlamingo ? 0.56 : 0.34;
     torso.castShadow = true;
     bodyGroup.add(torso);
 
-    const breast = new THREE.Mesh(geoLib.smallSphere, secondaryMat);
-    breast.scale.set(isOwl ? 1.18 : 0.9, 0.85, 0.95);
-    breast.position.set(0, isFlamingo ? 0.62 : 0.32, 0.1);
-    if (!isButterfly) bodyGroup.add(breast);
+    if (!isButterfly) {
+      const breast = new THREE.Mesh(geoLib.smallSphere, isBat ? primaryMat : secondaryMat);
+      breast.scale.set(isOwl ? 1.14 : 0.82, 0.88, 1.08);
+      breast.position.set(0, isFlamingo ? 0.54 : 0.31, 0.08);
+      bodyGroup.add(breast);
+
+      const rump = new THREE.Mesh(geoLib.smallSphere, isParrot ? accentMat : primaryMat);
+      rump.scale.set(0.64, 0.54, 0.9);
+      rump.position.set(0, isFlamingo ? 0.53 : 0.33, -0.18);
+      bodyGroup.add(rump);
+    }
 
     const headPivot = new THREE.Group();
-    headPivot.position.set(0, isFlamingo ? 0.98 : isButterfly ? 0.38 : 0.48, isFlamingo ? 0.2 : 0.22);
-    const head = new THREE.Mesh(geoLib.smallSphere, isButterfly || isBat ? primaryMat : isFlamingo ? primaryMat : secondaryMat);
-    head.scale.set(isOwl ? 1.32 : 0.95, isOwl ? 1.15 : 0.92, 0.95);
+    headPivot.position.set(
+      0,
+      isFlamingo ? 0.94 : isButterfly ? 0.38 : 0.46,
+      isFlamingo ? 0.24 : 0.24
+    );
+
+    if (!isButterfly) {
+      // Feathered neck transition joining head seamlessly to shoulders
+      const neckCollar = new THREE.Mesh(
+        geoLib.smallSphere,
+        isParrot || isToucan ? accentMat : secondaryMat
+      );
+      neckCollar.scale.set(isOwl ? 1.08 : 0.72, 0.65, 0.76);
+      neckCollar.position.set(0, -0.09, -0.05);
+      headPivot.add(neckCollar);
+    }
+
+    const head = new THREE.Mesh(
+      geoLib.smallSphere,
+      isButterfly || isBat || isFlamingo || isToucan ? primaryMat : isParrot ? primaryMat : secondaryMat
+    );
+    head.scale.set(isOwl ? 1.3 : 0.94, isOwl ? 1.12 : 0.92, 0.98);
     head.castShadow = true;
     headPivot.add(head);
 
@@ -578,42 +651,70 @@ export function buildSculptedAnimalRig(
       // Graceful S-neck for flamingo
       const neck = new THREE.Mesh(geoLib.curvedTailGeo, primaryMat);
       neck.rotation.y = Math.PI;
-      neck.scale.set(0.65, 1.3, 0.65);
-      neck.position.set(0, -0.28, -0.05);
+      neck.scale.set(0.58, 1.32, 0.62);
+      neck.position.set(0, -0.32, -0.05);
       headPivot.add(neck);
     }
 
     if (arch === 'bird') {
-      const beak = new THREE.Mesh(geoLib.beakGeo, spec.id === 'toucan' ? secondaryMat : accentMat);
-      beak.scale.set(
-        spec.id === 'toucan' ? 1.45 : 0.95,
-        spec.id === 'toucan' ? 1.55 : 0.9,
-        spec.id === 'toucan' ? 2.1 : isFlamingo ? 1.25 : 0.95
+      // Sculpted upper & lower beak with species-accurate proportions
+      const upperBeak = new THREE.Mesh(
+        geoLib.beakGeo,
+        isToucan ? accentMat : isParrot ? accentMat : secondaryMat
       );
-      beak.position.set(0, -0.01, 0.1);
-      headPivot.add(beak);
+      upperBeak.scale.set(
+        isToucan ? 1.35 : isOwl ? 0.78 : 0.88,
+        isToucan ? 1.45 : isOwl ? 0.88 : 0.85,
+        isToucan ? 2.15 : isFlamingo ? 1.2 : isOwl ? 0.82 : 0.98
+      );
+      upperBeak.position.set(0, 0.0, 0.09);
+      headPivot.add(upperBeak);
+
+      if (isToucan) {
+        const beakTip = new THREE.Mesh(geoLib.smallSphere, secondaryMat);
+        beakTip.scale.set(0.42, 0.56, 0.68);
+        beakTip.position.set(0, -0.03, 0.44);
+        headPivot.add(beakTip);
+      } else if (!isFlamingo) {
+        const lowerBeak = new THREE.Mesh(geoLib.snoutGeo, accentMat);
+        lowerBeak.scale.set(0.45, 0.34, 0.65);
+        lowerBeak.position.set(0, -0.045, 0.13);
+        headPivot.add(lowerBeak);
+      }
     } else if (isBat) {
       for (const sx of [-1, 1]) {
         const ear = new THREE.Mesh(geoLib.earCap, secondaryMat);
-        ear.scale.set(0.6, 0.9, 0.5);
-        ear.position.set(sx * 0.08, 0.14, -0.02);
+        ear.scale.set(0.56, 0.98, 0.48);
+        ear.position.set(sx * 0.085, 0.14, -0.01);
         ear.rotation.z = -sx * 0.28;
         headPivot.add(ear);
       }
     }
 
-    if (isPhoenix || spec.id === 'parrot') {
-      // Plume crest
-      const crest = new THREE.Mesh(geoLib.curvedTailGeo, isPhoenix ? secondaryMat : accentMat);
-      crest.scale.set(0.65, 0.85, 0.65);
-      crest.position.set(0, 0.1, -0.02);
-      headPivot.add(crest);
+    if (isPhoenix || isParrot) {
+      // Layered crown plume feathers
+      for (let c = 0; c < (isPhoenix ? 3 : 2); c += 1) {
+        const crest = new THREE.Mesh(
+          geoLib.featherPlumeGeo,
+          c === 0 ? accentMat : secondaryMat
+        );
+        crest.scale.set(0.75, 0.75, isPhoenix ? 1.25 - c * 0.16 : 0.85);
+        crest.rotation.x = 0.48 + c * 0.2;
+        crest.position.set(0, 0.1 + c * 0.015, -0.02);
+        headPivot.add(crest);
+      }
     } else if (isOwl) {
+      // Feathered facial discs + sweeping horn ear tufts
       for (const sx of [-1, 1]) {
-        const tuft = new THREE.Mesh(geoLib.earCap, secondaryMat);
-        tuft.scale.set(0.55, 0.68, 0.55);
-        tuft.position.set(sx * 0.12, 0.13, 0);
-        tuft.rotation.z = -sx * 0.45;
+        const disc = new THREE.Mesh(geoLib.smallSphere, primaryMat);
+        disc.scale.set(0.62, 0.62, 0.25);
+        disc.position.set(sx * 0.072, 0.015, 0.098);
+        headPivot.add(disc);
+
+        const tuft = new THREE.Mesh(geoLib.featherPlumeGeo, secondaryMat);
+        tuft.scale.set(0.72, 0.72, 0.82);
+        tuft.position.set(sx * 0.1, 0.11, -0.02);
+        tuft.rotation.set(0.52, sx * 0.42, -sx * 0.32);
         headPivot.add(tuft);
       }
     }
@@ -621,46 +722,97 @@ export function buildSculptedAnimalRig(
     for (const sx of [-1, 1]) {
       addLayeredEye(
         headPivot,
-        sx * (isOwl ? 0.085 : 0.075),
-        0.025,
-        isOwl ? 0.11 : 0.085,
-        isOwl ? 1.15 : 0.82
+        sx * (isOwl ? 0.075 : 0.074),
+        0.026,
+        isOwl ? 0.118 : 0.085,
+        isOwl ? 1.12 : 0.8
       );
     }
     bodyGroup.add(headPivot);
     headGroup = headPivot;
 
-    // Wings
-    const wingSourceGeo = isButterfly ? geoLib.butterflyWingGeo : geoLib.wingGeo;
-    const wl = new THREE.Mesh(
-      wingSourceGeo,
-      isButterfly ? wingTranslucentMat : isBat ? secondaryMat : primaryMat
-    );
-    const wScale = isButterfly ? 1.35 : isFlamingo ? 1.2 : 1.18;
-    wl.scale.set(-wScale, wScale, wScale);
-    wl.position.set(-0.07, isFlamingo ? 0.66 : 0.37, 0.04);
+    // Articulated Left & Right Wings with outer primary feather hinge (fixes left-side inside-out normals!)
+    const wingY = isFlamingo ? 0.6 : 0.38;
+    const wScale = isButterfly ? 1.35 : isPhoenix ? 1.48 : isOwl ? 1.42 : isFlamingo ? 1.36 : 1.32;
+    const wingShoulderX = isButterfly ? 0.05 : 0.1;
 
-    const wr = new THREE.Mesh(
-      wingSourceGeo,
-      isButterfly ? wingTranslucentMat : isBat ? secondaryMat : primaryMat
+    const wl = new THREE.Group();
+    wl.position.set(-wingShoulderX, wingY, 0.05);
+    const wlMesh = new THREE.Mesh(
+      isButterfly
+        ? geoLib.butterflyWingGeo
+        : isBat
+          ? geoLib.batWingLeftGeo
+          : geoLib.wingLeftGeo,
+      isButterfly ? wingTranslucentMat : wingFeatheredMat
     );
-    wr.scale.set(wScale, wScale, wScale);
-    wr.position.set(0.07, isFlamingo ? 0.66 : 0.37, 0.04);
+    if (isButterfly) {
+      wlMesh.scale.set(-wScale, wScale, wScale);
+    } else {
+      wlMesh.scale.setScalar(wScale);
+    }
+    wlMesh.castShadow = !isButterfly;
+    wl.add(wlMesh);
+
+    const wr = new THREE.Group();
+    wr.position.set(wingShoulderX, wingY, 0.05);
+    const wrMesh = new THREE.Mesh(
+      isButterfly
+        ? geoLib.butterflyWingGeo
+        : isBat
+          ? geoLib.batWingRightGeo
+          : geoLib.wingRightGeo,
+      isButterfly ? wingTranslucentMat : wingFeatheredMat
+    );
+    wrMesh.scale.setScalar(wScale);
+    wrMesh.castShadow = !isButterfly;
+    wr.add(wrMesh);
+
+    if (arch === 'bird') {
+      // Secondary accent covert patch & outer wingtip flex group
+      const wlTip = new THREE.Group();
+      wlTip.position.set(-0.56 * wScale, 0.02 * wScale, -0.06 * wScale);
+      const lTipFeather = new THREE.Mesh(geoLib.featherPlumeGeo, secondaryMat);
+      lTipFeather.scale.set(0.75 * wScale, 0.65 * wScale, 0.95 * wScale);
+      lTipFeather.rotation.y = 0.72;
+      wlTip.add(lTipFeather);
+      wl.add(wlTip);
+      leftWingTip = wlTip;
+
+      const wrTip = new THREE.Group();
+      wrTip.position.set(0.56 * wScale, 0.02 * wScale, -0.06 * wScale);
+      const rTipFeather = new THREE.Mesh(geoLib.featherPlumeGeo, secondaryMat);
+      rTipFeather.scale.set(0.75 * wScale, 0.65 * wScale, 0.95 * wScale);
+      rTipFeather.rotation.y = -0.72;
+      wrTip.add(rTipFeather);
+      wr.add(wrTip);
+      rightWingTip = wrTip;
+    }
+
     bodyGroup.add(wl, wr);
     leftWing = wl;
     rightWing = wr;
 
-    // Multi-feather fanned tail plumes for birds
+    // Wide 5-feather fanned tail plumes for birds
     if (arch === 'bird') {
       const tailFan = new THREE.Group();
-      tailFan.position.set(0, isFlamingo ? 0.54 : 0.28, -0.22);
-      for (const yaw of [-0.28, 0, 0.28]) {
+      tailFan.position.set(0, isFlamingo ? 0.5 : 0.31, -0.25);
+      for (const yaw of [-0.46, -0.22, 0, 0.22, 0.46]) {
         const feather = new THREE.Mesh(
-          geoLib.curvedTailGeo,
-          isPhoenix || yaw === 0 ? secondaryMat : accentMat
+          geoLib.featherPlumeGeo,
+          isPhoenix
+            ? yaw === 0
+              ? accentMat
+              : secondaryMat
+            : Math.abs(yaw) < 0.1
+              ? secondaryMat
+              : isParrot
+                ? accentMat
+                : primaryMat
         );
-        feather.scale.set(isPhoenix ? 1.15 : 0.72, 0.62, isPhoenix ? 1.65 : 0.92);
-        feather.rotation.x = -0.35;
+        const fLen = isPhoenix ? 2.1 - Math.abs(yaw) * 1.1 : 1.15 - Math.abs(yaw) * 0.45;
+        feather.scale.set(isPhoenix ? 1.05 : 0.85, 0.85, fLen);
+        feather.rotation.x = -0.14;
         feather.rotation.y = yaw;
         tailFan.add(feather);
       }
@@ -668,16 +820,25 @@ export function buildSculptedAnimalRig(
       tailGroup = tailFan;
     }
 
-    // Long slender legs for Flamingo or perching legs for Owl/Toucan
+    // Tucked talons for flying birds or long legs for Flamingo
     if (isFlamingo) {
       for (const sx of [-1, 1]) {
         const legPivot = new THREE.Group();
-        legPivot.position.set(sx * 0.08, 0.48, 0);
+        legPivot.position.set(sx * 0.08, 0.44, -0.04);
         const leg = new THREE.Mesh(geoLib.legGeo, secondaryMat);
-        leg.scale.set(0.45, 2.0, 0.45);
+        leg.scale.set(0.42, 1.95, 0.42);
+        leg.rotation.x = -1.1; // gracefully swept back while soaring!
         legPivot.add(leg);
         bodyGroup.add(legPivot);
         legs.push(legPivot);
+      }
+    } else if (arch === 'bird') {
+      for (const sx of [-1, 1]) {
+        const talon = new THREE.Mesh(geoLib.legGeo, accentMat);
+        talon.scale.set(0.4, 0.55, 0.4);
+        talon.rotation.x = -1.25;
+        talon.position.set(sx * 0.07, 0.21, -0.08);
+        bodyGroup.add(talon);
       }
     }
   } else if (arch === 'serpent') {
@@ -891,9 +1052,53 @@ export function buildSculptedAnimalRig(
     bodyGroup.add(torso);
 
     const belly = new THREE.Mesh(geoLib.smallSphere, secondaryMat);
-    belly.scale.set(0.95, 0.62, 1.52);
-    belly.position.set(0, isDeer ? 0.48 : isToad ? 0.18 : 0.31, 0);
+    belly.scale.set(0.92, 0.58, 1.52);
+    belly.position.set(0, isDeer ? 0.48 : isToad ? 0.18 : 0.3, 0);
     bodyGroup.add(belly);
+
+    // Muscular sculpted shoulder & hip haunches for quadruped silhouette depth
+    if (!isToad) {
+      const haunchY = isDeer ? 0.54 : 0.37;
+      for (const sx of [-1, 1]) {
+        const shoulder = new THREE.Mesh(geoLib.smallSphere, primaryMat);
+        shoulder.scale.set(0.56, 0.74, 0.72);
+        shoulder.position.set(sx * 0.125, haunchY, 0.18);
+        bodyGroup.add(shoulder);
+
+        const hip = new THREE.Mesh(geoLib.smallSphere, primaryMat);
+        hip.scale.set(0.6, 0.76, 0.78);
+        hip.position.set(sx * 0.13, haunchY - 0.01, -0.2);
+        bodyGroup.add(hip);
+      }
+    }
+
+    // Dorsal fur ridge / boar bristles / hyena & panther spots
+    if (isBoar || isWolf) {
+      for (let d = 0; d < 4; d += 1) {
+        const ridge = new THREE.Mesh(
+          geoLib.smallSphere,
+          isBoar ? accentMat : secondaryMat
+        );
+        ridge.scale.set(0.3, 0.48 - d * 0.05, 0.52);
+        ridge.position.set(0, 0.54 - d * 0.015, 0.22 - d * 0.14);
+        bodyGroup.add(ridge);
+      }
+    } else if (isPanther || spec.id === 'hyena') {
+      for (const [sx, sy, sz] of [
+        [-0.14, 0.44, 0.06],
+        [0.14, 0.45, -0.02],
+        [-0.12, 0.42, -0.15],
+        [0.13, 0.43, 0.13],
+      ]) {
+        const rosette = new THREE.Mesh(
+          geoLib.smallSphere,
+          spec.id === 'hyena' ? accentMat : secondaryMat
+        );
+        rosette.scale.set(0.24, 0.22, 0.28);
+        rosette.position.set(sx, sy, sz);
+        bodyGroup.add(rosette);
+      }
+    }
 
     if (spec.id === 'deer' || spec.id === 'mushroom_stag') {
       // Iconic white spots on deer / glowing spots on mushroom stag
@@ -902,9 +1107,10 @@ export function buildSculptedAnimalRig(
         [0.14, 0.65, -0.04],
         [-0.12, 0.62, -0.14],
         [0.12, 0.63, 0.1],
+        [0, 0.68, -0.05],
       ]) {
         const spot = new THREE.Mesh(geoLib.smallSphere, secondaryMat);
-        spot.scale.setScalar(0.24);
+        spot.scale.setScalar(0.25);
         spot.position.set(sx, sy, sz);
         bodyGroup.add(spot);
       }
@@ -937,14 +1143,23 @@ export function buildSculptedAnimalRig(
       neck.position.set(0, -0.14, -0.06);
       headPivot.add(neck);
     } else if (isFox || isWolf || isPanther) {
-      // Fluffy neck fur ruff / mane
+      // Fluffy neck fur ruff / mane + cheek tufts
       const ruff = new THREE.Mesh(
         geoLib.smallSphere,
         isFox || isWolf ? secondaryMat : primaryMat
       );
-      ruff.scale.set(1.38, 1.18, 1.05);
+      ruff.scale.set(1.42, 1.18, 1.05);
       ruff.position.set(0, -0.12, -0.06);
       headPivot.add(ruff);
+      for (const sx of [-1, 1]) {
+        const cheekTuft = new THREE.Mesh(
+          geoLib.smallSphere,
+          isFox ? secondaryMat : primaryMat
+        );
+        cheekTuft.scale.set(0.56, 0.44, 0.52);
+        cheekTuft.position.set(sx * 0.13, -0.03, 0.01);
+        headPivot.add(cheekTuft);
+      }
     }
 
     const headSkull = new THREE.Mesh(
@@ -1089,7 +1304,10 @@ export function buildSculptedAnimalRig(
         leg.castShadow = true;
         legPivot.add(leg);
 
-        const paw = new THREE.Mesh(geoLib.smallSphere, isDeer || isBoar ? accentMat : secondaryMat);
+        const paw = new THREE.Mesh(
+          geoLib.smallSphere,
+          isDeer || isBoar || (isFox && sz > 0) ? accentMat : secondaryMat
+        );
         paw.scale.set(0.38, 0.24, 0.48);
         paw.position.set(0, -0.22 * legHeightScale, 0.03);
         legPivot.add(paw);
@@ -1115,6 +1333,8 @@ export function buildSculptedAnimalRig(
     legs,
     leftWing,
     rightWing,
+    leftWingTip,
+    rightWingTip,
     tailGroup,
     clawL,
     clawR,
@@ -1122,6 +1342,7 @@ export function buildSculptedAnimalRig(
     segments,
     tongueGroup,
     sleepTag,
+    shadowMesh: !spec.aquatic ? shadow : undefined,
     dispose: () => {
       for (const d of disposables) d.dispose();
     },

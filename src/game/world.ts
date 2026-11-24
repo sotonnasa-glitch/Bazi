@@ -79,6 +79,27 @@ export interface AncientBoneSite {
   rotationY: number;
 }
 
+export type MysterySpotKind =
+  | 'glowing_shroom'
+  | 'ancient_totem'
+  | 'message_bottle'
+  | 'mystery_urn'
+  | 'unstable_crystal'
+  | 'shadow_pool'
+  | 'cursed_casket';
+
+export interface MysterySpot {
+  id: string;
+  kind: MysterySpotKind;
+  nameFa: string;
+  x: number;
+  y: number;
+  z: number;
+  rotationY: number;
+  biome: BiomeId;
+  trapRoll: number;
+}
+
 export interface IslandWorldData {
   seed: string;
   lobePhaseA: number;
@@ -90,6 +111,7 @@ export interface IslandWorldData {
   buildPads: BuildPadSite[];
   landmarkSites: LandmarkActionSite[];
   secretSpots: SecretSpot[];
+  mysterySpots: MysterySpot[];
   ancientBoneSites: AncientBoneSite[];
   wreckSite: { x: number; y: number; z: number; rotationY: number };
 }
@@ -621,6 +643,103 @@ export function generateIslandWorld(seed: string): IslandWorldData {
     };
   });
 
+  // 7 Hidden Mystery Curios & Risky Secrets scattered across biomes
+  const mysteryDefs: Array<{
+    id: string;
+    kind: MysterySpotKind;
+    nameFa: string;
+    x: number;
+    z: number;
+    biome: BiomeId;
+  }> = [
+    {
+      id: 'mystery-center-urn',
+      kind: 'mystery_urn',
+      nameFa: 'کوزه سفالی ناشناخته',
+      x: 13.5,
+      z: -14.5,
+      biome: 'center',
+    },
+    {
+      id: 'mystery-beach-bottle',
+      kind: 'message_bottle',
+      nameFa: 'بطری اسرارآمیز ساحل',
+      x: -24.5,
+      z: 49.5,
+      biome: 'center',
+    },
+    {
+      id: 'mystery-mushroom-shroom',
+      kind: 'glowing_shroom',
+      nameFa: 'قارچ عجیب شب‌تاب',
+      x: MUSHROOM.CX + 10.5,
+      z: MUSHROOM.CZ + 8.5,
+      biome: 'mushroom',
+    },
+    {
+      id: 'mystery-ruins-totem',
+      kind: 'ancient_totem',
+      nameFa: 'توتم باستانی مرموز',
+      x: RUINS.CX + 8.5,
+      z: RUINS.CZ - 11.5,
+      biome: 'ruins',
+    },
+    {
+      id: 'mystery-volcano-crystal',
+      kind: 'unstable_crystal',
+      nameFa: 'کریستال ناپایدار آتشفشان',
+      x: VOLCANO.CX - 9.5,
+      z: VOLCANO.CZ - 13.0,
+      biome: 'volcano',
+    },
+    {
+      id: 'mystery-spring-pool',
+      kind: 'shadow_pool',
+      nameFa: 'چشمه کوچک سایه',
+      x: SPRING.CX + 12.5,
+      z: SPRING.CZ - 7.5,
+      biome: 'spring',
+    },
+    {
+      id: 'mystery-bay-casket',
+      kind: 'cursed_casket',
+      nameFa: 'صندوقچه مرموز خلیج',
+      x: SHIPWRECK.HEADLAND_CX - 11.5,
+      z: SHIPWRECK.HEADLAND_CZ + 12.5,
+      biome: 'shipwreck',
+    },
+  ];
+
+  const mysterySpots: MysterySpot[] = mysteryDefs.map((m) => {
+    let mx = m.x + (rng() - 0.5) * 3.5;
+    let mz = m.z + (rng() - 0.5) * 3.5;
+    let my = groundHeightAt(mx, mz, meta);
+    if (my < 0.45) {
+      for (let step = 1; step <= 8; step += 1) {
+        const tx = mx * (1 - step * 0.08);
+        const tz = mz * (1 - step * 0.08);
+        const ty = groundHeightAt(tx, tz, meta);
+        if (ty >= 0.45) {
+          mx = tx;
+          mz = tz;
+          my = ty;
+          break;
+        }
+      }
+    }
+    return {
+      id: m.id,
+      kind: m.kind,
+      nameFa: m.nameFa,
+      x: mx,
+      y: my,
+      z: mz,
+      rotationY: rng() * Math.PI * 2,
+      biome: m.biome,
+      trapRoll: rng(),
+    };
+  });
+
   // Spatial Hash Grid for ultra-fast O(1) prop placement checks across 650+ props!
   const cellSize = 4.0;
   const grid = new Map<string, IslandProp[]>();
@@ -704,6 +823,9 @@ export function generateIslandWorld(seed: string): IslandWorldData {
     }
     for (const secret of secretSpots) {
       if (Math.hypot(x - secret.x, z - secret.z) < 3.0 + radius) return false;
+    }
+    for (const mystery of mysterySpots) {
+      if (Math.hypot(x - mystery.x, z - mystery.z) < 2.6 + radius) return false;
     }
     if (Math.hypot(x - AIRPLANE_WRECK.CX, z - AIRPLANE_WRECK.CZ) < 5.2 + radius) return false;
     for (const bone of ancientBoneSites) {
@@ -844,6 +966,7 @@ export function generateIslandWorld(seed: string): IslandWorldData {
     buildPads,
     landmarkSites,
     secretSpots,
+    mysterySpots,
     ancientBoneSites,
     wreckSite,
   };

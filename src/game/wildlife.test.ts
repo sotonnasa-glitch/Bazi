@@ -150,11 +150,80 @@ test('night predator stops to telegraph windup attack then strikes player with d
   assert.equal(windupRes.ambushEnergyLoss, 0);
   assert.equal(windupRes.predatorStrikes.length, 0);
 
-  // Step 2: completes windup (0.45s) and triggers strike + real energy damage
+  // Step 2: completes windup and triggers strike + real energy damage
   const strikeRes = stepWildlifeSystem(wildlife, 0.5, true, px, pz, false, 1, false, world);
   assert.equal(wolf.attackState, 'strike');
   assert.ok(strikeRes.ambushEnergyLoss > 0, 'predator strike must deal energy damage');
   assert.equal(strikeRes.predatorStrikes.length, 1);
   assert.equal(strikeRes.predatorStrikes[0].speciesId, 'night_wolf');
+});
+
+test('flying birds soar high above terrain and tree canopies', () => {
+  const world = generateIslandWorld('wildlife-flying-altitude');
+  const wildlife = createWildlifeState(world, world.seed);
+
+  for (let i = 0; i < 12; i += 1) {
+    stepWildlifeSystem(wildlife, 0.2, false, 0, 0, false, 1, false, world);
+  }
+
+  const birds = wildlife.actors.filter((a) => {
+    const spec = getAnimalSpecies(a.speciesId);
+    return spec?.flying && spec.archetype === 'bird';
+  });
+  assert.ok(birds.length > 0);
+  for (const bird of birds) {
+    const h = groundHeightAt(bird.x, bird.z, world);
+    assert.ok(
+      bird.y - h >= 4.5,
+      `flying bird ${bird.speciesId} should soar >= 4.5m above terrain, got ${bird.y - h}`
+    );
+    assert.ok(Number.isFinite(bird.flyPitch ?? 0), `flying bird ${bird.speciesId} should have finite flyPitch`);
+  }
+});
+
+test('night predators emerge gradually and staggered during dusk instead of popping in all at once', () => {
+  const world = generateIslandWorld('wildlife-dusk-stagger');
+  const wildlife = createWildlifeState(world, world.seed);
+
+  // Daytime first: all night predators hidden
+  stepWildlifeSystem(wildlife, 0.25, false, 0, 0, false, 1, false, world, null, false, 0.45, 'day');
+  const totalPredators = wildlife.actors.filter((a) => a.category === 'night_predator').length;
+  assert.ok(totalPredators >= 4);
+  assert.equal(
+    wildlife.actors.filter((a) => a.category === 'night_predator' && a.visible).length,
+    0,
+    'all night predators must be hidden in daytime'
+  );
+
+  // Early dusk: partial staggered emergence (some visible & ramping emergeAlpha, others still hidden)
+  const earlyDuskT = CONFIG.DAY_NIGHT.DUSK_START + (CONFIG.DAY_NIGHT.NIGHT_START - CONFIG.DAY_NIGHT.DUSK_START) * 0.28;
+  stepWildlifeSystem(wildlife, 0.35, false, 0, 0, false, 1, false, world, null, false, earlyDuskT, 'dusk');
+  const visibleEarly = wildlife.actors.filter((a) => a.category === 'night_predator' && a.visible);
+  assert.ok(
+    visibleEarly.length > 0 && visibleEarly.length < totalPredators,
+    `expected staggered partial emergence in early dusk (${visibleEarly.length}/${totalPredators})`
+  );
+  assert.ok(
+    visibleEarly.some((a) => (a.emergeAlpha ?? 1) < 0.9),
+    'emerging predators should ramp emergeAlpha smoothly during dusk'
+  );
+
+  // Emerging predator should not immediately windup/ambush until emergence completes
+  const emergingWolf = visibleEarly.find((a) => (a.emergeAlpha ?? 1) < 0.5);
+  if (emergingWolf) {
+    emergingWolf.x = 20;
+    emergingWolf.z = 20;
+    emergingWolf.attackCooldown = 0;
+    stepWildlifeSystem(wildlife, 0.1, false, 21, 20, false, 1, false, world, null, false, earlyDuskT, 'dusk');
+    assert.equal(emergingWolf.attackState, 'idle', 'emerging predator should not attack while still fading in');
+  }
+
+  // Late dusk -> full night: all predators emerge
+  const nightT = CONFIG.DAY_NIGHT.NIGHT_START + 0.04;
+  for (let i = 0; i < 8; i += 1) {
+    stepWildlifeSystem(wildlife, 0.3, true, 0, 0, false, 1, false, world, null, false, nightT, 'night');
+  }
+  const visibleNight = wildlife.actors.filter((a) => a.category === 'night_predator' && a.visible);
+  assert.equal(visibleNight.length, totalPredators, 'all night predators must finish emerging by nightfall');
 });
 

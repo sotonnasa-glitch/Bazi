@@ -1083,11 +1083,265 @@ export function buildTinyMushroomGeometry(): THREE.BufferGeometry {
   return safeMerge(parts, new THREE.SphereGeometry(0.12, 7, 5));
 }
 
-export function buildCurvedGullWingGeometry(): THREE.BufferGeometry {
-  const wing = buildCurvedLeafStrip(0.22, 0.64, 0.08, 4);
-  wing.rotateZ(-Math.PI / 2);
-  wing.rotateX(Math.PI / 2);
-  return wing;
+function reverseTriangleWinding(geo: THREE.BufferGeometry): THREE.BufferGeometry {
+  const idx = geo.getIndex();
+  if (idx) {
+    const arr = idx.array as Uint16Array | Uint32Array;
+    for (let i = 0; i < arr.length; i += 3) {
+      const tmp = arr[i + 1];
+      arr[i + 1] = arr[i + 2];
+      arr[i + 2] = tmp;
+    }
+    idx.needsUpdate = true;
+  } else {
+    const pos = geo.attributes.position;
+    for (let i = 0; i < pos.count; i += 3) {
+      const x1 = pos.getX(i + 1);
+      const y1 = pos.getY(i + 1);
+      const z1 = pos.getZ(i + 1);
+      pos.setXYZ(i + 1, pos.getX(i + 2), pos.getY(i + 2), pos.getZ(i + 2));
+      pos.setXYZ(i + 2, x1, y1, z1);
+    }
+    pos.needsUpdate = true;
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+export function buildCurvedGullWingGeometry(side: 1 | -1 = 1): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+
+  // 1. Cambered inner & outer wing airfoil membrane spanning along +X (shoulder at x=0 -> tip at x=0.82)
+  const spanSegs = 10;
+  const chordSegs = 4;
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const colors: number[] = [];
+  const indices: number[] = [];
+  const cTmp = new THREE.Color();
+
+  // Top & bottom surface vertices for real 3D airfoil thickness (zero culling flaws!)
+  for (let surface = 0; surface < 2; surface += 1) {
+    const isTop = surface === 0;
+    for (let i = 0; i <= spanSegs; i += 1) {
+      const u = i / spanSegs; // 0 = shoulder, 1 = tip
+      const x = u * 0.78;
+      // Classic gull/eagle dihedral: arches up near wrist (u=0.45), sweeps gracefully back
+      const gullLift = Math.sin(u * Math.PI * 0.92) * 0.095 - Math.pow(u, 2.2) * 0.04;
+      const sweepZ = 0.05 - Math.pow(u, 1.45) * 0.28;
+      const chord = 0.34 * (1 - Math.pow(u, 1.55) * 0.68);
+      const thickness = 0.042 * (1 - u * 0.72);
+
+      for (let j = 0; j <= chordSegs; j += 1) {
+        const v = j / chordSegs; // 0 = leading edge, 1 = trailing edge
+        const zLocal = (0.35 - v) * chord;
+        const camber = Math.sin(v * Math.PI) * 0.032 * (1 - u * 0.5);
+        const foilThick = Math.sin(v * Math.PI) * thickness * (isTop ? 0.68 : -0.32);
+        const y = gullLift + camber + foilThick;
+        const z = sweepZ + zLocal;
+        positions.push(x * side, y, z);
+        uvs.push(u, v);
+
+        // Subtle wing shading: darker primary tips & trailing edge, bright covert shoulder
+        const tipShade = 1.0 - u * 0.24 - v * 0.14 + (isTop ? 0.04 : -0.06);
+        cTmp.setRGB(
+          THREE.MathUtils.clamp(tipShade, 0.45, 1.0),
+          THREE.MathUtils.clamp(tipShade * 0.98, 0.45, 1.0),
+          THREE.MathUtils.clamp(tipShade * 0.96, 0.45, 1.0),
+          THREE.SRGBColorSpace
+        );
+        colors.push(cTmp.r, cTmp.g, cTmp.b);
+      }
+    }
+  }
+
+  const stride = chordSegs + 1;
+  const ringOffset = (spanSegs + 1) * stride;
+  for (let i = 0; i < spanSegs; i += 1) {
+    for (let j = 0; j < chordSegs; j += 1) {
+      const a = i * stride + j;
+      const b = a + 1;
+      const c = (i + 1) * stride + j;
+      const d = c + 1;
+      if (side > 0) {
+        indices.push(a, c, b, b, c, d);
+        const ba = ringOffset + a;
+        const bb = ringOffset + b;
+        const bc = ringOffset + c;
+        const bd = ringOffset + d;
+        indices.push(ba, bb, bc, bb, bd, bc);
+      } else {
+        indices.push(a, b, c, b, d, c);
+        const ba = ringOffset + a;
+        const bb = ringOffset + b;
+        const bc = ringOffset + c;
+        const bd = ringOffset + d;
+        indices.push(ba, bc, bb, bb, bc, bd);
+      }
+    }
+  }
+  // Stitch leading & trailing edge rims
+  for (let i = 0; i < spanSegs; i += 1) {
+    const tLead0 = i * stride;
+    const tLead1 = (i + 1) * stride;
+    const bLead0 = ringOffset + tLead0;
+    const bLead1 = ringOffset + tLead1;
+    if (side > 0) {
+      indices.push(tLead0, bLead0, tLead1, tLead1, bLead0, bLead1);
+    } else {
+      indices.push(tLead0, tLead1, bLead0, tLead1, bLead1, bLead0);
+    }
+    const tTrail0 = i * stride + chordSegs;
+    const tTrail1 = (i + 1) * stride + chordSegs;
+    const bTrail0 = ringOffset + tTrail0;
+    const bTrail1 = ringOffset + tTrail1;
+    if (side > 0) {
+      indices.push(tTrail0, tTrail1, bTrail0, tTrail1, bTrail1, bTrail0);
+    } else {
+      indices.push(tTrail0, bTrail0, tTrail1, tTrail1, bTrail0, bTrail1);
+    }
+  }
+
+  const airfoilGeo = new THREE.BufferGeometry();
+  airfoilGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  airfoilGeo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  airfoilGeo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  airfoilGeo.setIndex(indices);
+  airfoilGeo.computeVertexNormals();
+  parts.push(airfoilGeo);
+
+  // 2. Five fanned primary flight feathers extending from outer wingtip
+  for (let f = 0; f < 5; f += 1) {
+    const t = f / 4;
+    const fLen = 0.24 - t * 0.07;
+    const feather = new THREE.CapsuleGeometry(0.022 - t * 0.004, fLen, 3, 6);
+    feather.scale(1.0, 1.0, 0.36);
+    feather.rotateZ(Math.PI * 0.5);
+    feather.rotateY((0.12 - t * 0.52) * side);
+    feather.rotateX(-0.08 + t * 0.05);
+    feather.translate(
+      (0.71 - t * 0.14) * side,
+      0.036 - t * 0.018,
+      -0.16 - t * 0.06
+    );
+    const shade = 0.72 + t * 0.12;
+    setLinearAttrColors(feather, shade, shade * 0.98, shade * 0.95);
+    parts.push(feather);
+  }
+
+  // 3. Layered upper wing covert ridge at shoulder
+  const covert = new THREE.CapsuleGeometry(0.052, 0.34, 4, 8);
+  covert.scale(1.0, 0.52, 0.85);
+  covert.rotateZ(Math.PI * 0.5);
+  covert.rotateY(-0.18 * side);
+  covert.translate(0.24 * side, 0.048, -0.02);
+  setLinearAttrColors(covert, 0.96, 0.96, 0.98);
+  parts.push(covert);
+
+  return safeMerge(parts, new THREE.BoxGeometry(0.5, 0.05, 0.2));
+}
+
+export function buildBatWingGeometry(side: 1 | -1 = 1): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const shape = new THREE.Shape();
+  shape.moveTo(0, 0.04);
+  shape.bezierCurveTo(0.22, 0.16, 0.48, 0.18, 0.78, 0.08);
+  shape.quadraticCurveTo(0.62, -0.08, 0.54, -0.22);
+  shape.quadraticCurveTo(0.42, -0.1, 0.32, -0.25);
+  shape.quadraticCurveTo(0.2, -0.08, 0.1, -0.2);
+  shape.quadraticCurveTo(0.04, -0.06, 0, -0.06);
+  const membrane = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.016,
+    bevelEnabled: false,
+    curveSegments: 8,
+  });
+  membrane.rotateX(-Math.PI * 0.5);
+  membrane.translate(0, 0.01, -0.02);
+  if (side < 0) {
+    membrane.scale(-1, 1, 1);
+    reverseTriangleWinding(membrane);
+  }
+  setLinearAttrColors(membrane, 0.78, 0.74, 0.84);
+  parts.push(membrane);
+
+  // Scalloped bat wing-arm and phalange struts
+  for (const [len, yaw, xOff, zOff] of [
+    [0.74, -0.08, 0.36, 0.05],
+    [0.44, 0.42, 0.42, -0.06],
+    [0.36, 0.78, 0.26, -0.1],
+  ] as const) {
+    const strut = new THREE.CapsuleGeometry(0.016, len, 3, 6);
+    strut.rotateZ(Math.PI * 0.5);
+    strut.rotateY(yaw * side);
+    strut.translate(xOff * side, 0.024, zOff);
+    setLinearAttrColors(strut, 0.55, 0.5, 0.62);
+    parts.push(strut);
+  }
+
+  return safeMerge(parts, new THREE.BoxGeometry(0.5, 0.03, 0.24));
+}
+
+export function buildBirdTorsoGeometry(): THREE.BufferGeometry {
+  // Aerodynamic teardrop breast-to-tail torso oriented along +Z (beak forward)
+  const pts = [
+    new THREE.Vector2(0.0, -0.36),
+    new THREE.Vector2(0.055, -0.32),
+    new THREE.Vector2(0.115, -0.2),
+    new THREE.Vector2(0.165, -0.04),
+    new THREE.Vector2(0.185, 0.1),
+    new THREE.Vector2(0.155, 0.22),
+    new THREE.Vector2(0.09, 0.29),
+    new THREE.Vector2(0.0, 0.31),
+  ];
+  const geo = new THREE.LatheGeometry(pts, 16);
+  geo.rotateX(Math.PI / 2);
+  geo.scale(0.92, 0.96, 1.0);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+export function buildFeatherPlumeGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const blade = new THREE.CapsuleGeometry(0.042, 0.28, 4, 8);
+  blade.scale(1.15, 1.0, 0.28);
+  blade.rotateX(Math.PI * 0.5);
+  blade.translate(0, 0, -0.15);
+  parts.push(blade);
+  return safeMerge(parts, new THREE.CapsuleGeometry(0.03, 0.24, 3, 6));
+}
+
+export function buildQuadrupedTorsoGeometry(): THREE.BufferGeometry {
+  // Sculpted mammal torso with deep ribcage, sleek waist & rounded hindquarters along +Z
+  const pts = [
+    new THREE.Vector2(0.0, -0.36),
+    new THREE.Vector2(0.11, -0.33),
+    new THREE.Vector2(0.205, -0.22),
+    new THREE.Vector2(0.195, -0.08),
+    new THREE.Vector2(0.182, 0.03),
+    new THREE.Vector2(0.222, 0.17),
+    new THREE.Vector2(0.205, 0.28),
+    new THREE.Vector2(0.135, 0.35),
+    new THREE.Vector2(0.0, 0.37),
+  ];
+  const geo = new THREE.LatheGeometry(pts, 16);
+  geo.rotateX(Math.PI / 2);
+  geo.scale(0.92, 0.98, 1.0);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+export function buildFishFinGeometry(): THREE.BufferGeometry {
+  const shape = new THREE.Shape();
+  shape.moveTo(0, 0);
+  shape.bezierCurveTo(0.08, 0.14, 0.2, 0.16, 0.26, 0.05);
+  shape.bezierCurveTo(0.2, -0.04, 0.09, -0.05, 0, -0.02);
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.014,
+    bevelEnabled: false,
+    curveSegments: 6,
+  });
+  geo.computeVertexNormals();
+  return geo;
 }
 
 export function buildCampfireLogsGeometry(): THREE.BufferGeometry {

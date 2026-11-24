@@ -10,9 +10,11 @@ import {
   type StrangeLandmarkId,
   type WeaponId,
   type WeatherKind,
+  type WildlifeDifficulty,
   type WorkshopRecipeId,
   type WorldEventKind,
 } from './config';
+import { toPersianDigits } from './utils';
 import {
   createWildlifeState,
   damageAnimalActor,
@@ -33,6 +35,8 @@ import type {
   IslandProp,
   IslandWorldData,
   LandmarkActionSite,
+  MysterySpot,
+  MysterySpotKind,
   PropKind,
   SecretSpot,
 } from './world';
@@ -51,6 +55,7 @@ export type SurvivalActionKind =
   | 'cook'
   | 'build'
   | 'secret_open'
+  | 'mystery_open'
   | 'salvage'
   | 'inspect'
   | 'temple_open'
@@ -61,6 +66,7 @@ export type FocusedTargetKind =
   | 'prey'
   | 'pad'
   | 'secret'
+  | 'mystery'
   | 'landmark'
   | 'boat_voyage'
   | 'wreck'
@@ -205,6 +211,8 @@ export interface SurvivalState {
   landmarkSites: LandmarkActionSite[];
   secretSpots: SecretSpot[];
   discoveredSecrets: string[];
+  mysterySpots: MysterySpot[];
+  discoveredMysteries: string[];
   ancientBoneSites: AncientBoneSite[];
   inspectedBones: string[];
   templeUnlocked: boolean;
@@ -223,6 +231,7 @@ export interface SurvivalState {
   queuedTargetInteract: TargetInteractRequest | null;
   rangedShotTarget: { x: number; z: number; actorId?: string } | null;
   hazardImpacts: HazardImpact[];
+  lavaPools: Array<{ x: number; z: number; radius: number; timer: number }>;
   hazardSpawnTimer: number;
   tsunamiDamageTimer: number;
   autoFishIdleTimer: number;
@@ -251,6 +260,7 @@ export interface SurvivalState {
   meleeCombatCooldown: number;
   postEventBreatherTimer: number;
   combatSwingTimer: number;
+  wildlifeDifficulty: WildlifeDifficulty;
 }
 
 export interface SurvivalStepResult {
@@ -318,6 +328,23 @@ export interface SurvivalStepResult {
     x: number;
     y: number;
     z: number;
+    isTrap: boolean;
+    energyDelta: number;
+    coinsDelta: number;
+    notice: string;
+  };
+  openedMystery?: {
+    id: string;
+    kind: MysterySpotKind;
+    nameFa: string;
+    x: number;
+    y: number;
+    z: number;
+    isHarmful: boolean;
+    energyDelta: number;
+    coinsDelta: number;
+    poisonedSec?: number;
+    notice: string;
   };
   wreckSalvaged?: {
     x: number;
@@ -352,6 +379,7 @@ export interface SurvivalStepResult {
     notice: string;
   };
   eventEndedNotice?: string;
+  campfireExtinguishedNotice?: string;
   boatVoyageNotice?: string;
   boatVoyageVictoryReady?: boolean;
   weaponLevelUps: WeaponLevelUpEvent[];
@@ -436,6 +464,8 @@ export interface SurvivalHudView {
   discoveredAnimals: string[];
   secretsFound: number;
   secretsTotal: number;
+  mysteriesFound: number;
+  mysteriesTotal: number;
   canVictoryVoyage: boolean;
   gameOutcome: GameOutcome;
   nearCampfire: boolean;
@@ -451,6 +481,7 @@ export interface SurvivalHudView {
   buildings: Record<CampUpgradeId, boolean>;
   nearbyPad: { id: CampUpgradeId; cost: number; totalWood: number } | null;
   nearbyLandmark: { id: StrangeLandmarkId; cooldown: number; specialCooldown: number } | null;
+  wildlifeDifficulty: WildlifeDifficulty;
 }
 
 export function getDayPhase(timeOfDay: number): DayPhase {
@@ -693,7 +724,7 @@ export function createSurvivalState(
     activeEvent: 'none',
     eventPhase: 'idle',
     eventTimer: 0,
-    nextEventTimer: Math.round(CONFIG.SURVIVAL.WORLD_EVENTS.MIN_INTERVAL_SEC * 0.85),
+    nextEventTimer: 44,
     eventTick: 0,
     seaLevelOffset: 0,
     boatVoyageCooldown: 0,
@@ -702,6 +733,8 @@ export function createSurvivalState(
     landmarkSites: world.landmarkSites.map((l) => ({ ...l })),
     secretSpots: world.secretSpots ? world.secretSpots.map((s) => ({ ...s })) : [],
     discoveredSecrets: [],
+    mysterySpots: world.mysterySpots ? world.mysterySpots.map((m) => ({ ...m })) : [],
+    discoveredMysteries: [],
     ancientBoneSites: world.ancientBoneSites ? world.ancientBoneSites.map((b) => ({ ...b })) : [],
     inspectedBones: [],
     templeUnlocked: false,
@@ -720,7 +753,8 @@ export function createSurvivalState(
     queuedTargetInteract: null,
     rangedShotTarget: null,
     hazardImpacts: [],
-    hazardSpawnTimer: 1.6,
+    lavaPools: [],
+    hazardSpawnTimer: 1.4,
     tsunamiDamageTimer: 0,
     autoFishIdleTimer: 0,
     autoFishCooldown: 0,
@@ -748,7 +782,15 @@ export function createSurvivalState(
     meleeCombatCooldown: 0,
     postEventBreatherTimer: 0,
     combatSwingTimer: 0,
+    wildlifeDifficulty: 'normal',
   };
+}
+
+export function setWildlifeDifficulty(
+  state: SurvivalState,
+  difficulty: WildlifeDifficulty
+): void {
+  state.wildlifeDifficulty = difficulty;
 }
 
 export function getBackpackUsed(state: Pick<SurvivalState, 'carried'>): number {
@@ -1185,8 +1227,17 @@ export function openSecretSpot(
   state: SurvivalState,
   secretId: string,
   playerX?: number,
-  playerZ?: number
-): { opened: boolean; secret?: SecretSpot; reason?: string } {
+  playerZ?: number,
+  randomFn: () => number = Math.random
+): {
+  opened: boolean;
+  secret?: SecretSpot;
+  isTrap?: boolean;
+  energyDelta?: number;
+  coinsDelta?: number;
+  notice?: string;
+  reason?: string;
+} {
   if (state.discoveredSecrets.includes(secretId)) {
     return { opened: false, reason: 'already_opened' };
   }
@@ -1200,11 +1251,180 @@ export function openSecretSpot(
     return { opened: false, reason: 'too_far' };
   }
   state.discoveredSecrets.push(secret.id);
+
+  // First grotto chest stays a safe welcome reward; later secret chests can hide traps!
+  const roll = randomFn();
+  const isTrap = secret.id !== 'waterfall_grotto' && roll < 0.32;
+  if (isTrap) {
+    let rawDmg = secret.id === 'volcano_alcove' ? 22 : 18;
+    if (state.shellArmorCharges > 0) {
+      rawDmg = Math.ceil(rawDmg * 0.5);
+      state.shellArmorCharges -= 1;
+    }
+    state.energy = Math.max(0, state.energy - rawDmg);
+    if (secret.id === 'ruins_crypt' || secret.id === 'mushroom_hollow') {
+      state.venomTimer = Math.max(state.venomTimer, 5);
+    }
+    const scrapCoins = roll < 0.18 ? 6 : 0;
+    if (scrapCoins > 0) {
+      state.coins += scrapCoins;
+    }
+    awardXp(state, 12);
+    if (state.energy <= 0) {
+      state.gameOutcome = 'defeat';
+    }
+    const dmgFa = toPersianDigits(rawDmg);
+    const notice =
+      scrapCoins > 0
+        ? `تله پنهان در ${secret.nameFa}! -${dmgFa} انرژی کم شد (اما ${toPersianDigits(scrapCoins)} سکه افتاد)`
+        : `تله نفرین‌شده در ${secret.nameFa}! -${dmgFa} انرژی از دست دادی!`;
+    return {
+      opened: true,
+      secret,
+      isTrap: true,
+      energyDelta: -rawDmg,
+      coinsDelta: scrapCoins,
+      notice,
+    };
+  }
+
   state.coins += 15;
   state.skillPoints += 1;
   state.energy = Math.min(state.maxEnergy, state.energy + 25);
   awardXp(state, 30);
-  return { opened: true, secret };
+  return {
+    opened: true,
+    secret,
+    isTrap: false,
+    energyDelta: 25,
+    coinsDelta: 15,
+    notice: `گنج مخفی کشف شد: ${secret.nameFa} (+۱۵ سکه و +۲۵ انرژی)`,
+  };
+}
+
+export function inspectMysterySpot(
+  state: SurvivalState,
+  mysteryId: string,
+  playerX?: number,
+  playerZ?: number,
+  randomFn?: () => number
+): {
+  opened: boolean;
+  mystery?: MysterySpot;
+  isHarmful?: boolean;
+  energyDelta?: number;
+  coinsDelta?: number;
+  poisonedSec?: number;
+  notice?: string;
+  reason?: string;
+} {
+  if (state.discoveredMysteries.includes(mysteryId)) {
+    return { opened: false, reason: 'already_opened' };
+  }
+  const mystery = state.mysterySpots.find((m) => m.id === mysteryId);
+  if (!mystery) return { opened: false, reason: 'not_found' };
+  if (
+    playerX !== undefined &&
+    playerZ !== undefined &&
+    Math.hypot(playerX - mystery.x, playerZ - mystery.z) > CONFIG.SURVIVAL.HARVEST_RANGE_MYSTERY + 0.55
+  ) {
+    return { opened: false, reason: 'too_far' };
+  }
+
+  state.discoveredMysteries.push(mystery.id);
+  const roll = randomFn ? randomFn() : (mystery.trapRoll + Math.random()) * 0.5;
+  const harmful = roll < 0.38;
+
+  if (harmful) {
+    let dmg =
+      mystery.kind === 'cursed_casket'
+        ? 26
+        : mystery.kind === 'unstable_crystal'
+          ? 20
+          : mystery.kind === 'mystery_urn'
+            ? 18
+            : 15;
+    if (state.shellArmorCharges > 0) {
+      dmg = Math.ceil(dmg * 0.5);
+      state.shellArmorCharges -= 1;
+    }
+    state.energy = Math.max(0, state.energy - dmg);
+    let poisonedSec: number | undefined;
+    if (mystery.kind === 'glowing_shroom' || mystery.kind === 'mystery_urn') {
+      poisonedSec = 5;
+      state.venomTimer = Math.max(state.venomTimer, poisonedSec);
+    }
+    awardXp(state, 10);
+    if (state.energy <= 0) {
+      state.gameOutcome = 'defeat';
+    }
+    const dmgFa = toPersianDigits(dmg);
+    const harmMessages: Record<MysterySpotKind, string> = {
+      glowing_shroom: `اسپور سمی قارچ پخش شد! -${dmgFa} انرژی و مسمومیت!`,
+      ancient_totem: `توتم باستانی خشمگین شد و صاعقه زد! -${dmgFa} انرژی!`,
+      message_bottle: `در بطری یک عروس دریایی گزنده بود! -${dmgFa} انرژی!`,
+      mystery_urn: `مار پنهان در کوزه نیش زد! -${dmgFa} انرژی و سم!`,
+      unstable_crystal: `کریستال منفجر شد! موج گرما -${dmgFa} انرژی کم کرد!`,
+      shadow_pool: `آب سرد سایه جانت را مکید! -${dmgFa} انرژی!`,
+      cursed_casket: `نفرین صندوقچه مرموز فعال شد! -${dmgFa} انرژی!`,
+    };
+    return {
+      opened: true,
+      mystery,
+      isHarmful: true,
+      energyDelta: -dmg,
+      coinsDelta: 0,
+      poisonedSec,
+      notice: harmMessages[mystery.kind],
+    };
+  }
+
+  let coins = 12;
+  let energyGain = 15;
+  let notice = '';
+  if (mystery.kind === 'glowing_shroom') {
+    energyGain = 24;
+    state.elixirTimer = Math.max(state.elixirTimer, 16);
+    notice = 'قارچ جادویی انرژی‌ات را پر کرد (+۲۴ انرژی و چابکی)!';
+  } else if (mystery.kind === 'ancient_totem') {
+    coins = 18;
+    energyGain = 15;
+    state.skillPoints += 1;
+    notice = 'توتم باستانی تو را برکت داد (+۱۸ سکه و +۱۵ انرژی)!';
+  } else if (mystery.kind === 'message_bottle') {
+    coins = 14;
+    state.stashed.shell += 2;
+    notice = 'نقشه گنج در بطری! (+۱۴ سکه و +۲ صدف در کمپ)';
+  } else if (mystery.kind === 'mystery_urn') {
+    coins = 12;
+    state.antidotes += 1;
+    notice = 'در کوزه سکه‌های قدیمی و یک پادزهر پیدا شد (+۱۲ سکه و +۱ پادزهر)!';
+  } else if (mystery.kind === 'unstable_crystal') {
+    coins = 14;
+    awardWeaponXp(state, state.equippedWeapon, 22);
+    notice = 'انرژی کریستال سلاح را تقویت کرد (+۲۲ تجربه سلاح و +۱۴ سکه)!';
+  } else if (mystery.kind === 'shadow_pool') {
+    coins = 10;
+    energyGain = 28;
+    state.venomTimer = 0;
+    notice = 'آب زلال پنهان خستگی و سم را شست (+۲۸ انرژی و +۱۰ سکه)!';
+  } else {
+    coins = 24;
+    state.skillPoints += 1;
+    notice = 'گنج نایاب دزدان دریایی! (+۲۴ سکه و +۱۵ انرژی)';
+  }
+
+  state.coins += coins;
+  state.energy = Math.min(state.maxEnergy, state.energy + energyGain);
+  awardXp(state, 20);
+  return {
+    opened: true,
+    mystery,
+    isHarmful: false,
+    energyDelta: energyGain,
+    coinsDelta: coins,
+    notice,
+  };
 }
 
 export function triggerVictoryVoyage(state: SurvivalState): boolean {
@@ -1735,6 +1955,8 @@ export function getSurvivalHudView(state: SurvivalState, biome: BiomeId): Surviv
     discoveredAnimals: [...state.wildlife.discoveredSpecies],
     secretsFound: state.discoveredSecrets.length,
     secretsTotal: Math.max(CONFIG.SURVIVAL.SECRETS_COUNT, state.secretSpots.length),
+    mysteriesFound: state.discoveredMysteries.length,
+    mysteriesTotal: Math.max(CONFIG.SURVIVAL.MYSTERY_SPOTS_COUNT, state.mysterySpots.length),
     canVictoryVoyage:
       state.buildings.boat &&
       state.playerLevel >= CONFIG.SURVIVAL.VICTORY_MIN_LEVEL &&
@@ -1753,6 +1975,7 @@ export function getSurvivalHudView(state: SurvivalState, biome: BiomeId): Surviv
     buildings: { ...state.buildings },
     nearbyPad: state.nearbyPad ? { ...state.nearbyPad } : null,
     nearbyLandmark: state.nearbyLandmark ? { ...state.nearbyLandmark } : null,
+    wildlifeDifficulty: state.wildlifeDifficulty,
   };
 }
 
@@ -1822,6 +2045,7 @@ export function stepSurvivalSystem(
   const prevOutcome = state.gameOutcome;
   const prevPlayerLevel = state.playerLevel;
   const prevSecretsFound = state.discoveredSecrets.length;
+  const prevMysteriesFound = state.discoveredMysteries.length;
   const prevFireLit = state.fireLit;
   const prevVenomSec = Math.ceil(state.venomTimer);
   const prevAntidotes = state.antidotes;
@@ -2042,6 +2266,7 @@ export function stepSurvivalSystem(
   // 0D. Localized Disaster Hazards Around Player (Storm Lightning, Lightning Storm, Earthquake Rockfalls, Volcano Lava Boulders, Meteor Shower)
   const hazardStrikes: SurvivalStepResult['hazardStrikes'] = [];
   let damageTaken = 0;
+  let campfireExtinguishedNotice: string | undefined;
 
   const activeHazardKind: HazardImpact['kind'] | null =
     state.eventPhase === 'active' && state.activeEvent === 'volcano_eruption'
@@ -2061,28 +2286,38 @@ export function stepSurvivalSystem(
     if (state.hazardSpawnTimer <= 0 && state.hazardImpacts.length < 4) {
       state.hazardSpawnTimer =
         state.activeEvent === 'lightning_storm'
-          ? 1.55
+          ? 1.08
           : activeHazardKind === 'boulder'
-            ? 1.75
-            : activeHazardKind === 'lightning'
-              ? 4.4
-              : 2.25;
-      const ang = randomFn() * Math.PI * 2;
-      const dist = 0.7 + randomFn() * 4.2;
-      const hx = playerX + Math.cos(ang) * dist;
-      const hz = playerZ + Math.sin(ang) * dist;
-      const delay = activeHazardKind === 'lava' || activeHazardKind === 'meteor' ? 1.05 : 0.95;
-      state.hazardImpacts.push({
-        id: `hz-${Date.now()}-${Math.floor(randomFn() * 10000)}`,
-        kind: activeHazardKind,
-        x: hx,
-        z: hz,
-        radius: activeHazardKind === 'lava' || activeHazardKind === 'boulder' ? 2.45 : 2.3,
-        delayTimer: delay,
-        maxDelay: delay,
-        resolved: false,
-        resolveTimer: 0.48,
-      });
+            ? 1.15
+            : activeHazardKind === 'lava'
+              ? 1.25
+              : activeHazardKind === 'meteor'
+                ? 1.25
+                : 3.1;
+      const spawnBatch =
+        state.eventPhase === 'active' &&
+        (state.activeEvent === 'earthquake' || state.activeEvent === 'volcano_eruption') &&
+        state.hazardImpacts.length <= 2
+          ? 2
+          : 1;
+      for (let b = 0; b < spawnBatch; b += 1) {
+        const ang = randomFn() * Math.PI * 2;
+        const dist = b === 0 ? 0.6 + randomFn() * 3.8 : 2.6 + randomFn() * 5.4;
+        const hx = playerX + Math.cos(ang) * dist;
+        const hz = playerZ + Math.sin(ang) * dist;
+        const delay = activeHazardKind === 'lava' || activeHazardKind === 'meteor' ? 1.12 : 1.02;
+        state.hazardImpacts.push({
+          id: `hz-${Date.now()}-${b}-${Math.floor(randomFn() * 10000)}`,
+          kind: activeHazardKind,
+          x: hx,
+          z: hz,
+          radius: activeHazardKind === 'boulder' ? 2.55 : activeHazardKind === 'lava' ? 2.45 : 2.3,
+          delayTimer: delay,
+          maxDelay: delay,
+          resolved: false,
+          resolveTimer: 0.48,
+        });
+      }
     }
   }
 
@@ -2096,12 +2331,12 @@ export function stepSurvivalSystem(
         const hitPlayer = distPlayer <= h.radius;
         let dmg = hitPlayer
           ? h.kind === 'lava'
-            ? 19
+            ? 22
             : h.kind === 'boulder'
-              ? 18
+              ? 19
               : h.kind === 'lightning'
-                ? 16
-                : 15
+                ? 20
+                : 18
           : 0;
         if (hitPlayer) {
           if (state.shellArmorCharges > 0) {
@@ -2122,6 +2357,30 @@ export function stepSurvivalSystem(
             state.disasterChallenge.dodgedCount += 1;
           }
         }
+        // Molten magma bombs leave lingering burning lava pools for several seconds!
+        if (h.kind === 'lava' && state.activeEvent === 'volcano_eruption') {
+          if (state.lavaPools.length >= 6) state.lavaPools.shift();
+          state.lavaPools.push({ x: h.x, z: h.z, radius: 1.65, timer: 4.0 });
+        }
+        // Lightning storm squall can douse an unsheltered low campfire!
+        if (
+          h.kind === 'lightning' &&
+          state.activeEvent === 'lightning_storm' &&
+          state.eventPhase === 'active' &&
+          !state.buildings.shelter &&
+          state.fireLit &&
+          state.fireLevel <= 2
+        ) {
+          const dCamp = Math.hypot(
+            h.x - CONFIG.ISLAND.CAMPFIRE.CX,
+            h.z - CONFIG.ISLAND.CAMPFIRE.CZ
+          );
+          if (dCamp < 10.5) {
+            state.fireLit = false;
+            campfireExtinguishedNotice =
+              'توفان صاعقه آتش بدون پناهگاه کمپ را خاموش کرد!';
+          }
+        }
         hazardStrikes.push({
           id: h.id,
           kind: h.kind,
@@ -2139,7 +2398,39 @@ export function stepSurvivalSystem(
     }
   }
 
-  // Tsunami surge drains energy if player stays caught in deep floodwater
+  // Step lingering molten lava scorch pools from volcano eruption
+  for (let i = state.lavaPools.length - 1; i >= 0; i -= 1) {
+    const lp = state.lavaPools[i];
+    lp.timer -= dt;
+    if (lp.timer <= 0) {
+      state.lavaPools.splice(i, 1);
+      continue;
+    }
+    const distPool = Math.hypot(playerX - lp.x, playerZ - lp.z);
+    if (distPool <= lp.radius) {
+      const burn = 9.5 * dt;
+      state.energy = Math.max(0, state.energy - burn);
+      damageTaken += burn;
+      if (state.disasterChallenge && state.disasterChallenge.status === 'active') {
+        state.disasterChallenge.hitsTaken += 1;
+        state.disasterChallenge.status = 'failed';
+      }
+    }
+  }
+
+  // Tsunami surge drains energy if player stays caught in deep floodwater & douses unsheltered fire
+  if (
+    state.eventPhase === 'active' &&
+    state.activeEvent === 'tsunami' &&
+    state.seaLevelOffset >= 1.78 &&
+    !state.buildings.shelter &&
+    state.fireLit
+  ) {
+    state.fireLit = false;
+    state.fireLevel = Math.max(0, state.fireLevel - 1);
+    campfireExtinguishedNotice =
+      'موج عظیم سونامی آتش کمپ بی‌سرپناه را خاموش کرد! (پناهگاه از آتش محافظت می‌کند)';
+  }
   if (
     state.eventPhase === 'active' &&
     state.activeEvent === 'tsunami' &&
@@ -2149,9 +2440,9 @@ export function stepSurvivalSystem(
       state.disasterChallenge.status = 'failed';
     }
     if (state.tsunamiDamageTimer <= 0) {
-      state.tsunamiDamageTimer = 1.15;
-      state.energy = Math.max(0, state.energy - 8);
-      damageTaken += 8;
+      state.tsunamiDamageTimer = 0.95;
+      state.energy = Math.max(0, state.energy - 12);
+      damageTaken += 12;
     }
   }
 
@@ -2287,10 +2578,12 @@ export function stepSurvivalSystem(
   }
 
   // Active snake/scorpion venom DoT (warmth of Lv 3+ lit campfire gently burns off poison)
+  const wildlifeDmgMult = CONFIG.WILDLIFE_DIFFICULTY_MULTIPLIERS[state.wildlifeDifficulty ?? 'normal'];
   if (state.venomTimer > 0) {
     const campCleanse = state.nearCampfire && state.fireLit && state.fireLevel >= 3;
     state.venomTimer = Math.max(0, state.venomTimer - dt * (campCleanse ? 2.5 : 1.0));
-    const venomDrain = CONFIG.SURVIVAL.VENOM_DRAIN_PER_SEC * dt * (campCleanse ? 0.25 : 1.0);
+    const venomDrain =
+      CONFIG.SURVIVAL.VENOM_DRAIN_PER_SEC * wildlifeDmgMult * dt * (campCleanse ? 0.25 : 1.0);
     state.energy = Math.max(0, state.energy - venomDrain);
     damageTaken += venomDrain;
   }
@@ -2311,13 +2604,15 @@ export function stepSurvivalSystem(
       state.hasFireSpear,
       world,
       state.activeHuntActorId,
-      state.torchTimer > 0
+      state.torchTimer > 0,
+      state.timeOfDay,
+      state.phase
     );
     discoveredSpecies = wRes.discoveredNew;
     state.predatorAlert = wRes.predatorNearby;
     predatorStrikes = wRes.predatorStrikes;
     for (const ps of wRes.predatorStrikes) {
-      let dmg = ps.damage;
+      let dmg = Math.max(1, Math.round(ps.damage * wildlifeDmgMult));
       if (state.shellArmorCharges > 0) {
         dmg = Math.ceil(dmg * 0.5);
         state.shellArmorCharges -= 1;
@@ -2419,8 +2714,15 @@ export function stepSurvivalSystem(
             ? CONFIG.SURVIVAL.HARVEST_RANGE_HUNT
             : CONFIG.SURVIVAL.HARVEST_RANGE_HUNT * 0.84;
     const d = Math.hypot(playerX - actor.x, playerZ - actor.z);
-    // Prioritize close hostile attackers slightly so player fights off predators instead of ignoring them
-    const score = d - (hostile && d <= CONFIG.SURVIVAL.HARVEST_RANGE_COMBAT ? 1.5 : 0);
+    // Prioritize hostile attackers over passive prey (especially when backpack is full) so defense always takes precedence
+    const hostilePriority = hostile
+      ? d <= CONFIG.SURVIVAL.HARVEST_RANGE_COMBAT
+        ? 2.5
+        : !backpackHasRoom
+          ? 6.0
+          : 1.2
+      : 0;
+    const score = d - hostilePriority;
     if (d <= effRange && score < bestPreyScore) {
       bestPreyScore = score;
       bestPrey = actor;
@@ -2436,6 +2738,18 @@ export function stepSurvivalSystem(
     if (d <= CONFIG.SURVIVAL.HARVEST_RANGE_SECRET && d < bestSecretDist) {
       bestSecretDist = d;
       bestSecret = sec;
+    }
+  }
+
+  // Check nearby uninspected Mystery Spot
+  let bestMystery: MysterySpot | null = null;
+  let bestMysteryDist = Infinity;
+  for (const mys of state.mysterySpots) {
+    if (state.discoveredMysteries.includes(mys.id)) continue;
+    const d = Math.hypot(playerX - mys.x, playerZ - mys.z);
+    if (d <= CONFIG.SURVIVAL.HARVEST_RANGE_MYSTERY && d < bestMysteryDist) {
+      bestMysteryDist = d;
+      bestMystery = mys;
     }
   }
 
@@ -2522,6 +2836,16 @@ export function stepSurvivalSystem(
       x: bestSecret.x,
       y: bestSecret.y,
       z: bestSecret.z,
+    };
+  } else if (bestMystery) {
+    focused = {
+      kind: 'mystery',
+      id: bestMystery.id,
+      action: 'mystery_open',
+      labelFa: `بررسی ${bestMystery.nameFa} (پاداش یا خطر!)`,
+      x: bestMystery.x,
+      y: bestMystery.y,
+      z: bestMystery.z,
     };
   } else if (nearTempleDoor) {
     const totalBones = Math.max(1, state.ancientBoneSites.length);
@@ -2788,6 +3112,21 @@ export function stepSurvivalSystem(
           z: sec.z,
         };
       }
+    } else if (targetRequest.kind === 'mystery') {
+      const mys = state.mysterySpots.find(
+        (m) => m.id === targetRequest.id && !state.discoveredMysteries.includes(m.id)
+      );
+      if (mys && Math.hypot(playerX - mys.x, playerZ - mys.z) <= CONFIG.SURVIVAL.HARVEST_RANGE_MYSTERY + 0.5) {
+        focused = {
+          kind: 'mystery',
+          id: mys.id,
+          action: 'mystery_open',
+          labelFa: `بررسی ${mys.nameFa} (پاداش یا خطر!)`,
+          x: mys.x,
+          y: mys.y,
+          z: mys.z,
+        };
+      }
     } else if (targetRequest.kind === 'wreck' && state.wreckSite && !state.wreckLooted) {
       if (Math.hypot(playerX - state.wreckSite.x, playerZ - state.wreckSite.z) <= CONFIG.SURVIVAL.HARVEST_RANGE_WRECK + 0.8) {
         focused = {
@@ -2860,6 +3199,7 @@ export function stepSurvivalSystem(
   let meleeStrike: SurvivalStepResult['meleeStrike'];
   let builtUpgrade: SurvivalStepResult['builtUpgrade'];
   let openedSecret: SurvivalStepResult['openedSecret'];
+  let openedMystery: SurvivalStepResult['openedMystery'];
   let wreckSalvaged: SurvivalStepResult['wreckSalvaged'];
   let boneInspected: SurvivalStepResult['boneInspected'];
   let templeOpened: SurvivalStepResult['templeOpened'];
@@ -3064,17 +3404,50 @@ export function stepSurvivalSystem(
         state.harvestProgress = 0;
         state.huntProgress = 0;
       } else if (focused.kind === 'secret') {
-        const res = openSecretSpot(state, focused.id, playerX, playerZ);
+        const res = openSecretSpot(state, focused.id, playerX, playerZ, randomFn);
         if (res.opened && res.secret) {
-          earnedCoins += 15;
+          const coinsDelta = res.coinsDelta ?? 0;
+          const energyDelta = res.energyDelta ?? 0;
+          if (coinsDelta > 0) earnedCoins += coinsDelta;
+          if (energyDelta < 0) damageTaken += Math.abs(energyDelta);
           openedSecret = {
             id: res.secret.id,
             nameFa: res.secret.nameFa,
             x: res.secret.x,
             y: res.secret.y,
             z: res.secret.z,
+            isTrap: Boolean(res.isTrap),
+            energyDelta,
+            coinsDelta,
+            notice: res.notice ?? res.secret.nameFa,
           };
           state.activeAction = 'secret_open';
+          state.actionProgress = 1;
+        }
+      } else if (focused.kind === 'mystery') {
+        const res = inspectMysterySpot(state, focused.id, playerX, playerZ, randomFn);
+        if (res.opened && res.mystery) {
+          const coinsDelta = res.coinsDelta ?? 0;
+          const energyDelta = res.energyDelta ?? 0;
+          if (coinsDelta > 0) earnedCoins += coinsDelta;
+          if (energyDelta < 0) damageTaken += Math.abs(energyDelta);
+          if (res.poisonedSec) {
+            poisonedSec = Math.max(poisonedSec ?? 0, res.poisonedSec);
+          }
+          openedMystery = {
+            id: res.mystery.id,
+            kind: res.mystery.kind,
+            nameFa: res.mystery.nameFa,
+            x: res.mystery.x,
+            y: res.mystery.y,
+            z: res.mystery.z,
+            isHarmful: Boolean(res.isHarmful),
+            energyDelta,
+            coinsDelta,
+            poisonedSec: res.poisonedSec,
+            notice: res.notice ?? res.mystery.nameFa,
+          };
+          state.activeAction = 'mystery_open';
           state.actionProgress = 1;
         }
       } else if (focused.kind === 'wreck') {
@@ -3576,6 +3949,7 @@ export function stepSurvivalSystem(
     !arrowShot &&
     !hammerSlam &&
     !openedSecret &&
+    !openedMystery &&
     !wreckSalvaged &&
     !boneInspected &&
     !templeOpened &&
@@ -3612,6 +3986,7 @@ export function stepSurvivalSystem(
     Boolean(meleeStrike) ||
     Boolean(builtUpgrade) ||
     Boolean(openedSecret) ||
+    Boolean(openedMystery) ||
     Boolean(wreckSalvaged) ||
     Boolean(boneInspected) ||
     Boolean(templeOpened) ||
@@ -3623,6 +3998,7 @@ export function stepSurvivalSystem(
     Boolean(hammerSlam) ||
     Boolean(eventStarted) ||
     Boolean(eventEndedNotice) ||
+    Boolean(campfireExtinguishedNotice) ||
     Boolean(boatVoyageNotice) ||
     weaponLevelUps.length > 0 ||
     playerLevelUp !== undefined ||
@@ -3663,6 +4039,7 @@ export function stepSurvivalSystem(
     state.gameOutcome !== prevOutcome ||
     state.playerLevel !== prevPlayerLevel ||
     state.discoveredSecrets.length !== prevSecretsFound ||
+    state.discoveredMysteries.length !== prevMysteriesFound ||
     (state.nearbyPad?.id ?? null) !== prevNearbyPadId ||
     (state.nearbyLandmark?.id ?? null) !== prevNearbyLandmarkId ||
     (state.focusedTarget?.id ?? null) !== prevFocusedId ||
@@ -3678,6 +4055,7 @@ export function stepSurvivalSystem(
     hammerSlam,
     builtUpgrade,
     openedSecret,
+    openedMystery,
     wreckSalvaged,
     boneInspected,
     templeOpened,
@@ -3687,6 +4065,7 @@ export function stepSurvivalSystem(
     disasterChallengeOutcome,
     eventStarted,
     eventEndedNotice,
+    campfireExtinguishedNotice,
     boatVoyageNotice,
     boatVoyageVictoryReady,
     weaponLevelUps,
@@ -3751,6 +4130,7 @@ export interface SavedRunSnapshot {
     weatherTimer: number;
     groundWetness: number;
     discoveredSecrets: string[];
+    discoveredMysteries?: string[];
     inspectedBones: string[];
     wreckLooted: boolean;
     templeUnlocked: boolean;
@@ -3821,6 +4201,7 @@ export function exportSavedRunSnapshot(
       weatherTimer: state.weatherTimer,
       groundWetness: state.groundWetness,
       discoveredSecrets: [...state.discoveredSecrets],
+      discoveredMysteries: [...state.discoveredMysteries],
       inspectedBones: [...state.inspectedBones],
       wreckLooted: state.wreckLooted,
       templeUnlocked: state.templeUnlocked,
@@ -3973,6 +4354,11 @@ export function restoreSavedRunSnapshot(
   if (Array.isArray(saved.discoveredSecrets)) {
     state.discoveredSecrets = saved.discoveredSecrets.filter((id) =>
       state.secretSpots.some((s) => s.id === id)
+    );
+  }
+  if (Array.isArray(saved.discoveredMysteries)) {
+    state.discoveredMysteries = saved.discoveredMysteries.filter((id) =>
+      state.mysterySpots.some((m) => m.id === id)
     );
   }
   if (Array.isArray(saved.inspectedBones)) {

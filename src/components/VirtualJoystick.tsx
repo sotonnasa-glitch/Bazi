@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { CONFIG } from '../game/config';
 import { computeVirtualJoystickVector } from '../game/world';
 
@@ -30,6 +30,14 @@ export function VirtualJoystick({ enabled, onChange }: VirtualJoystickProps) {
     },
     [onChange]
   );
+
+  useEffect(() => {
+    if (!enabled && stickRef.current !== null) {
+      stickRef.current = null;
+      setStick(null);
+      onChange(0, 0);
+    }
+  }, [enabled, onChange]);
 
   const handlePointerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
