@@ -289,6 +289,9 @@ export default function App() {
   const [damageNumbers, setDamageNumbers] = useState<
     Array<{ id: number; amount: number; x: number; y: number }>
   >([]);
+  const [combatPopups, setCombatPopups] = useState<
+    Array<{ id: number; damage: number; x: number; y: number; nameFa: string; defeated: boolean }>
+  >([]);
   const damageIdRef = useRef(0);
   const damageFlashTimerRef = useRef<number | null>(null);
 
@@ -395,6 +398,16 @@ export default function App() {
           window.setTimeout(() => {
             setDamageNumbers((prev) => prev.filter((item) => item.id !== id));
           }, 880);
+        },
+        onCombatHit: (damage, screenX, screenY, nameFa, defeated) => {
+          const id = (damageIdRef.current += 1);
+          setCombatPopups((prev) => [
+            ...prev.slice(-6),
+            { id, damage: Math.max(1, Math.round(damage)), x: screenX, y: screenY, nameFa, defeated },
+          ]);
+          window.setTimeout(() => {
+            setCombatPopups((prev) => prev.filter((item) => item.id !== id));
+          }, 840);
         },
         onOutcomeChange: (nextOutcome) => {
           setOutcome(nextOutcome);
@@ -689,6 +702,24 @@ export default function App() {
               -{toPersianDigits(dmg.amount)}
             </div>
           ))}
+        {screen === 'playing' &&
+          combatPopups.map((hit) => (
+            <div
+              key={hit.id}
+              data-testid="combat-hit-popup"
+              className={`pointer-events-none fixed sm:absolute z-30 font-black damage-float-anim tabular-nums ${
+                hit.defeated ? 'text-base text-[#ffe066]' : 'text-lg text-[#ff9f1c]'
+              }`}
+              style={{
+                left: `${hit.x}px`,
+                top: `${hit.y}px`,
+                textShadow: '0 2px 0 #4a1c03, 0 0 8px rgba(255, 240, 180, 0.9)',
+              }}
+            >
+              -{toPersianDigits(hit.damage)}
+              {hit.defeated ? ' ✕' : ''}
+            </div>
+          ))}
 
         {/* Flying Resource Icons into HUD Counters */}
         {screen === 'playing' &&
@@ -828,15 +859,53 @@ export default function App() {
           </div>
         )}
 
+        {/* 3D Ending Boat Launch & Rowing Cutscene Overlay */}
+        {screen === 'ending_cutscene' && (
+          <div
+            data-testid="ending-cutscene-overlay"
+            className="pointer-events-none absolute inset-0 z-25 flex flex-col justify-between p-4"
+          >
+            <div className="flex items-center justify-between">
+              <div className="hud-card px-3 py-1.5 rounded-2xl text-[11px] font-extrabold text-[#154f7a]">
+                به سوی خانه — قایق در آب انداخته شد
+              </div>
+              <button
+                type="button"
+                onClick={handleToggleMute}
+                aria-label={muted ? 'وصل صدا' : 'قطع صدا'}
+                className="pointer-events-auto wood-btn p-2 rounded-2xl text-[#fff8eb] cursor-pointer flex items-center justify-center"
+              >
+                <VolumeIcon muted={muted} />
+              </button>
+            </div>
+
+            <div className="flex flex-col items-center gap-2.5 pb-4">
+              <div className="hud-card max-w-[440px] px-4 py-2.5 rounded-2xl text-center text-xs sm:text-sm font-extrabold text-[#3d2508] shadow-lg">
+                قایق چوبی آماده شد! بازمانده قایق را به آب می‌اندازد، سوار می‌شود و با پاروزدن جزیره را به سوی خانه ترک می‌کند!
+              </div>
+              <button
+                type="button"
+                data-testid="skip-ending-btn"
+                onClick={handleSkipCutscene}
+                className="pointer-events-auto wood-btn-primary px-5 py-2 rounded-2xl text-white text-xs font-extrabold cursor-pointer shadow-lg"
+              >
+                رد کردن و نمایش نتیجه پیروزی
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Survival RTL HTML HUD Overlay over Canvas */}
         {screen === 'playing' && activeRun && (
           <div className="pointer-events-none absolute inset-0 z-20">
-            {/* Top-Right: Coins, Resources & Day/Weather indicator */}
-            <div
-              className="absolute top-2.5 right-2.5 flex flex-col items-start gap-1.5"
-              data-testid="hud-top-right"
-            >
-              <div className="flex items-center gap-1 flex-wrap max-w-[196px] sm:max-w-[540px]">
+            {/* Top Bar: Right Resources & Left Status/Actions (never overlapping on mobile) */}
+            <div className="pointer-events-none absolute top-2 inset-x-2 flex items-start justify-between gap-1.5 sm:gap-3">
+              {/* Top-Right: Coins, Resources & Day/Weather indicator */}
+              <div
+                className="flex flex-col items-start gap-1 sm:gap-1.5 max-w-[46%] sm:max-w-[540px] min-w-0"
+                data-testid="hud-top-right"
+              >
+                <div className="flex items-center gap-1 flex-wrap max-w-full">
                 <HudCounterPill
                   ref={(el) => {
                     counterRefs.current.coin = el;
@@ -930,7 +999,7 @@ export default function App() {
                 />
               </div>
 
-              <div className="flex items-center gap-1.5 flex-wrap max-w-[205px] sm:max-w-[460px]">
+              <div className="flex items-center gap-1 sm:gap-1.5 flex-wrap max-w-full">
                 <div
                   className={`hud-card rounded-xl px-2 py-1 flex items-center gap-1.5 text-[10px] font-extrabold ${
                     hud.weather === 'storm'
@@ -1075,35 +1144,35 @@ export default function App() {
 
             {/* Top-Left: Player Level + Energy Bar + Audio + Skills + Wildlife Guide + Biome + Menu */}
             <div
-              className="absolute top-2.5 left-2.5 flex flex-col items-end gap-1.5"
+              className="flex flex-col items-end gap-1 sm:gap-1.5 max-w-[52%] sm:max-w-none min-w-0"
               data-testid="hud-top-left"
             >
-              <div className="flex items-center gap-1.5 flex-wrap justify-end">
+              <div className="flex items-center gap-1 sm:gap-1.5 flex-wrap justify-end">
                 <button
                   type="button"
                   data-testid="toggle-mute-btn"
                   onClick={handleToggleMute}
                   aria-label={muted ? 'وصل صدا' : 'قطع صدا'}
                   title={muted ? 'وصل صدا' : 'قطع صدا'}
-                  className="pointer-events-auto wood-btn p-2 rounded-2xl text-[#fff8eb] text-[10px] font-extrabold cursor-pointer flex items-center justify-center"
+                  className="pointer-events-auto wood-btn p-1.5 sm:p-2 rounded-2xl text-[#fff8eb] text-[10px] font-extrabold cursor-pointer flex items-center justify-center"
                   style={{ textShadow: '0 1px 0 rgba(94, 41, 10, 0.7)' }}
                 >
                   <VolumeIcon muted={muted} />
                 </button>
 
                 <div
-                  className="hud-card rounded-2xl px-2.5 py-1.5 flex flex-col gap-0.5 min-w-[90px]"
+                  className="hud-card rounded-2xl px-2 py-1 sm:px-2.5 sm:py-1.5 flex flex-col gap-0.5 min-w-[74px] sm:min-w-[90px]"
                   data-testid="hud-player-level"
                 >
-                  <div className="flex items-center justify-between gap-2 text-[10px] font-extrabold text-[#5a3b14]">
+                  <div className="flex items-center justify-between gap-1.5 sm:gap-2 text-[9.5px] sm:text-[10px] font-extrabold text-[#5a3b14]">
                     <span>سطح {toPersianDigits(hud.playerLevel)}</span>
-                    <span className="tabular-nums text-[9px] text-[#8a5d1f]">
+                    <span className="tabular-nums text-[8.5px] sm:text-[9px] text-[#8a5d1f]">
                       {hud.playerLevel >= CONFIG.PLAYER.MAX_LEVEL
                         ? 'اوج'
                         : `${toPersianDigits(hud.playerXp)}/${toPersianDigits(hud.playerXpToNext)}`}
                     </span>
                   </div>
-                  <div className="w-20 h-2 rounded-full wood-well p-0.5 overflow-hidden">
+                  <div className="w-14 sm:w-20 h-2 rounded-full wood-well p-0.5 overflow-hidden">
                     <div
                       className="h-full rounded-full bg-gradient-to-l from-[#3bc9db] to-[#ffd233] transition-transform duration-200 origin-right"
                       style={{ transform: `scaleX(${Math.max(0.05, playerXpRatio)})` }}
@@ -1111,16 +1180,16 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="hud-card rounded-2xl px-2.5 py-1.5 flex items-center gap-2 min-w-[126px]">
+                <div className="hud-card rounded-2xl px-2 py-1 sm:px-2.5 sm:py-1.5 flex items-center gap-1.5 sm:gap-2 min-w-[104px] sm:min-w-[126px]">
                   <EnergyBoltSvg />
                   <div className="flex-1 flex flex-col gap-0.5">
-                    <div className="flex items-center justify-between text-[10px] font-extrabold text-[#5a3b14]">
+                    <div className="flex items-center justify-between text-[9.5px] sm:text-[10px] font-extrabold text-[#5a3b14]">
                       <span>انرژی</span>
                       <span className="tabular-nums">
                         {toPersianDigits(hud.energy)} / {toPersianDigits(hud.maxEnergy)}
                       </span>
                     </div>
-                    <div className="w-22 sm:w-24 h-2.5 rounded-full wood-well p-0.5 overflow-hidden">
+                    <div className="w-14 sm:w-24 h-2 sm:h-2.5 rounded-full wood-well p-0.5 overflow-hidden">
                       <div
                         className={`h-full rounded-full transition-transform duration-200 origin-right ${
                           energyRatio < 0.28
@@ -1204,10 +1273,11 @@ export default function App() {
                 </button>
               </div>
             </div>
+            </div>
 
             {/* Top-Center Stack: World Event Banner + Disaster Challenge Card + Contextual Survival Notice */}
             {(activeEventInfo || hud.disasterChallenge || survivalNotice) && !activeModal && (
-              <div className="absolute top-[138px] sm:top-[70px] left-1/2 -translate-x-1/2 max-w-[92%] flex flex-col items-center gap-1 pointer-events-none">
+              <div className="absolute top-[156px] sm:top-[70px] left-1/2 -translate-x-1/2 max-w-[92%] flex flex-col items-center gap-1 pointer-events-none">
                 {activeEventInfo && (
                   <div
                     data-testid="world-event-banner"
@@ -1466,8 +1536,13 @@ export default function App() {
                   type="button"
                   data-testid="quick-interact-btn"
                   onClick={handleInteract}
-                  className="pointer-events-auto wood-btn-primary px-3 py-2 rounded-2xl text-white text-[11.5px] font-extrabold cursor-pointer flex items-center gap-1.5 shadow-lg"
-                  style={{ textShadow: '0 1px 0 rgba(153, 62, 6, 0.75)' }}
+                  className={`pointer-events-auto px-3 py-2 rounded-2xl text-white text-[11.5px] font-extrabold cursor-pointer flex items-center gap-1.5 shadow-lg ${
+                    hud.focusedTarget.kind === 'prey' &&
+                    (hud.focusedTarget.action === 'hunt' || hud.focusedTarget.action === 'bow_hunt')
+                      ? 'bg-gradient-to-b from-[#ef4444] to-[#b91c1c] border-2 border-[#fecaca]'
+                      : 'wood-btn-primary'
+                  }`}
+                  style={{ textShadow: '0 1px 0 rgba(120, 20, 10, 0.75)' }}
                 >
                   <SparkMiniSvg />
                   <span>{hud.focusedTarget.labelFa} (F)</span>

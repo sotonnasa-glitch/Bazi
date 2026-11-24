@@ -238,12 +238,15 @@ test('campfire levels 1 to 5 unlock roasted banana, bow, hammer, and wooden boat
   const bStart = stepSurvivalSystem(state, boatPad.x, boatPad.z, false, 0.4, undefined, true);
   assert.equal(bStart.builtUpgrade, undefined);
   assert.equal(state.activeAction, 'build');
-  const bDone = stepSurvivalSystem(state, boatPad.x, boatPad.z, false, 0.8);
+  const bDone = stepSurvivalSystem(state, boatPad.x, boatPad.z, false, 1.8);
   assert.ok(bDone.builtUpgrade);
   assert.equal(bDone.builtUpgrade.id, 'boat');
   assert.equal(state.buildings.boat, true);
 
-  // After building boat, interacting at boat pad launches a sea voyage!
+  // After building boat below VICTORY_MIN_LEVEL, interacting at boat pad launches a repeatable sea voyage!
+  state.playerLevel = CONFIG.SURVIVAL.VICTORY_MIN_LEVEL - 1;
+  state.playerXp = 160;
+  state.playerXpToNext = CONFIG.PLAYER.LEVEL_XP_THRESHOLDS[CONFIG.SURVIVAL.VICTORY_MIN_LEVEL - 1];
   const coinsBefore = state.coins;
   const voyageRes = stepSurvivalSystem(state, boatPad.x, boatPad.z, false, 0.1, undefined, true);
   assert.ok(voyageRes.boatVoyageNotice);
@@ -450,7 +453,7 @@ test('hunting prey yields raw meat, campfire roasts meat, and building rack expa
   state.stashed.wood = CONFIG.SURVIVAL.BUILD_COSTS.rack;
   stepSurvivalSystem(state, rackPad.x, rackPad.z, false, 0.4, undefined, true);
   assert.equal(state.activeAction, 'build');
-  const b2 = stepSurvivalSystem(state, rackPad.x, rackPad.z, false, 0.7);
+  const b2 = stepSurvivalSystem(state, rackPad.x, rackPad.z, false, 1.8);
   assert.ok(b2.builtUpgrade);
   assert.equal(state.backpackCapacity, CONFIG.PLAYER.UPGRADED_BACKPACK_CAPACITY);
 
@@ -764,5 +767,94 @@ test('buried stone temple door stays locked until all 4 ancient bones are collec
   assert.equal(restored!.state.buildings.shelter, true);
   assert.equal(restored!.state.carried.wood, 2);
 });
+
+test('post-event breather calms storms, predators can be fought with full backpack, and Lv5+ boat voyage readies victory', () => {
+  const world = generateIslandWorld('survival-breather-combat-victory');
+  const state = createSurvivalState(world, 0.38);
+
+  // Isolate from nodes/pads
+  for (const node of state.nodes) {
+    node.x = 999;
+    node.z = 999;
+  }
+
+  // 1. Post-event breather window suppresses storm & storm lightning right after a disaster ends
+  state.weather = 'storm';
+  state.weatherTimer = 15;
+  triggerWorldEvent(state, 'lightning_storm', true);
+  stepSurvivalSystem(
+    state,
+    0,
+    0,
+    false,
+    CONFIG.SURVIVAL.WORLD_EVENTS.LIGHTNING_STORM_DURATION_SEC + 0.1
+  );
+  assert.ok(state.postEventBreatherTimer >= 25, 'breather timer must activate after event ends');
+  assert.equal(state.weather, 'clear', 'storm must calm down right after major disaster');
+  assert.ok(
+    state.nextEventTimer >= CONFIG.SURVIVAL.WORLD_EVENTS.MIN_INTERVAL_SEC - 1,
+    'next event interval must give player long breathing room'
+  );
+
+  // Even if storm is set manually while breather is active, ambient storm lightning is suppressed
+  state.weather = 'storm';
+  state.hazardSpawnTimer = 0.01;
+  state.hazardImpacts = [];
+  stepSurvivalSystem(state, 0, 0, false, 0.1, undefined, false, false, () => 0.01);
+  assert.equal(state.hazardImpacts.length, 0, 'ambient storm lightning stays suppressed during breather');
+
+  // 2. Hostile predator can be fought in melee & with bow even when backpack is completely full
+  state.carried.wood = state.backpackCapacity;
+  for (let i = 0; i < state.backpackCapacity; i += 1) state.carriedStack.push('wood');
+  const wolf = state.wildlife.actors.find((a) => a.speciesId === 'night_wolf')!;
+  assert.ok(wolf);
+  state.timeOfDay = 0.85;
+  wolf.x = 12;
+  wolf.z = 12;
+  wolf.visible = true;
+  wolf.koTimer = 0;
+  wolf.respawnTimer = 0;
+  wolf.hp = 3;
+  wolf.maxHp = 3;
+
+  const fStep = stepSurvivalSystem(state, 13.5, 12, false, 0.1, world, false);
+  assert.equal(fStep.hudChanged || state.focusedTarget?.id === wolf.id, true);
+  assert.equal(state.focusedTarget?.kind, 'prey');
+  assert.equal(state.focusedTarget?.blockedReason, undefined, 'full backpack must never block predator self-defense');
+
+  const strike1 = stepSurvivalSystem(state, 13.5, 12, false, 0.1, world, true);
+  assert.ok(strike1.meleeStrike, 'player must strike predator in melee');
+  assert.equal(state.activeAction, 'hunt', 'combat swing pose persists right after strike');
+
+  // Bow self-defense also works with full backpack
+  state.unlockedWeapons.bow = true;
+  selectWeapon(state, 'bow');
+  wolf.hp = 2;
+  const bowDefense = stepSurvivalSystem(state, 16, 12, false, 0.1, world, true);
+  assert.equal(state.focusedTarget?.blockedReason, undefined, 'full backpack must not block bow defense against hostile predator');
+  assert.ok(bowDefense.arrowShot, 'bow should shoot hostile predator even with full backpack');
+
+  // 3. Build progress increases gradually so piece-by-piece animation is visible
+  const boatPad = state.buildPads.find((p) => p.id === 'boat')!;
+  state.fireLit = true;
+  state.fireLevel = 5;
+  state.stashed.wood = 20;
+  selectWeapon(state, 'axe');
+  stepSurvivalSystem(state, boatPad.x, boatPad.z, false, 0.2, undefined, true);
+  stepSurvivalSystem(state, boatPad.x, boatPad.z, false, 0.6);
+  assert.ok(
+    state.buildProgress.boat > 0.25 && state.buildProgress.boat < 0.8,
+    `expected gradual boat buildProgress around 0.4, got ${state.buildProgress.boat}`
+  );
+  const bFinish = stepSurvivalSystem(state, boatPad.x, boatPad.z, false, 1.5);
+  assert.ok(bFinish.builtUpgrade);
+  assert.equal(state.buildings.boat, true);
+
+  // 4. Boat voyage at playerLevel >= VICTORY_MIN_LEVEL sets boatVoyageVictoryReady
+  state.playerLevel = CONFIG.SURVIVAL.VICTORY_MIN_LEVEL;
+  const vReady = stepSurvivalSystem(state, boatPad.x, boatPad.z, false, 0.1, undefined, true);
+  assert.equal(vReady.boatVoyageVictoryReady, true);
+});
+
 
 

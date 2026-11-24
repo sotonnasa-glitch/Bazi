@@ -33,11 +33,9 @@ import {
   buildBanyanTrunkGeometry,
   buildBeachStarfishGeometry,
   buildBellflowerSpikeGeometry,
-  buildBoatCradleGeometry,
   buildBowToolGeometry,
   buildBrazierGeometry,
   buildBuriedStoneTempleGeo,
-  buildCampShelterGeometry,
   buildCampfireLogsGeometry,
   buildCanopyBlossomsGeometry,
   buildClawSlashGeometry,
@@ -51,7 +49,6 @@ import {
   buildFemurBoneGeometry,
   buildFernTuftGeometry,
   buildFishGeometry,
-  buildFishingPierGeometry,
   buildFishingRodPoleGeometry,
   buildFlameTongueGeometry,
   buildGrassClumpGeometry,
@@ -79,7 +76,6 @@ import {
   buildSecretChestLidGeometry,
   buildSpearToolGeometry,
   buildSporeBloomGeometry,
-  buildStorageRackGeometry,
   buildTempleDoorSlabGeo,
   buildTempleRelicCrownGeo,
   buildTinyMushroomGeometry,
@@ -122,7 +118,7 @@ import {
   type SurvivalHudView,
   type SurvivalState,
 } from './survival';
-import { getAnimalSpecies } from './wildlife';
+import { getAnimalSpecies, isHostilePredatorActor } from './wildlife';
 import { createProceduralTextureSet } from './textures';
 import {
   createSeededRandom,
@@ -172,6 +168,7 @@ export interface ThreeSceneCallbacks {
   onResourceFly?: (event: FlyingResourceEvent) => void;
   onNotice?: (text: string) => void;
   onDamageTaken?: (damage: number, screenX: number, screenY: number) => void;
+  onCombatHit?: (damage: number, screenX: number, screenY: number, nameFa: string, defeated: boolean) => void;
   onOutcomeChange?: (outcome: GameOutcome) => void;
 }
 
@@ -1346,10 +1343,28 @@ export function createThreeIslandGame(
   let islandDisposables: Array<{ dispose: () => void }> = [];
 
   // Interactive harvest, fishing, shell, secret chests, bone shrines & camp build pad visual bindings
+  interface BuildPieceAnim {
+    mesh: THREE.Mesh;
+    finalPos: THREE.Vector3;
+    finalRot: THREE.Euler;
+    finalScale: THREE.Vector3;
+    startOffset: THREE.Vector3;
+    startRotOffset: THREE.Euler;
+    startAt: number;
+    endAt: number;
+    locked: boolean;
+  }
+  interface BuildPadVisual {
+    padGroup: THREE.Group;
+    builtGroup: THREE.Group;
+    pieces: BuildPieceAnim[];
+    visualProgress: number;
+    pieceSoundCooldown: number;
+  }
   const bushNodeVisuals = new Map<string, { group: THREE.Group; berries: THREE.Mesh[]; baseScale: number }>();
   const shellNodeVisuals = new Map<string, { mesh: THREE.Mesh; baseScale: number }>();
   const fishingVisuals = new Map<string, { fishA: THREE.Mesh; fishB: THREE.Mesh; ripple: THREE.Mesh; waterX: number; waterZ: number }>();
-  const buildPadVisuals = new Map<CampUpgradeId, { padGroup: THREE.Group; builtGroup: THREE.Group; popAge: number }>();
+  const buildPadVisuals = new Map<CampUpgradeId, BuildPadVisual>();
   const landmarkRingVisuals = new Map<StrangeLandmarkId, THREE.Mesh>();
   const secretSpotVisuals = new Map<
     string,
@@ -1432,6 +1447,125 @@ export function createThreeIslandGame(
   cutsceneParachuteMesh.visible = false;
   survivor.root.add(cutsceneParachuteMesh);
   disposables.push(planeFuselageGeo, planePropellerGeo, parachuteGeo, planeMat);
+
+  // Persistent 3D Ending Cutscene Wooden Boat Rig with Planked Hull & Articulated Rowing Oars
+  const endingBoatGroup = new THREE.Group();
+  endingBoatGroup.visible = false;
+  const endSlabGeo = buildSculptedStoneSlabGeometry(1, 1, 1, 3.1);
+  const endPlankGeo = new THREE.BoxGeometry(1, 1, 1);
+  const endPoleGeo = new THREE.CylinderGeometry(0.46, 0.5, 1.0, 8);
+  const endSailGeo = new THREE.CylinderGeometry(1.15, 1.15, 1.35, 10, 1, true, -0.55, 1.1);
+  const endOarBladeGeo = new THREE.BoxGeometry(0.46, 0.05, 0.18);
+  const endSphereGeo = new THREE.SphereGeometry(0.15, 9, 8);
+  const endHullMat = getPbrMat(0xc98c4d, 0.78, textures.woodDiffuse, textures.woodBump, 0.03);
+  const endDarkWoodMat = getPbrMat(0x824c22, 0.84, textures.woodDiffuse, textures.woodBump, 0.03);
+  const endLightPlankMat = getPbrMat(0xe5b87e, 0.75, textures.woodDiffuse, textures.woodBump, 0.03);
+  const endSailMat = new THREE.MeshStandardMaterial({
+    color: 0xfbf2d4,
+    roughness: 0.68,
+    side: THREE.DoubleSide,
+  });
+  const endLanternMat = new THREE.MeshStandardMaterial({
+    color: 0xffe478,
+    emissive: 0xffb326,
+    emissiveIntensity: 1.1,
+    roughness: 0.25,
+  });
+  disposables.push(
+    endSlabGeo,
+    endPlankGeo,
+    endPoleGeo,
+    endSailGeo,
+    endOarBladeGeo,
+    endSphereGeo,
+    endSailMat,
+    endLanternMat
+  );
+
+  // Keel & floor planks
+  const endKeel = new THREE.Mesh(endPlankGeo, endDarkWoodMat);
+  endKeel.position.set(0, 0.24, 0);
+  endKeel.scale.set(0.22, 0.16, 3.05);
+  endKeel.castShadow = true;
+  endingBoatGroup.add(endKeel);
+  for (let b = 0; b < 3; b += 1) {
+    const fl = new THREE.Mesh(endPlankGeo, b % 2 === 0 ? endLightPlankMat : endHullMat);
+    fl.position.set(-0.24 + b * 0.24, 0.34, 0);
+    fl.scale.set(0.22, 0.08, 2.55);
+    endingBoatGroup.add(fl);
+  }
+  // Port & Starboard side planks (5 flush strakes per side tapering toward bow & stern)
+  for (let i = 0; i < 5; i += 1) {
+    const zOff = -1.08 + i * 0.54;
+    const taper = 1 - Math.pow(Math.abs(zOff) / 1.48, 1.75) * 0.52;
+    const sheer = Math.pow(Math.abs(zOff) / 1.38, 1.7) * 0.12;
+    const zSign = zOff >= 0 ? 1 : -1;
+    for (const side of [-1, 1]) {
+      const plank = new THREE.Mesh(
+        endPlankGeo,
+        (i + (side > 0 ? 1 : 0)) % 2 === 0 ? endHullMat : endLightPlankMat
+      );
+      plank.position.set(side * 0.72 * taper, 0.62 + sheer, zOff);
+      plank.rotation.set(0, side * -zSign * 0.25, side * -0.3);
+      plank.scale.set(0.11, 0.56, 0.62);
+      plank.castShadow = true;
+      endingBoatGroup.add(plank);
+    }
+  }
+  // Gunwale rails + benches + bow/stern stem posts
+  for (const side of [-1, 1]) {
+    const rail = new THREE.Mesh(endPoleGeo, endDarkWoodMat);
+    rail.position.set(side * 0.68, 0.9, 0);
+    rail.rotation.set(Math.PI * 0.5, 0, 0);
+    rail.scale.set(0.1, 2.45, 0.1);
+    rail.castShadow = true;
+    endingBoatGroup.add(rail);
+  }
+  for (const zSeat of [-0.28, 0.42]) {
+    const bench = new THREE.Mesh(endPlankGeo, endLightPlankMat);
+    bench.position.set(0, 0.68, zSeat);
+    bench.scale.set(1.12, 0.09, 0.3);
+    bench.castShadow = true;
+    endingBoatGroup.add(bench);
+  }
+  // Forward mast, boom, billowing sail, and bow lantern
+  const endMast = new THREE.Mesh(endPoleGeo, endDarkWoodMat);
+  endMast.position.set(0, 1.72, 0.78);
+  endMast.scale.set(0.11, 1.95, 0.11);
+  endMast.castShadow = true;
+  const endBoom = new THREE.Mesh(endPoleGeo, endDarkWoodMat);
+  endBoom.position.set(0, 2.38, 0.8);
+  endBoom.rotation.z = Math.PI * 0.5;
+  endBoom.scale.set(0.08, 1.15, 0.08);
+  const endSail = new THREE.Mesh(endSailGeo, endSailMat);
+  endSail.position.set(0, 1.76, 0.88);
+  endSail.rotation.y = 0;
+  endSail.scale.set(0.52, 0.86, 0.3);
+  endSail.castShadow = true;
+  const endLantern = new THREE.Mesh(endSphereGeo, endLanternMat);
+  endLantern.position.set(0, 1.04, 1.44);
+  endingBoatGroup.add(endMast, endBoom, endSail, endLantern);
+
+  // Articulated 3D Wooden Oars pivoted in gunwale oarlocks
+  const buildEndingOarPivot = (side: -1 | 1): THREE.Group => {
+    const pivot = new THREE.Group();
+    pivot.position.set(side * 0.72, 0.9, -0.08);
+    const shaft = new THREE.Mesh(endPoleGeo, endLightPlankMat);
+    shaft.rotation.z = Math.PI * 0.5;
+    shaft.scale.set(0.065, 1.55, 0.065);
+    shaft.position.set(side * 0.55, 0, 0);
+    shaft.castShadow = true;
+    const blade = new THREE.Mesh(endOarBladeGeo, endHullMat);
+    blade.position.set(side * 1.42, 0, 0);
+    blade.rotation.x = 0.25;
+    blade.castShadow = true;
+    pivot.add(shaft, blade);
+    return pivot;
+  };
+  const endingOarL = buildEndingOarPivot(-1);
+  const endingOarR = buildEndingOarPivot(1);
+  endingBoatGroup.add(endingOarL, endingOarR);
+  scene.add(endingBoatGroup);
 
   // Fishing bobber & curved fishing line in world space
   const bobberGeo = new THREE.SphereGeometry(0.11, 10, 8);
@@ -1773,26 +1907,69 @@ export function createThreeIslandGame(
       side: THREE.DoubleSide,
       depthWrite: false,
     });
-    const builtStructureMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      roughness: 0.78,
-      metalness: 0.04,
-      vertexColors: true,
+    const plankLightMat = getPbrMat(0xe5b87e, 0.76, textures.woodDiffuse, textures.woodBump, 0.03);
+    const plankMidMat = getPbrMat(0xc98c4d, 0.79, textures.woodDiffuse, textures.woodBump, 0.03);
+    const thatchMat = getPbrMat(0xd9bf5c, 0.86);
+    const rugMat = getPbrMat(0xdfad64, 0.88);
+    const sailMat = new THREE.MeshStandardMaterial({
+      color: 0xfbf2d4,
+      roughness: 0.68,
+      side: THREE.DoubleSide,
     });
-    const shelterGeo = buildCampShelterGeometry();
-    const rackGeo = buildStorageRackGeometry();
-    const pierGeo = buildFishingPierGeometry();
-    const boatGeo = buildBoatCradleGeometry();
+    const lanternMat = new THREE.MeshStandardMaterial({
+      color: 0xffe478,
+      emissive: 0xffb326,
+      emissiveIntensity: 1.05,
+      roughness: 0.25,
+    });
+    const pieceSlabGeo = new THREE.BoxGeometry(1, 1, 1);
+    const pieceLogGeo = buildWoodLogGeometry(0.095, 0.78);
+    const piecePoleGeo = new THREE.CylinderGeometry(0.46, 0.5, 1.0, 8);
+    const pieceSphereGeo = new THREE.SphereGeometry(0.5, 10, 8);
+    const pieceSailGeo = new THREE.CylinderGeometry(1.15, 1.15, 1.45, 10, 1, true, -0.55, 1.1);
     islandDisposables.push(
       padRingGeo,
       padMarkerGeo,
       padRingMat,
-      builtStructureMat,
-      shelterGeo,
-      rackGeo,
-      pierGeo,
-      boatGeo
+      sailMat,
+      lanternMat,
+      pieceSlabGeo,
+      pieceLogGeo,
+      piecePoleGeo,
+      pieceSphereGeo,
+      pieceSailGeo
     );
+
+    const pushPiece = (
+      pieces: BuildPieceAnim[],
+      builtGroup: THREE.Group,
+      geo: THREE.BufferGeometry,
+      mat: THREE.Material,
+      finalPos: THREE.Vector3,
+      finalRot: THREE.Euler,
+      finalScale: THREE.Vector3,
+      startOffset: THREE.Vector3,
+      startRotOffset: THREE.Euler,
+      startAt: number,
+      endAt: number
+    ) => {
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.visible = false;
+      builtGroup.add(mesh);
+      pieces.push({
+        mesh,
+        finalPos,
+        finalRot,
+        finalScale,
+        startOffset,
+        startRotOffset,
+        startAt,
+        endAt,
+        locked: false,
+      });
+    };
 
     for (const pad of world.buildPads) {
       const padGroup = new THREE.Group();
@@ -1815,22 +1992,426 @@ export function createThreeIslandGame(
       builtGroup.position.set(pad.x, pad.y - 0.05, pad.z);
       builtGroup.rotation.y = pad.rotationY;
       builtGroup.visible = false;
+      const pieces: BuildPieceAnim[] = [];
 
-      const structGeo =
-        pad.id === 'shelter'
-          ? shelterGeo
-          : pad.id === 'rack'
-            ? rackGeo
-            : pad.id === 'pier'
-              ? pierGeo
-              : boatGeo;
-      const structMesh = new THREE.Mesh(structGeo, builtStructureMat);
-      structMesh.castShadow = true;
-      structMesh.receiveShadow = true;
-      builtGroup.add(structMesh);
+      if (pad.id === 'shelter') {
+        // 5 floor planks laid side-by-side
+        for (let i = 0; i < 5; i += 1) {
+          const zOff = -0.95 + i * 0.48;
+          const sideIn = i % 2 === 0 ? -1 : 1;
+          pushPiece(
+            pieces,
+            builtGroup,
+            pieceSlabGeo,
+            i % 2 === 0 ? plankLightMat : plankMidMat,
+            new THREE.Vector3(0, 0.08, zOff),
+            new THREE.Euler(0, 0, 0),
+            new THREE.Vector3(2.45, 0.11, 0.42),
+            new THREE.Vector3(sideIn * 1.45, 1.35, 0.2),
+            new THREE.Euler(0.35, 0.4 * sideIn, 0.25),
+            i * 0.04,
+            0.18 + i * 0.04
+          );
+        }
+        // Woven floor rug
+        pushPiece(
+          pieces,
+          builtGroup,
+          pieceSphereGeo,
+          rugMat,
+          new THREE.Vector3(0, 0.16, 0),
+          new THREE.Euler(0, 0, 0),
+          new THREE.Vector3(2.15, 0.1, 2.35),
+          new THREE.Vector3(0, 1.75, 0),
+          new THREE.Euler(0, 0.3, 0),
+          0.22,
+          0.36
+        );
+        // 4 A-frame driftwood arch poles
+        for (let aIdx = 0; aIdx < 2; aIdx += 1) {
+          const zPos = aIdx === 0 ? -1.18 : 1.18;
+          for (const side of [-1, 1]) {
+            pushPiece(
+              pieces,
+              builtGroup,
+              piecePoleGeo,
+              woodDarkMat,
+              new THREE.Vector3(side * 0.66, 1.06, zPos),
+              new THREE.Euler(0, 0, side * 0.54),
+              new THREE.Vector3(0.22, 1.95, 0.22),
+              new THREE.Vector3(side * 1.3, 1.8, zPos * 0.4),
+              new THREE.Euler(0.2, 0, side * -0.5),
+              0.28 + aIdx * 0.06,
+              0.44 + aIdx * 0.06
+            );
+          }
+        }
+        // Ridge beam
+        pushPiece(
+          pieces,
+          builtGroup,
+          piecePoleGeo,
+          woodDarkMat,
+          new THREE.Vector3(0, 2.08, 0),
+          new THREE.Euler(Math.PI * 0.5, 0, 0),
+          new THREE.Vector3(0.2, 2.35, 0.2),
+          new THREE.Vector3(0, 2.4, -0.8),
+          new THREE.Euler(0.4, 0, 0),
+          0.42,
+          0.56
+        );
+        // 8 roof slats laid side-by-side along left & right slopes
+        let rIdx = 0;
+        for (let row = 0; row < 4; row += 1) {
+          const zOff = -1.05 + row * 0.7;
+          for (const side of [-1, 1]) {
+            pushPiece(
+              pieces,
+              builtGroup,
+              pieceSlabGeo,
+              row % 2 === 0 ? thatchMat : plankLightMat,
+              new THREE.Vector3(side * 0.7, 1.38, zOff),
+              new THREE.Euler(0, 0, side * -0.78),
+              new THREE.Vector3(1.62, 0.1, 0.62),
+              new THREE.Vector3(side * 1.75, 1.75, 0.25),
+              new THREE.Euler(0.2, side * 0.35, side * 0.45),
+              0.48 + rIdx * 0.048,
+              0.66 + rIdx * 0.048
+            );
+            rIdx += 1;
+          }
+        }
+        // Front camp lantern
+        pushPiece(
+          pieces,
+          builtGroup,
+          pieceSphereGeo,
+          lanternMat,
+          new THREE.Vector3(0, 1.72, 1.15),
+          new THREE.Euler(0, 0, 0),
+          new THREE.Vector3(0.36, 0.38, 0.36),
+          new THREE.Vector3(0, 1.3, 0.9),
+          new THREE.Euler(0, 0, 0),
+          0.86,
+          1.0
+        );
+      } else if (pad.id === 'rack') {
+        // 2 side frame posts
+        for (let p = 0; p < 2; p += 1) {
+          const xPos = p === 0 ? -0.72 : 0.72;
+          pushPiece(
+            pieces,
+            builtGroup,
+            piecePoleGeo,
+            woodDarkMat,
+            new THREE.Vector3(xPos, 0.82, -0.15),
+            new THREE.Euler(-0.18, 0, 0),
+            new THREE.Vector3(0.2, 1.35, 0.2),
+            new THREE.Vector3(xPos * 0.6, 2.0, 0),
+            new THREE.Euler(0.3, 0, p === 0 ? -0.4 : 0.4),
+            p * 0.08,
+            0.22 + p * 0.08
+          );
+        }
+        // 2 horizontal shelf bars
+        for (let b = 0; b < 2; b += 1) {
+          const yPos = b === 0 ? 0.55 : 1.15;
+          pushPiece(
+            pieces,
+            builtGroup,
+            piecePoleGeo,
+            plankMidMat,
+            new THREE.Vector3(0, yPos, -0.1),
+            new THREE.Euler(0, 0, Math.PI * 0.5),
+            new THREE.Vector3(0.15, 1.48, 0.15),
+            new THREE.Vector3(0, 1.6, 0.4),
+            new THREE.Euler(0, 0.4, 0),
+            0.22 + b * 0.08,
+            0.38 + b * 0.08
+          );
+        }
+        // 4 round wooden logs placed side-by-side on the middle shelf
+        for (let i = 0; i < 4; i += 1) {
+          pushPiece(
+            pieces,
+            builtGroup,
+            pieceLogGeo,
+            stackVertexMat,
+            new THREE.Vector3(-0.35 + i * 0.23, 0.7, -0.1),
+            new THREE.Euler(0, Math.PI * 0.5, 0),
+            new THREE.Vector3(1, 1, 1),
+            new THREE.Vector3(-0.6 + i * 0.4, 1.65, 0.65),
+            new THREE.Euler(0.35, 0.5, 0.25),
+            0.4 + i * 0.085,
+            0.6 + i * 0.085
+          );
+        }
+        // Top woven basket & spare plank
+        pushPiece(
+          pieces,
+          builtGroup,
+          pieceSlabGeo,
+          plankLightMat,
+          new THREE.Vector3(-0.26, 1.24, -0.08),
+          new THREE.Euler(0, 0.1, 0),
+          new THREE.Vector3(0.75, 0.1, 0.46),
+          new THREE.Vector3(-0.8, 1.6, 0.3),
+          new THREE.Euler(0.2, 0.5, 0.2),
+          0.74,
+          0.9
+        );
+        pushPiece(
+          pieces,
+          builtGroup,
+          pieceSphereGeo,
+          rugMat,
+          new THREE.Vector3(0.28, 1.38, -0.05),
+          new THREE.Euler(0, 0, 0),
+          new THREE.Vector3(0.62, 0.52, 0.62),
+          new THREE.Vector3(0.6, 1.8, 0.2),
+          new THREE.Euler(0, 0.4, 0),
+          0.82,
+          1.0
+        );
+      } else if (pad.id === 'pier') {
+        // 4 pilings driven into the water
+        const pilings: Array<[number, number]> = [
+          [-0.95, 0.8],
+          [0.95, 0.8],
+          [-0.95, 3.6],
+          [0.95, 3.6],
+        ];
+        pilings.forEach(([px, pz], idx) => {
+          pushPiece(
+            pieces,
+            builtGroup,
+            piecePoleGeo,
+            woodDarkMat,
+            new THREE.Vector3(px, 0.22, pz),
+            new THREE.Euler(0, 0, 0),
+            new THREE.Vector3(0.26, 1.6, 0.26),
+            new THREE.Vector3(0, 2.2, 0),
+            new THREE.Euler(0.15 * (idx % 2 === 0 ? 1 : -1), 0, 0.1),
+            idx * 0.05,
+            0.2 + idx * 0.05
+          );
+        });
+        // 9 driftwood deck planks aligned side-by-side over the lagoon
+        for (let i = 0; i < 9; i += 1) {
+          const sideIn = i % 2 === 0 ? -1 : 1;
+          pushPiece(
+            pieces,
+            builtGroup,
+            pieceSlabGeo,
+            i % 2 === 0 ? plankMidMat : plankLightMat,
+            new THREE.Vector3(0, 0.62, 0.2 + i * 0.46),
+            new THREE.Euler(0, 0, 0),
+            new THREE.Vector3(2.35, 0.16, 0.42),
+            new THREE.Vector3(sideIn * 1.55, 1.45, -0.25),
+            new THREE.Euler(0.28, 0.42 * sideIn, 0.3 * sideIn),
+            0.22 + i * 0.068,
+            0.4 + i * 0.068
+          );
+        }
+        // Dock lantern bulb
+        pushPiece(
+          pieces,
+          builtGroup,
+          pieceSphereGeo,
+          lanternMat,
+          new THREE.Vector3(0.95, 1.38, 3.6),
+          new THREE.Euler(0, 0, 0),
+          new THREE.Vector3(0.34, 0.36, 0.34),
+          new THREE.Vector3(0.3, 1.8, 0.2),
+          new THREE.Euler(0, 0, 0),
+          0.85,
+          1.0
+        );
+      } else {
+        // Wooden Escape Boat: Chocks -> Keel -> Ribs -> 10 Side-by-Side Hull Planks -> Benches -> Gunwales -> Mast/Sail/Oars
+        for (let c = 0; c < 2; c += 1) {
+          const zOff = c === 0 ? -0.85 : 0.85;
+          pushPiece(
+            pieces,
+            builtGroup,
+            pieceSlabGeo,
+            woodDarkMat,
+            new THREE.Vector3(0, 0.14, zOff),
+            new THREE.Euler(0, 0, 0),
+            new THREE.Vector3(1.35, 0.22, 0.28),
+            new THREE.Vector3(c === 0 ? -1.1 : 1.1, 1.2, 0),
+            new THREE.Euler(0.2, 0.4, 0),
+            c * 0.04,
+            0.12 + c * 0.04
+          );
+        }
+        // Central keel beam
+        pushPiece(
+          pieces,
+          builtGroup,
+          pieceSlabGeo,
+          woodDarkMat,
+          new THREE.Vector3(0, 0.34, 0),
+          new THREE.Euler(0, 0, 0),
+          new THREE.Vector3(0.22, 0.18, 3.3),
+          new THREE.Vector3(0, 1.75, -0.5),
+          new THREE.Euler(0.25, 0.1, 0),
+          0.08,
+          0.22
+        );
+        // 5 curved transverse hull floor ribs
+        for (let r = 0; r < 5; r += 1) {
+          const zOff = -1.12 + r * 0.56;
+          const taper = 1 - Math.pow(Math.abs(zOff) / 1.5, 1.7) * 0.52;
+          pushPiece(
+            pieces,
+            builtGroup,
+            pieceSlabGeo,
+            plankMidMat,
+            new THREE.Vector3(0, 0.4, zOff),
+            new THREE.Euler(0, 0, 0),
+            new THREE.Vector3(1.36 * taper, 0.11, 0.16),
+            new THREE.Vector3(0, 1.5, (r - 2) * 0.18),
+            new THREE.Euler(0.15, 0.35, 0.25),
+            0.15 + r * 0.04,
+            0.29 + r * 0.04
+          );
+        }
+        // 10 side hull planks (5 port, 5 starboard) flying in side-by-side!
+        let pIdx = 0;
+        for (let s = 0; s < 5; s += 1) {
+          const zOff = -1.16 + s * 0.58;
+          const taper = 1 - Math.pow(Math.abs(zOff) / 1.5, 1.7) * 0.54;
+          const sheer = Math.pow(Math.abs(zOff) / 1.4, 1.7) * 0.14;
+          const zSign = zOff >= 0 ? 1 : -1;
+          for (const side of [-1, 1]) {
+            pushPiece(
+              pieces,
+              builtGroup,
+              pieceSlabGeo,
+              (s + (side > 0 ? 1 : 0)) % 2 === 0 ? plankMidMat : plankLightMat,
+              new THREE.Vector3(side * 0.72 * taper, 0.64 + sheer, zOff),
+              new THREE.Euler(0, side * -zSign * 0.26, side * -0.34),
+              new THREE.Vector3(0.11, 0.54, 0.62),
+              new THREE.Vector3(side * 1.65, 1.45, 0.22 * zSign),
+              new THREE.Euler(0.3, side * 0.55, side * 0.45),
+              0.27 + pIdx * 0.036,
+              0.43 + pIdx * 0.036
+            );
+            pIdx += 1;
+          }
+        }
+        // 2 benches
+        for (let b = 0; b < 2; b += 1) {
+          const zSeat = b === 0 ? -0.42 : 0.38;
+          pushPiece(
+            pieces,
+            builtGroup,
+            pieceSlabGeo,
+            plankLightMat,
+            new THREE.Vector3(0, 0.78, zSeat),
+            new THREE.Euler(0, 0, 0),
+            new THREE.Vector3(1.12, 0.1, 0.28),
+            new THREE.Vector3(b === 0 ? -1.1 : 1.1, 1.55, 0),
+            new THREE.Euler(0.2, 0.35, 0.2),
+            0.6 + b * 0.06,
+            0.74 + b * 0.06
+          );
+        }
+        // 2 gunwale rails
+        for (const side of [-1, 1]) {
+          pushPiece(
+            pieces,
+            builtGroup,
+            piecePoleGeo,
+            woodDarkMat,
+            new THREE.Vector3(side * 0.68, 0.96, 0),
+            new THREE.Euler(Math.PI * 0.5, 0, 0),
+            new THREE.Vector3(0.11, 2.65, 0.11),
+            new THREE.Vector3(side * 1.35, 1.5, 0),
+            new THREE.Euler(0, 0.25 * side, 0.35 * side),
+            0.68,
+            0.82
+          );
+        }
+        // Mast, boom, sail, bow lantern & pair of oars
+        pushPiece(
+          pieces,
+          builtGroup,
+          piecePoleGeo,
+          woodDarkMat,
+          new THREE.Vector3(0, 1.78, 0.45),
+          new THREE.Euler(0, 0, 0),
+          new THREE.Vector3(0.13, 2.15, 0.13),
+          new THREE.Vector3(0, 2.3, -0.5),
+          new THREE.Euler(0.45, 0, 0.2),
+          0.76,
+          0.9
+        );
+        pushPiece(
+          pieces,
+          builtGroup,
+          piecePoleGeo,
+          plankMidMat,
+          new THREE.Vector3(0, 2.52, 0.48),
+          new THREE.Euler(0, 0, Math.PI * 0.5),
+          new THREE.Vector3(0.085, 1.35, 0.085),
+          new THREE.Vector3(0.8, 2.2, 0),
+          new THREE.Euler(0, 0.4, 0),
+          0.81,
+          0.93
+        );
+        pushPiece(
+          pieces,
+          builtGroup,
+          pieceSailGeo,
+          sailMat,
+          new THREE.Vector3(0, 1.84, 0.56),
+          new THREE.Euler(0, 0, 0),
+          new THREE.Vector3(0.56, 0.95, 0.34),
+          new THREE.Vector3(0, 1.6, 0.4),
+          new THREE.Euler(-0.3, 0, 0),
+          0.84,
+          0.96
+        );
+        pushPiece(
+          pieces,
+          builtGroup,
+          pieceSphereGeo,
+          lanternMat,
+          new THREE.Vector3(0, 1.15, 1.52),
+          new THREE.Euler(0, 0, 0),
+          new THREE.Vector3(0.3, 0.32, 0.3),
+          new THREE.Vector3(0, 1.2, 0.7),
+          new THREE.Euler(0, 0, 0),
+          0.88,
+          0.98
+        );
+        for (const side of [-1, 1]) {
+          pushPiece(
+            pieces,
+            builtGroup,
+            piecePoleGeo,
+            plankLightMat,
+            new THREE.Vector3(side * 0.54, 0.9, -0.2),
+            new THREE.Euler(Math.PI * 0.45, 0, side * 0.18),
+            new THREE.Vector3(0.06, 1.25, 0.06),
+            new THREE.Vector3(side * 1.1, 1.3, -0.4),
+            new THREE.Euler(0.3, 0.3, 0.3),
+            0.88,
+            1.0
+          );
+        }
+      }
+
       islandGroup.add(builtGroup);
-
-      buildPadVisuals.set(pad.id, { padGroup, builtGroup, popAge: 0 });
+      buildPadVisuals.set(pad.id, {
+        padGroup,
+        builtGroup,
+        pieces,
+        visualProgress: 0,
+        pieceSoundCooldown: 0,
+      });
     }
 
     // 0C. STRANGE LANDMARK INTERACTION SHRINE RINGS
@@ -4317,10 +4898,18 @@ export function createThreeIslandGame(
     survivor.rodGroup.visible = false;
     bobberMesh.visible = false;
     fishingLine.visible = false;
+    endingBoatGroup.visible = false;
+    actorHitFlash.clear();
+    combatLungeTimer = 0;
     for (const pVis of buildPadVisuals.values()) {
       pVis.padGroup.visible = true;
       pVis.builtGroup.visible = false;
-      pVis.popAge = 0;
+      pVis.visualProgress = 0;
+      pVis.pieceSoundCooldown = 0;
+      for (const pc of pVis.pieces) {
+        pc.locked = false;
+        pc.mesh.visible = false;
+      }
     }
     camLookAt.set(playerState.x, playerState.y + CONFIG.CAMERA.LOOK_HEIGHT, playerState.z);
     harvestRingMesh.visible = false;
@@ -4379,9 +4968,17 @@ export function createThreeIslandGame(
 
   let cutsceneTimer = 0;
   let cutsceneCrashFxDone = false;
+  let endingCutsceneTimer = 0;
+  let endingCutsceneSplashDone = false;
+  let endingRowSplashCooldown = 0;
+  let endingShoreX = 5;
+  let endingShoreStartZ = 49;
+  let endingWaterZ = 59;
   let wreckSmokeTimer = 0;
   let poisonChipTimer = 0;
   const knockbackVel = { x: 0, z: 0 };
+  const actorHitFlash = new Map<string, number>();
+  let combatLungeTimer = 0;
   let hitShakeTimer = 0;
   let recoilTimer = 0;
 
@@ -4564,11 +5161,14 @@ export function createThreeIslandGame(
     for (const act of survivalState.wildlife.actors) {
       if (!act.visible || act.koTimer > 0 || act.respawnTimer > 0) continue;
       const spec = getAnimalSpecies(act.speciesId);
-      if (!spec?.huntable && !spec?.fishable) continue;
+      const hostile = isHostilePredatorActor(act);
+      if (!spec?.huntable && !spec?.fishable && !hostile) continue;
       const actRange = spec?.fishable
         ? Math.max(CONFIG.SURVIVAL.HARVEST_RANGE_HUNT, CONFIG.SURVIVAL.HARVEST_RANGE_FISHING)
-        : CONFIG.SURVIVAL.HARVEST_RANGE_HUNT;
-      consider('prey', act.id, act.x, act.y + 0.55, act.z, actRange, 2.5, 42, 0.2);
+        : hostile
+          ? Math.max(CONFIG.SURVIVAL.HARVEST_RANGE_HUNT, CONFIG.SURVIVAL.HARVEST_RANGE_COMBAT)
+          : CONFIG.SURVIVAL.HARVEST_RANGE_HUNT;
+      consider('prey', act.id, act.x, act.y + 0.55, act.z, actRange, 2.7, 46, hostile ? 0.32 : 0.2);
     }
     for (const node of survivalState.nodes) {
       if (node.cooldownRemaining > 0) continue;
@@ -4830,6 +5430,7 @@ export function createThreeIslandGame(
     const rawDt = (nowMs - lastTimeMs) * 0.001;
     lastTimeMs = nowMs;
     const dt = Math.min(Math.max(rawDt, 0.001), 0.05);
+    const cineDt = Math.min(Math.max(rawDt, 0.001), 0.45);
     elapsedTime += dt;
 
     oceanMat.uniforms.uTime.value = elapsedTime;
@@ -5268,8 +5869,7 @@ export function createThreeIslandGame(
     let activePredThreat = false;
     for (const actor of survivalState.wildlife.actors) {
       if (!actor.visible || actor.koTimer > 0) continue;
-      const spec = getAnimalSpecies(actor.speciesId);
-      if (spec?.category !== 'night_predator' && actor.speciesId !== 'viper_snake') continue;
+      if (!isHostilePredatorActor(actor)) continue;
       const d = Math.hypot(actor.x - playerState.x, actor.z - playerState.z);
       if (d < minPredDist) minPredDist = d;
       if (actor.attackState === 'windup' || actor.attackState === 'strike' || d < 12) {
@@ -5710,6 +6310,33 @@ export function createThreeIslandGame(
         callbacks.onDamageTaken?.(Math.round(survivalRes.damageTaken), pt.x, pt.y);
       }
 
+      if (combatLungeTimer > 0) combatLungeTimer = Math.max(0, combatLungeTimer - dt);
+      for (const [fId, fTime] of actorHitFlash.entries()) {
+        if (fTime <= dt) actorHitFlash.delete(fId);
+        else actorHitFlash.set(fId, fTime - dt);
+      }
+      if (survivalRes.meleeStrike) {
+        const ms = survivalRes.meleeStrike;
+        soundEngine.playWeaponStrike();
+        actorHitFlash.set(ms.actorId, 0.28);
+        combatLungeTimer = 0.28;
+        spawnBurstChips(ms.x, ms.y + 0.45, ms.z, 'meat');
+        if (
+          survivalState.hasFireSpear ||
+          (survivalState.equippedWeapon === 'bow' && survivalState.weaponLevels.bow >= 4)
+        ) {
+          spawnBurstChips(ms.x, ms.y + 0.55, ms.z, 'ember');
+        }
+        const pt = projectWorldToViewport(ms.x, ms.y + 1.0, ms.z);
+        callbacks.onCombatHit?.(ms.damage, pt.x, pt.y, ms.nameFa, ms.defeated);
+        if (ms.defeated) {
+          callbacks.onNotice?.(`${ms.nameFa} شکست خورد!`);
+        }
+      }
+      if (survivalRes.boatVoyageVictoryReady) {
+        startEndingCutscene();
+      }
+
       // Update Harvest / Build / Hunt Progress Ring + Focus Target Reticle
       const activeNode = survivalState.activeNodeId
         ? survivalState.nodes.find((n) => n.id === survivalState.activeNodeId)
@@ -6093,18 +6720,65 @@ export function createThreeIslandGame(
         }
       }
 
-      // Sync 3D Camp Build Pads vs Built Structures
+      // Sync 3D Camp Build Pads vs Piece-by-Piece Side-by-Side Wooden Construction Animation
       for (const [padId, pVis] of buildPadVisuals.entries()) {
         const isBuilt = survivalState.buildings[padId];
-        pVis.padGroup.visible = !isBuilt;
-        pVis.builtGroup.visible = isBuilt;
-        if (isBuilt && pVis.popAge < 0.45) {
-          pVis.popAge += dt;
-          const t = Math.min(1, pVis.popAge / 0.45);
-          const spring = 1 + Math.sin(t * Math.PI) * 0.16;
-          pVis.builtGroup.scale.setScalar(t * spring);
-        } else if (isBuilt) {
-          pVis.builtGroup.scale.setScalar(1);
+        const targetProg = isBuilt ? 1 : survivalState.buildProgress[padId];
+        if (pVis.pieceSoundCooldown > 0) {
+          pVis.pieceSoundCooldown = Math.max(0, pVis.pieceSoundCooldown - dt);
+        }
+        if (targetProg < pVis.visualProgress - 0.01) {
+          pVis.visualProgress = targetProg;
+          for (const pc of pVis.pieces) {
+            pc.locked = false;
+            pc.mesh.visible = false;
+          }
+        } else if (pVis.visualProgress < targetProg) {
+          pVis.visualProgress = Math.min(targetProg, pVis.visualProgress + dt * 0.62);
+        }
+        const prog = pVis.visualProgress;
+        pVis.builtGroup.visible = prog > 0.004;
+        pVis.padGroup.visible = !isBuilt && prog < 0.985;
+        if (!pVis.builtGroup.visible) continue;
+
+        const padSite = survivalState.buildPads.find((p) => p.id === padId);
+        for (const pc of pVis.pieces) {
+          const span = Math.max(0.05, pc.endAt - pc.startAt);
+          const localT = THREE.MathUtils.clamp((prog - pc.startAt) / span, 0, 1);
+          if (localT <= 0.002) {
+            pc.mesh.visible = false;
+            continue;
+          }
+          pc.mesh.visible = true;
+          const ease = 1 - Math.pow(1 - localT, 3);
+          const inv = 1 - ease;
+          const arcLift = Math.sin(localT * Math.PI) * 0.58;
+          pc.mesh.position.set(
+            pc.finalPos.x + pc.startOffset.x * inv,
+            pc.finalPos.y + pc.startOffset.y * inv + arcLift,
+            pc.finalPos.z + pc.startOffset.z * inv
+          );
+          pc.mesh.rotation.set(
+            pc.finalRot.x + pc.startRotOffset.x * inv,
+            pc.finalRot.y + pc.startRotOffset.y * inv,
+            pc.finalRot.z + pc.startRotOffset.z * inv
+          );
+          const popScale = localT >= 1 ? 1 : 0.72 + ease * 0.28 + Math.sin(localT * Math.PI) * 0.08;
+          pc.mesh.scale.set(
+            pc.finalScale.x * popScale,
+            pc.finalScale.y * popScale,
+            pc.finalScale.z * popScale
+          );
+          if (localT >= 1 && !pc.locked) {
+            pc.locked = true;
+            if (pVis.pieceSoundCooldown <= 0 && prog < 0.99) {
+              pVis.pieceSoundCooldown = 0.14;
+              soundEngine.playChop();
+              if (padSite) {
+                spawnBurstChips(padSite.x, padSite.y + 0.55, padSite.z, 'chipWood');
+              }
+            }
+          }
         }
       }
 
@@ -6171,6 +6845,12 @@ export function createThreeIslandGame(
             rig.bodyGroup.scale.set(1, breathe, 1);
             rig.bodyGroup.rotation.x = 0;
             rig.bodyGroup.position.x = 0;
+          }
+          const hitFlashLeft = actorHitFlash.get(actor.id) ?? 0;
+          if (hitFlashLeft > 0) {
+            const hf = hitFlashLeft / 0.28;
+            rig.bodyGroup.scale.set(1 + hf * 0.22, 1 - hf * 0.2, 1 + hf * 0.16);
+            rig.bodyGroup.rotation.z += Math.sin(elapsedTime * 64) * 0.28 * hf;
           }
           if (rig.sleepTag) rig.sleepTag.visible = false;
           const legAmp = isMoving ? 1.0 : 0.12;
@@ -6513,6 +7193,11 @@ export function createThreeIslandGame(
         survivor.bodyPivot.rotation.x = 0;
         survivor.bodyPivot.rotation.z = Math.cos(playerState.walkPhase) * 0.055;
         survivor.headGroup.rotation.z = -Math.cos(playerState.walkPhase) * 0.045;
+        if (combatLungeTimer > 0) {
+          const cf = Math.sin((combatLungeTimer / 0.28) * Math.PI);
+          survivor.rightArm.rotation.x = -0.75 - cf * 1.15;
+          survivor.bodyPivot.rotation.x = 0.22 * cf;
+        }
 
         const eq = survivalState.equippedWeapon;
         survivor.axeMesh.visible = eq === 'axe';
@@ -6678,20 +7363,58 @@ export function createThreeIslandGame(
             );
           }
         } else if (action === 'hunt') {
-          survivor.axeMesh.visible = false;
-          survivor.spearMesh.visible = survivalState.hasSpear && !survivalState.hasFireSpear;
-          survivor.fireSpearMesh.visible = survivalState.hasFireSpear;
+          const eq = survivalState.equippedWeapon;
+          const useSpear = eq === 'spear' && survivalState.hasSpear;
+          const useHammer = eq === 'hammer' && survivalState.unlockedWeapons.hammer;
+          survivor.axeMesh.visible = !useSpear && !useHammer;
+          survivor.spearMesh.visible = useSpear && !survivalState.hasFireSpear;
+          survivor.fireSpearMesh.visible = useSpear && survivalState.hasFireSpear;
           survivor.bowMesh.visible = false;
+          survivor.hammerMesh.visible = useHammer;
+          survivor.rodGroup.visible = false;
+          bobberMesh.visible = false;
+          fishingLine.visible = false;
+
+          const jab = Math.sin(elapsedTime * 13.5);
+          if (useSpear) {
+            survivor.rightArm.rotation.x = -0.95 + Math.max(0, jab) * 0.92;
+            survivor.leftArm.rotation.x = -0.45 - Math.max(0, jab) * 0.25;
+          } else {
+            survivor.rightArm.rotation.x = -1.2 + jab * 1.15;
+            survivor.leftArm.rotation.x = -0.42 + jab * 0.32;
+          }
+          survivor.bodyPivot.rotation.x = 0.2 + Math.max(0, jab) * 0.16;
+          survivor.bodyPivot.position.y = Math.abs(jab) * 0.05;
+        } else if (action === 'bow_hunt') {
+          survivor.axeMesh.visible = false;
+          survivor.spearMesh.visible = false;
+          survivor.fireSpearMesh.visible = false;
+          survivor.bowMesh.visible = true;
           survivor.hammerMesh.visible = false;
           survivor.rodGroup.visible = false;
           bobberMesh.visible = false;
           fishingLine.visible = false;
 
-          const jab = Math.sin(elapsedTime * 11.5);
-          survivor.rightArm.rotation.x = -0.95 + Math.max(0, jab) * 0.85;
-          survivor.leftArm.rotation.x = -0.45 - Math.max(0, jab) * 0.25;
-          survivor.bodyPivot.rotation.x = 0.2 + Math.max(0, jab) * 0.16;
-          survivor.bodyPivot.position.y = Math.abs(jab) * 0.05;
+          const drawWave = Math.sin(elapsedTime * 10) * 0.18;
+          survivor.leftArm.rotation.x = -1.42;
+          survivor.rightArm.rotation.x = -1.15 - drawWave;
+          survivor.bodyPivot.rotation.x = 0.1;
+          survivor.bodyPivot.position.y = 0.02;
+        } else if (action === 'hammer_slam') {
+          survivor.axeMesh.visible = false;
+          survivor.spearMesh.visible = false;
+          survivor.fireSpearMesh.visible = false;
+          survivor.bowMesh.visible = false;
+          survivor.hammerMesh.visible = true;
+          survivor.rodGroup.visible = false;
+          bobberMesh.visible = false;
+          fishingLine.visible = false;
+
+          const slamWave = Math.sin(elapsedTime * 14);
+          survivor.rightArm.rotation.x = -1.4 + slamWave * 1.3;
+          survivor.leftArm.rotation.x = -0.9 + slamWave * 0.8;
+          survivor.bodyPivot.rotation.x = 0.28;
+          survivor.bodyPivot.position.y = Math.max(0, slamWave) * 0.07;
         } else if (action === 'forage') {
           survivor.axeMesh.visible = false;
           survivor.spearMesh.visible = false;
@@ -6873,6 +7596,149 @@ export function createThreeIslandGame(
       if (cutsceneTimer >= 5.5) {
         finishCutscene();
       }
+    } else if (screenState === 'ending_cutscene') {
+      // 8.6s Victory Boat Launch, Boarding & Open-Sea Rowing Cutscene
+      endingCutsceneTimer += cineDt;
+      const t = endingCutsceneTimer;
+
+      survivor.axeMesh.visible = false;
+      survivor.spearMesh.visible = false;
+      survivor.fireSpearMesh.visible = false;
+      survivor.bowMesh.visible = false;
+      survivor.hammerMesh.visible = false;
+      survivor.rodGroup.visible = false;
+      bobberMesh.visible = false;
+      fishingLine.visible = false;
+      focusRingMesh.visible = false;
+      harvestRingMesh.visible = false;
+      cutscenePlaneGroup.visible = false;
+      cutsceneParachuteMesh.visible = false;
+      survivor.root.visible = true;
+      endingBoatGroup.visible = true;
+
+      let boatX = endingShoreX;
+      let boatY = survivalState.seaLevelOffset + 0.02;
+      let boatZ = endingShoreStartZ;
+
+      if (t < 2.4) {
+        // Phase 1: Survivor pushes the wooden boat down the sandy shore into South Bay water
+        const p = Math.min(1, t / 2.4);
+        const ease = 1 - Math.pow(1 - p, 1.45);
+        boatZ = THREE.MathUtils.lerp(endingShoreStartZ, endingWaterZ, ease);
+        const shoreGround = groundHeightAt(boatX, boatZ, worldData);
+        const floatY = survivalState.seaLevelOffset + 0.02 + Math.sin(elapsedTime * 3.0) * 0.03;
+        boatY = Math.max(shoreGround + 0.04, floatY);
+        endingBoatGroup.position.set(boatX, boatY, boatZ);
+        endingBoatGroup.rotation.set(shoreGround > survivalState.seaLevelOffset ? -0.05 : 0.02, 0, 0);
+        endingOarL.rotation.set(0, 0.35, -0.35);
+        endingOarR.rotation.set(0, -0.35, 0.35);
+
+        const pushZ = boatZ - 2.15;
+        const pushY = Math.max(survivalState.seaLevelOffset - 0.15, groundHeightAt(boatX, pushZ, worldData));
+        survivor.root.position.set(boatX, pushY, pushZ);
+        survivor.root.rotation.y = 0;
+        const walk = Math.sin(t * 11.5);
+        survivor.leftLeg.rotation.x = walk * 0.62;
+        survivor.rightLeg.rotation.x = -walk * 0.62;
+        survivor.leftArm.rotation.x = -1.25;
+        survivor.rightArm.rotation.x = -1.25;
+        survivor.bodyPivot.rotation.x = 0.34;
+        survivor.bodyPivot.position.y = Math.abs(walk) * 0.05;
+
+        if (p > 0.72 && !endingCutsceneSplashDone) {
+          endingCutsceneSplashDone = true;
+          soundEngine.playSwimSplash();
+          spawnBurstChips(boatX, floatY + 0.15, boatZ + 0.9, 'fish');
+          spawnBurstChips(boatX - 0.5, floatY + 0.12, boatZ + 0.4, 'fish');
+          spawnBurstChips(boatX + 0.5, floatY + 0.12, boatZ + 0.4, 'fish');
+        } else if (Math.floor(t * 6) !== Math.floor((t - dt) * 6)) {
+          spawnDustPuff(boatX, pushY, pushZ - 0.25);
+        }
+      } else if (t < 3.2) {
+        // Phase 2: Boat floats gently at waterline; survivor hops aboard onto midship bench
+        const bp = Math.min(1, (t - 2.4) / 0.8);
+        boatZ = endingWaterZ;
+        boatY = survivalState.seaLevelOffset + 0.02 + Math.sin(elapsedTime * 3.0) * 0.04;
+        endingBoatGroup.position.set(boatX, boatY, boatZ);
+        endingBoatGroup.rotation.set(Math.sin(elapsedTime * 2.2) * 0.02, 0, Math.sin(elapsedTime * 1.9) * 0.025);
+        endingOarL.rotation.set(0, 0.2, -0.2);
+        endingOarR.rotation.set(0, -0.2, 0.2);
+
+        const hopArc = Math.sin(bp * Math.PI) * 0.85;
+        const startZ = endingWaterZ - 2.15;
+        const seatZ = boatZ - 0.28;
+        const startY = Math.max(survivalState.seaLevelOffset - 0.15, groundHeightAt(boatX, startZ, worldData));
+        const seatY = boatY + 0.54;
+        survivor.root.position.set(
+          boatX,
+          THREE.MathUtils.lerp(startY, seatY, bp) + hopArc,
+          THREE.MathUtils.lerp(startZ, seatZ, bp)
+        );
+        survivor.root.rotation.y = 0;
+        survivor.leftLeg.rotation.x = THREE.MathUtils.lerp(0, -1.15, bp);
+        survivor.rightLeg.rotation.x = THREE.MathUtils.lerp(0, -1.15, bp);
+        survivor.leftArm.rotation.x = THREE.MathUtils.lerp(-1.1, -0.82, bp);
+        survivor.rightArm.rotation.x = THREE.MathUtils.lerp(-1.1, -0.82, bp);
+        survivor.bodyPivot.rotation.x = THREE.MathUtils.lerp(0.2, 0.05, bp);
+        survivor.bodyPivot.position.y = 0;
+      } else {
+        // Phase 3: Rowing steadily out into open ocean (+Z) with articulated wooden oars & splashes
+        const rowT = t - 3.2;
+        const rp = Math.min(1, rowT / 5.4);
+        const sailDist = Math.pow(rp, 1.08) * 34;
+        boatZ = endingWaterZ + sailDist;
+        boatX = endingShoreX + Math.sin(rp * Math.PI) * 1.6;
+        boatY = survivalState.seaLevelOffset + 0.02 + Math.sin(elapsedTime * 2.6) * 0.055;
+        endingBoatGroup.position.set(boatX, boatY, boatZ);
+
+        const rowCycle = rowT * 3.85;
+        const sweep = Math.sin(rowCycle);
+        const dip = Math.cos(rowCycle);
+        endingBoatGroup.rotation.set(
+          Math.sin(rowCycle) * 0.032 - 0.02,
+          Math.sin(rp * Math.PI) * 0.06,
+          Math.sin(elapsedTime * 2.1) * 0.028
+        );
+
+        endingOarR.rotation.y = sweep * 0.48;
+        endingOarR.rotation.z = 0.22 - dip * 0.34;
+        endingOarL.rotation.y = -sweep * 0.48;
+        endingOarL.rotation.z = -0.22 + dip * 0.34;
+
+        survivor.root.position.set(boatX, boatY + 0.54, boatZ - 0.28);
+        survivor.root.rotation.y = 0;
+        survivor.leftLeg.rotation.x = -1.15;
+        survivor.rightLeg.rotation.x = -1.15;
+        survivor.bodyPivot.rotation.x = 0.08 - sweep * 0.24;
+        survivor.bodyPivot.position.y = 0;
+        survivor.leftArm.rotation.x = -0.92 - sweep * 0.44;
+        survivor.rightArm.rotation.x = -0.92 - sweep * 0.44;
+
+        endingRowSplashCooldown -= cineDt;
+        if (dip > 0.65 && endingRowSplashCooldown <= 0) {
+          endingRowSplashCooldown = 0.62;
+          soundEngine.playSplash();
+          spawnBurstChips(boatX - 1.5, boatY + 0.04, boatZ - 0.1, 'fish');
+          spawnBurstChips(boatX + 1.5, boatY + 0.04, boatZ - 0.1, 'fish');
+          spawnBurstChips(boatX, boatY + 0.02, boatZ - 1.55, 'fish');
+        }
+      }
+
+      // Smooth front-quarter ocean camera tracking the boat & receding island
+      targetLookAt.set(boatX, boatY + 1.15, boatZ + 0.4);
+      camLookAt.lerp(targetLookAt, 1 - Math.exp(-6.0 * cineDt));
+      const camAng = THREE.MathUtils.clamp((t - 1.5) / 6.5, 0, 1);
+      desiredCamPos.set(
+        camLookAt.x + THREE.MathUtils.lerp(7.5, 9.5, camAng),
+        camLookAt.y + THREE.MathUtils.lerp(5.2, 4.4, camAng),
+        camLookAt.z + THREE.MathUtils.lerp(7.8, 9.8, camAng)
+      );
+      camera.position.copy(desiredCamPos);
+      camera.lookAt(camLookAt);
+
+      if (endingCutsceneTimer >= 8.6) {
+        finishEndingCutscene();
+      }
     } else if (screenState === 'playing' && survivalState.gameOutcome !== 'playing') {
       // Frozen outcome beat while Victory/Defeat modal is displayed
       targetLookAt.set(playerState.x, playerState.y + CONFIG.CAMERA.LOOK_HEIGHT, playerState.z);
@@ -6971,6 +7837,90 @@ export function createThreeIslandGame(
     emitHud(currentBiome);
     callbacks.onScreenChange('playing', { mode: currentMode, seed: currentSeed });
     callbacks.onNotice?.('هواپیما سقوط کرد! برای روشن کردن آتش کمپ ۲ چوب جمع کن و به آتش برگرد');
+  };
+
+  const startEndingCutscene = () => {
+    if (screenState === 'ending_cutscene') return;
+    const southSpot = worldData.fishingSpots[0];
+    const spotX = southSpot ? southSpot.x : 5;
+    const baseZ = southSpot ? southSpot.z : 76;
+    let bestX = spotX;
+    let bestDryZ = baseZ - 5.5;
+    let bestWaterZ = baseZ + 2.5;
+    let bestClearScore = -Infinity;
+    for (const candX of [spotX + 7, spotX - 7, spotX + 11, spotX - 11, spotX + 4.5, spotX - 4.5, spotX]) {
+      let cDryZ = baseZ - 5.5;
+      let cWaterZ = baseZ + 2.5;
+      let foundDry = false;
+      for (let z = Math.max(40, baseZ - 14); z <= baseZ + 16; z += 0.5) {
+        const h = groundHeightAt(candX, z, worldData);
+        if (!foundDry && h <= 0.72 && h >= 0.35) {
+          cDryZ = z;
+          foundDry = true;
+        }
+        if (foundDry && h <= survivalState.seaLevelOffset - 0.14) {
+          cWaterZ = z;
+          break;
+        }
+      }
+      if (cWaterZ <= cDryZ + 1.5) cWaterZ = cDryZ + 5.5;
+      const midZ = (cDryZ + cWaterZ) * 0.5;
+      let minObs = Infinity;
+      for (const obs of worldData.obstacles) {
+        const d = Math.hypot(obs.x - candX, obs.z - midZ) - obs.radius;
+        if (d < minObs) minObs = d;
+      }
+      const pierClear = Math.abs(candX - spotX) < 5.5 ? -3.5 : 0;
+      const score = minObs + pierClear;
+      if (score > bestClearScore) {
+        bestClearScore = score;
+        bestX = candX;
+        bestDryZ = cDryZ;
+        bestWaterZ = cWaterZ;
+      }
+    }
+    endingShoreX = bestX;
+    endingShoreStartZ = bestDryZ;
+    endingWaterZ = bestWaterZ;
+    const startY = Math.max(
+      survivalState.seaLevelOffset + 0.3,
+      groundHeightAt(endingShoreX, endingShoreStartZ, worldData) + 0.9
+    );
+    camLookAt.set(endingShoreX, startY, endingShoreStartZ + 0.4);
+    camera.position.set(endingShoreX + 7.5, startY + 5.0, endingShoreStartZ + 8.0);
+    camera.lookAt(camLookAt);
+    endingCutsceneTimer = 0;
+    endingCutsceneSplashDone = false;
+    endingRowSplashCooldown = 0;
+    activeKeys.clear();
+    joystickInput.dx = 0;
+    joystickInput.dy = 0;
+    clickWalkTarget = null;
+    clickRingMesh.visible = false;
+    screenState = 'ending_cutscene';
+    soundEngine.playSplash();
+    callbacks.onScreenChange('ending_cutscene', { mode: currentMode, seed: currentSeed });
+    lastTimeMs = performance.now();
+    updateFrame(lastTimeMs);
+  };
+
+  const finishEndingCutscene = () => {
+    if (screenState !== 'ending_cutscene') return;
+    endingBoatGroup.visible = false;
+    survivor.root.visible = true;
+    survivor.leftArm.rotation.x = 0;
+    survivor.rightArm.rotation.x = 0;
+    survivor.leftLeg.rotation.x = 0;
+    survivor.rightLeg.rotation.x = 0;
+    survivor.bodyPivot.rotation.x = 0;
+    triggerVictoryVoyage(survivalState);
+    lastNotifiedOutcome = 'victory';
+    clearSavedRun();
+    soundEngine.playLevelUp();
+    screenState = 'playing';
+    callbacks.onScreenChange('playing', { mode: currentMode, seed: currentSeed });
+    emitHud(currentBiome);
+    callbacks.onOutcomeChange?.('victory');
   };
 
   const clearSavedRun = () => {
@@ -7098,6 +8048,23 @@ export function createThreeIslandGame(
       cutscenePlaneGroup.visible = false;
       cutsceneParachuteMesh.visible = false;
       if (wreckGroup) wreckGroup.visible = true;
+      for (const [padId, pVis] of buildPadVisuals.entries()) {
+        const built = survivalState.buildings[padId];
+        const prog = built ? 1 : survivalState.buildProgress[padId];
+        pVis.visualProgress = prog;
+        pVis.padGroup.visible = !built;
+        pVis.builtGroup.visible = prog > 0.004;
+        for (const pc of pVis.pieces) {
+          const shown = built || prog >= pc.endAt;
+          pc.locked = shown;
+          pc.mesh.visible = shown;
+          if (shown) {
+            pc.mesh.position.copy(pc.finalPos);
+            pc.mesh.rotation.copy(pc.finalRot);
+            pc.mesh.scale.copy(pc.finalScale);
+          }
+        }
+      }
       for (const treeBind of treeNodeVisuals.values()) {
         treeBind.dirty = true;
       }
@@ -7120,12 +8087,17 @@ export function createThreeIslandGame(
       return true;
     },
     skipCutscene: () => {
-      finishCutscene();
+      if (screenState === 'ending_cutscene') {
+        finishEndingCutscene();
+      } else {
+        finishCutscene();
+      }
     },
     returnToMenu: () => {
       const saved = saveCurrentRun();
       cutscenePlaneGroup.visible = false;
       cutsceneParachuteMesh.visible = false;
+      endingBoatGroup.visible = false;
       survivor.root.visible = true;
       if (wreckGroup) wreckGroup.visible = true;
       screenState = 'title';
@@ -7162,6 +8134,14 @@ export function createThreeIslandGame(
           callbacks.onNotice?.(res.notice);
           return;
         }
+      }
+      if (
+        survivalState.focusedTarget?.kind === 'boat_voyage' &&
+        survivalState.buildings.boat &&
+        survivalState.playerLevel >= CONFIG.SURVIVAL.VICTORY_MIN_LEVEL
+      ) {
+        startEndingCutscene();
+        return;
       }
       requestPlayerInteract(survivalState);
     },
@@ -7302,15 +8282,13 @@ export function createThreeIslandGame(
       return res;
     },
     triggerVictoryVoyage: () => {
-      const ok = triggerVictoryVoyage(survivalState);
-      if (ok) {
-        lastNotifiedOutcome = 'victory';
-        clearSavedRun();
-        soundEngine.playLevelUp();
-        emitHud(currentBiome);
-        callbacks.onOutcomeChange?.('victory');
+      const ready =
+        survivalState.buildings.boat &&
+        survivalState.playerLevel >= CONFIG.SURVIVAL.VICTORY_MIN_LEVEL;
+      if (ready) {
+        startEndingCutscene();
       }
-      return ok;
+      return ready;
     },
     toggleMute: () => {
       return soundEngine.toggleMute();

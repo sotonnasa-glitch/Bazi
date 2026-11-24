@@ -1003,7 +1003,8 @@ export function stepWildlifeSystem(
       actor.category === 'night_predator' ||
       (isVenomousSnake && !torchActive && (Boolean(actor.enraged) || (distToPlayer < 4.2 && !protectedByCamp))) ||
       (isCobra && !torchActive && (Boolean(actor.enraged) || (distToPlayer < 2.8 && !protectedByCamp))) ||
-      (Boolean(actor.enraged) && (actor.speciesId === 'boar' || actor.speciesId === 'pirate_crab'));
+      (actor.speciesId === 'pirate_crab' && !torchActive && (Boolean(actor.enraged) || (distToPlayer < 4.5 && !protectedByCamp))) ||
+      (actor.speciesId === 'boar' && !torchActive && (Boolean(actor.enraged) || (distToPlayer < 2.4 && !protectedByCamp)));
 
     // Smooth locomotion target velocity (keeps movement natural instead of instant snapping)
     let desiredVx = actor.vx;
