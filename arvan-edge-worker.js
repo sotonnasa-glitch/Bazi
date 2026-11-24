@@ -58,9 +58,9 @@ async function getFromOrigin(path, request) {
   if (!upstream.ok) return upstream;
 
   const headers = new Headers(upstream.headers);
-  if (!headers.has("content-type")) {
-    headers.set("content-type", contentTypeFor(path));
-  }
+  // Set an explicit MIME type: raw GitHub may label source files as text/plain,
+  // which browsers can reject for ES modules when nosniff is enabled.
+  headers.set("content-type", contentTypeFor(path));
   headers.set("cache-control", path.endsWith(".html")
     ? "public, max-age=60"
     : "public, max-age=3600");
