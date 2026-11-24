@@ -63,3 +63,5 @@ jobs:
           path: bazi-arvan-dist.zip
           if-no-files-found: error
           retention-days: 7
+
+# Trigger a fresh deployment after configuring repository secrets.
